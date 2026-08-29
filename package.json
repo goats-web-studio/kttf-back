@@ -13,7 +13,10 @@
   },
   "scripts": {
     "check:shared": "node scripts/check-shared.mjs",
-    "bump:shared": "node scripts/bump-shared.mjs"
+    "bump:shared": "node scripts/bump-shared.mjs",
+    "postinstall": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "db:studio": "prisma studio"
   },
   "devDependencies": {
     "dotenv": "^17.4.2",
