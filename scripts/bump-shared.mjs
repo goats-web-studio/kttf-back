@@ -25,9 +25,40 @@ if (!/^[0-9a-f]{40}$/.test(sha ?? '')) {
   process.exit(1);
 }
 
+const ALLOW_FILE = 'pnpm-workspace.yaml';
+const SHARED_KEY = /^\s*"?@kttf\/shared@/;
+
+/**
+ * Разрешение сборки для общего кода переписывается на месте, остальные ключи
+ * файла сохраняются. Раньше файл перезаписывался целиком, и обновление SHA
+ * молча сносило соседние разрешения — в kttf-back это prisma и esbuild, без
+ * которых постинсталл не скачивает движки.
+ */
 function writeAllowBuilds() {
   const tarball = `https://codeload.github.com/${REPO}/tar.gz/${sha}`;
-  writeFileSync('pnpm-workspace.yaml', `allowBuilds:\n  "@kttf/shared@${tarball}": true\n`);
+  const entry = `  "@kttf/shared@${tarball}": true`;
+  const source = existsSync(ALLOW_FILE) ? readFileSync(ALLOW_FILE, 'utf8') : 'allowBuilds:';
+
+  // Строк общего кода после установки бывает несколько: pnpm дописывает
+  // заглушку для предыдущего SHA. Первая заменяется, остальные выбрасываются.
+  let replaced = false;
+  const lines = [];
+  for (const line of source.split(/\r?\n/)) {
+    if (!SHARED_KEY.test(line)) {
+      lines.push(line);
+    } else if (!replaced) {
+      lines.push(entry);
+      replaced = true;
+    }
+  }
+
+  if (!replaced) {
+    const header = lines.findIndex((line) => line.trim() === 'allowBuilds:');
+    if (header === -1) lines.unshift('allowBuilds:', entry);
+    else lines.splice(header + 1, 0, entry);
+  }
+
+  writeFileSync(ALLOW_FILE, `${lines.join('\n').replace(/\n+$/, '')}\n`);
 }
 
 function run(command, args) {
