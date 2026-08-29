@@ -1,0 +1,21 @@
+{
+  "extends": "@kttf/shared/config/tsconfig.base.json",
+  "compilerOptions": {
+    // NestJS построен на декораторах прошлой редакции и на метаданных типов:
+    // внедрение зависимостей читает design:paramtypes. Штатные декораторы
+    // TypeScript метаданные не выпускают, поэтому здесь именно experimental.
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+
+    "types": ["node"],
+    "noEmit": true
+  },
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "vitest.config.ts",
+    "eslint.config.js",
+    "prisma.config.ts"
+  ],
+  "exclude": ["src/generated/**"]
+}

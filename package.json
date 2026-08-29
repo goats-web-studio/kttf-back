@@ -8,19 +8,49 @@
   },
   "packageManager": "pnpm@11.24.0",
   "dependencies": {
-    "@kttf/shared": "github:goats-web-studio/kttf-shared#2ae89dba2ddc9b66efa34b4ed51af3bbe1e9f2ae",
-    "@prisma/client": "^7.10.0"
+    "@kttf/shared": "github:goats-web-studio/kttf-shared#3d25cf1b41435e733ba925fcaa8763e63383e03c",
+    "@nestjs/common": "^11.2.3",
+    "@nestjs/core": "^11.2.3",
+    "@nestjs/platform-express": "^11.2.3",
+    "@prisma/adapter-pg": "^7.10.0",
+    "@prisma/client": "^7.10.0",
+    "helmet": "^8.3.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "zod": "^4.5.1"
   },
   "scripts": {
     "check:shared": "node scripts/check-shared.mjs",
     "bump:shared": "node scripts/bump-shared.mjs",
     "postinstall": "prisma generate",
     "db:migrate": "prisma migrate deploy",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "start": "node --env-file=.env dist/main.js",
+    "start:dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput",
+    "start:watch": "node --env-file=.env --watch dist/main.js"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@nestjs/testing": "^11.2.3",
+    "@swc/core": "^1.16.1",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.4.0",
     "dotenv": "^17.4.2",
+    "eslint": "^10.9.1",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.9.6",
     "prisma": "7.10.0",
-    "tsx": "^4.23.12"
-  }
+    "tsx": "^4.23.12",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.68.0",
+    "unplugin-swc": "^1.5.11",
+    "vitest": "^4.1.11"
+  },
+  "prettier": "@kttf/shared/config/prettier"
 }
