@@ -1,0 +1,507 @@
+// Схема данных KTTF.
+//
+// Источник истины по модели — kttf-shared/docs/03-tech-spec.md, раздел 4.
+// Изменения, накопленные по ходу разработки, перечислены там же в 05-state.md,
+// раздел 6, и здесь помечены комментариями с указанием причины.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+// Строка подключения живёт в prisma.config.ts: начиная с Prisma 7
+// свойство url в схеме не поддерживается. Клиент подключается через
+// адаптер драйвера, а не через строку из схемы.
+datasource db {
+  provider = "postgresql"
+}
+
+// ============ Пользователи ============
+
+model User {
+  id            String   @id @default(uuid())
+  phone         String   @unique // E.164, +7XXXXXXXXXX
+  phoneVerified Boolean  @default(false)
+  email         String?  @unique
+  locale        Locale   @default(RU)
+  createdAt     DateTime @default(now())
+
+  player    Player?
+  clubRoles ClubMember[]
+  sessions  Session[]
+}
+
+enum Locale {
+  KK
+  RU
+  EN
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshToken String   @unique
+  userAgent    String?
+  createdAt    DateTime @default(now())
+  // ТЗ 2.1: сессия живёт 90 дней и продлевается при активности
+  expiresAt    DateTime
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// Коды из SMS. Живут 5 минут, лимит 5 запросов на телефон в час (ТС 8.3).
+model AuthCode {
+  id        String   @id @default(uuid())
+  phone     String
+  codeHash  String
+  attempts  Int      @default(0)
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  @@index([phone, createdAt])
+  @@index([expiresAt])
+}
+
+// ============ Игроки ============
+
+model Player {
+  id     String  @id @default(uuid())
+  userId String? @unique // null = заведён организатором, аккаунта нет
+  user   User?   @relation(fields: [userId], references: [id])
+
+  lastName   String
+  firstName  String
+  middleName String? // необязательно — бриф, запрет №6
+  birthYear  Int
+  gender     Gender
+  city       String
+  photoUrl   String?
+  clubId     String?
+  club       Club?   @relation(fields: [clubId], references: [id])
+
+  // Проекция рейтинга. Источник истины — RatingEvent, это материализованное
+  // представление для быстрых выборок (ТС 1.4).
+  rating        Decimal @default(250) @db.Decimal(8, 2)
+  ratedMatches  Int     @default(0)
+  isProvisional Boolean @default(true)
+  trustScore    Decimal @default(100) @db.Decimal(5, 2)
+
+  createdAt DateTime @default(now())
+
+  registrations Registration[]
+  ratingEvents  RatingEvent[]
+
+  @@index([rating(sort: Desc)])
+  @@index([city, rating(sort: Desc)])
+  @@index([lastName, firstName])
+}
+
+enum Gender {
+  MALE
+  FEMALE
+}
+
+// ============ Клубы ============
+
+model Club {
+  id          String  @id @default(uuid())
+  name        String
+  shortName   String?
+  city        String
+  address     String?
+  lat         Float?
+  lng         Float?
+  tableCount  Int     @default(1)
+  phone       String?
+  whatsapp    String?
+  instagram   String?
+  logoUrl     String?
+  description String?
+
+  balance  Decimal @default(0) @db.Decimal(12, 2)
+  tariffId String?
+  tariff   Tariff? @relation(fields: [tariffId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  members      ClubMember[]
+  tournaments  Tournament[]
+  players      Player[]
+  transactions Transaction[]
+
+  @@index([city])
+}
+
+model ClubMember {
+  id     String   @id @default(uuid())
+  clubId String
+  userId String
+  role   ClubRole
+  club   Club     @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  user   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([clubId, userId])
+  @@index([userId])
+}
+
+enum ClubRole {
+  OWNER
+  ORGANIZER
+  REFEREE
+}
+
+// ============ Турниры ============
+
+model Tournament {
+  id     String @id @default(uuid())
+  clubId String
+  club   Club   @relation(fields: [clubId], references: [id])
+
+  name               String
+  startsAt           DateTime
+  registrationEndsAt DateTime?
+  status             TournamentStatus @default(DRAFT)
+
+  entryFee        Int      @default(0) // тенге
+  maxParticipants Int?
+  ratingCapMax    Decimal? @db.Decimal(8, 2)
+  ratingCapMin    Decimal? @db.Decimal(8, 2)
+  birthYearFrom   Int?
+  birthYearTo     Int?
+  genderLimit     Gender?
+
+  level      TournamentLevel @default(CLUB) // коэффициент T в формуле рейтинга
+  tableCount Int
+
+  formatConfig  Json // конфигурация схемы, ТС 4.2
+  seedingConfig Json? // посев и разведение по клубам, ТС 4.2 и ADR-011
+
+  description String?
+  prizeInfo   String?
+
+  publicToken String @unique // второй экран, ТЗ 6.5
+
+  createdAt  DateTime  @default(now())
+  startedAt  DateTime?
+  finishedAt DateTime?
+  ratedAt    DateTime?
+
+  registrations Registration[]
+  stages        Stage[]
+  matches       Match[]
+  ratingEvents  RatingEvent[]
+  transactions  Transaction[]
+
+  @@index([status, startsAt])
+  @@index([clubId, startsAt(sort: Desc)])
+}
+
+enum TournamentStatus {
+  DRAFT
+  PUBLISHED
+  REG_OPEN
+  REG_CLOSED
+  RUNNING
+  FINISHED
+  RATED
+  CANCELLED
+}
+
+enum TournamentLevel {
+  CLUB
+  REGIONAL
+  NATIONAL
+}
+
+model Registration {
+  id           String             @id @default(uuid())
+  tournamentId String
+  playerId     String
+  status       RegistrationStatus @default(REGISTERED)
+  seed         Int?
+  isRated      Boolean            @default(true) // false = вне зачёта
+  paidAt       DateTime?
+  paymentId    String?
+
+  // ДОБАВЛЕНО сверх первой редакции ТС. Причина — ТС 5.4: рейтинги
+  // фиксируются на момент старта турнира. Без снимка расчёт зависит от
+  // порядка обработки встреч, и локальный расчёт консоли расходится
+  // с серверным. Заполняются при переходе турнира в RUNNING.
+  ratingAtStart  Decimal? @db.Decimal(8, 2)
+  matchesAtStart Int?
+
+  createdAt DateTime @default(now())
+
+  tournament Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  player     Player     @relation(fields: [playerId], references: [id])
+
+  @@unique([tournamentId, playerId])
+  @@index([tournamentId, status])
+  @@index([playerId])
+}
+
+enum RegistrationStatus {
+  REGISTERED
+  WAITLIST
+  CONFIRMED
+  PLAYING
+  WITHDRAWN
+  NO_SHOW
+}
+
+// ============ Этапы и встречи ============
+
+model Stage {
+  id           String    @id @default(uuid())
+  tournamentId String
+  order        Int
+  type         StageType
+  name         String
+  config       Json
+
+  tournament Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  groups     Group[]
+  matches    Match[]
+
+  @@unique([tournamentId, order])
+}
+
+enum StageType {
+  GROUPS
+  KNOCKOUT
+  ROUND_ROBIN
+  CONSOLATION
+}
+
+model Group {
+  id      String @id @default(uuid())
+  stageId String
+  label   String // «гр. 1»
+  order   Int
+  stage   Stage  @relation(fields: [stageId], references: [id], onDelete: Cascade)
+
+  matches      Match[]
+  tieDecisions TieDecision[]
+
+  @@unique([stageId, order])
+}
+
+// Решение судьи по равенству в таблице (ADR-008).
+//
+// Движок не бросает жребий: он возвращает предложенный порядок и признак,
+// что равенство не разрешено. Решение судьи хранится здесь и приходит
+// в расчёт параметром, поэтому функция остаётся чистой и детерминированной,
+// а консоль в офлайне и сервер получают одинаковые места.
+model TieDecision {
+  id      String @id @default(uuid())
+  groupId String
+  group   Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  // Участники в порядке, который выбрал судья: массив Registration.id
+  orderedIds Json
+
+  decidedBy String
+  decidedAt DateTime @default(now())
+  note      String?
+
+  @@index([groupId])
+}
+
+model Match {
+  id           String  @id @default(uuid())
+  tournamentId String
+  stageId      String
+  groupId      String?
+
+  playerAId String
+  playerBId String
+
+  status      MatchStatus @default(PENDING)
+  tableNumber Int?
+
+  setsA      Int?
+  setsB      Int?
+  setScores  Json? // [[11,9],[9,11],[11,7]]
+  resultType ResultType?
+
+  bracketRound Int?
+  bracketSlot  Int?
+
+  startedAt  DateTime?
+  finishedAt DateTime?
+
+  // Офлайн-синхронизация, ТС 6
+  clientId      String? @unique // UUID, сгенерированный клиентом
+  clientVersion Int     @default(0)
+
+  tournament Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  stage      Stage      @relation(fields: [stageId], references: [id], onDelete: Cascade)
+  group      Group?     @relation(fields: [groupId], references: [id])
+
+  ratingEvents RatingEvent[]
+
+  @@index([tournamentId, status])
+  @@index([stageId, groupId])
+}
+
+enum MatchStatus {
+  PENDING
+  QUEUED
+  PLAYING
+  FINISHED
+  CANCELLED
+}
+
+enum ResultType {
+  NORMAL
+  WALKOVER
+  RETIRED
+}
+
+// ============ Рейтинг ============
+
+// Журнал рейтинговых событий — источник истины (ТС 1.4, бриф запрет №3).
+// Player.rating это проекция, которую можно пересобрать отсюда целиком.
+model RatingEvent {
+  id           String  @id @default(uuid())
+  playerId     String
+  matchId      String?
+  tournamentId String?
+
+  type         RatingEventType
+  ratingBefore Decimal         @db.Decimal(8, 2)
+  delta        Decimal         @db.Decimal(8, 2)
+  ratingAfter  Decimal         @db.Decimal(8, 2)
+
+  // Параметры расчёта — для аудита и пересчёта.
+  opponentRating Decimal? @db.Decimal(8, 2)
+  kFactor        Decimal? @db.Decimal(5, 2)
+  tFactor        Decimal? @db.Decimal(5, 2)
+  mFactor        Decimal? @db.Decimal(5, 2)
+  expected       Decimal? @db.Decimal(6, 4)
+
+  // ДОБАВЛЕНО сверх первой редакции ТС. Формула 2.0, ADR-003.
+  //
+  // gapMultiplier — множитель разрыва G: при превосходстве победителя
+  // на 100 и более рейтинг не меняется ни у кого.
+  //
+  // imbalance — расхождение дельт. Ненулевое только когда победитель
+  // провизорный. Это единственный канал, по которому рейтинг попадает
+  // в систему извне, и он обязан быть измеримым (ТС 5.6).
+  //
+  // clamped — сработала отсечка по MIN_RATING, фактическая дельта
+  // отличается от расчётной. Единственное место, где замкнутость
+  // нарушается механически, поэтому фиксируется явно.
+  gapMultiplier Decimal? @db.Decimal(5, 4)
+  imbalance     Decimal? @db.Decimal(8, 2)
+  clamped       Boolean  @default(false)
+
+  reason    String? // для ручных корректировок
+  createdBy String?
+  createdAt DateTime @default(now())
+
+  player     Player      @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  match      Match?      @relation(fields: [matchId], references: [id])
+  tournament Tournament? @relation(fields: [tournamentId], references: [id])
+
+  @@index([playerId, createdAt(sort: Desc)])
+  @@index([tournamentId])
+  @@index([matchId])
+}
+
+enum RatingEventType {
+  MATCH
+  INITIAL
+  MANUAL_ADJUST
+  RECALC
+}
+
+// ============ Финансы ============
+
+model Transaction {
+  id           String          @id @default(uuid())
+  clubId       String
+  type         TransactionType
+  amount       Decimal         @db.Decimal(12, 2)
+  balanceAfter Decimal         @db.Decimal(12, 2)
+  tournamentId String?
+  description  String
+  createdAt    DateTime        @default(now())
+
+  club       Club        @relation(fields: [clubId], references: [id])
+  tournament Tournament? @relation(fields: [tournamentId], references: [id])
+
+  @@index([clubId, createdAt(sort: Desc)])
+}
+
+enum TransactionType {
+  TOPUP
+  TOURNAMENT_FEE
+  REFUND
+  ADJUSTMENT
+  PAYOUT
+}
+
+model Tariff {
+  id               String  @id @default(uuid())
+  name             String
+  perParticipant   Int // тенге за участника
+  perTournamentCap Int? // потолок за турнир
+  monthlyFee       Int? // подписка
+  isDefault        Boolean @default(false)
+
+  clubs Club[]
+}
+
+// ============ Аномалии рейтинга ============
+
+model RatingAnomaly {
+  id         String        @id @default(uuid())
+  playerId   String
+  matchId    String?
+  type       AnomalyType
+  severity   Int // 1-10
+  details    Json
+  status     AnomalyStatus @default(OPEN)
+  reviewedBy String?
+  reviewNote String?
+  createdAt  DateTime      @default(now())
+
+  @@index([status, severity(sort: Desc)])
+  @@index([playerId])
+}
+
+enum AnomalyType {
+  LOSS_STREAK_BEFORE_CAPPED
+  UPSET_LOSS
+  PATTERN_DROP_WIN_RETURN
+  UNUSUAL_SCORE
+}
+
+enum AnomalyStatus {
+  OPEN
+  REVIEWING
+  CONFIRMED
+  DISMISSED
+}
+
+// ============ Журнал действий ============
+
+// ТЗ 12 и ТС 8.3: все изменения рейтинга, финансовые операции
+// и изменения результатов протоколируются.
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?
+  action     String
+  entityType String
+  entityId   String
+  before     Json?
+  after      Json?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId, createdAt(sort: Desc)])
+}

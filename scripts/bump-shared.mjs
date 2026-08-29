@@ -13,7 +13,7 @@
  * Использование: node scripts/bump-shared.mjs <полный SHA>
  */
 import { spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 
 const REPO = 'goats-web-studio/kttf-shared';
 

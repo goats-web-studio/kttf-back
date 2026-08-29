@@ -8,10 +8,16 @@
   },
   "packageManager": "pnpm@11.24.0",
   "dependencies": {
-    "@kttf/shared": "github:goats-web-studio/kttf-shared#f5bbfca39b108f7bd6ee3db989e8ef01c37da699"
+    "@kttf/shared": "github:goats-web-studio/kttf-shared#f5bbfca39b108f7bd6ee3db989e8ef01c37da699",
+    "@prisma/client": "^7.10.0"
   },
   "scripts": {
     "check:shared": "node scripts/check-shared.mjs",
     "bump:shared": "node scripts/bump-shared.mjs"
+  },
+  "devDependencies": {
+    "dotenv": "^17.4.2",
+    "prisma": "7.10.0",
+    "tsx": "^4.23.12"
   }
 }
