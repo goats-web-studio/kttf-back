@@ -8,7 +8,7 @@
   },
   "packageManager": "pnpm@11.24.0",
   "dependencies": {
-    "@kttf/shared": "github:goats-web-studio/kttf-shared#f5bbfca39b108f7bd6ee3db989e8ef01c37da699",
+    "@kttf/shared": "github:goats-web-studio/kttf-shared#2ae89dba2ddc9b66efa34b4ed51af3bbe1e9f2ae",
     "@prisma/client": "^7.10.0"
   },
   "scripts": {
