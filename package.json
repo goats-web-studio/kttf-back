@@ -11,6 +11,7 @@
     "@kttf/shared": "github:goats-web-studio/kttf-shared#3d25cf1b41435e733ba925fcaa8763e63383e03c",
     "@nestjs/common": "^11.2.3",
     "@nestjs/core": "^11.2.3",
+    "@nestjs/jwt": "^11.0.2",
     "@nestjs/platform-express": "^11.2.3",
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^7.10.0",
