@@ -1,0 +1,17 @@
+{
+  "name": "@kttf/back",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@11.24.0",
+  "dependencies": {
+    "@kttf/shared": "github:goats-web-studio/kttf-shared#f5bbfca39b108f7bd6ee3db989e8ef01c37da699"
+  },
+  "scripts": {
+    "check:shared": "node scripts/check-shared.mjs",
+    "bump:shared": "node scripts/bump-shared.mjs"
+  }
+}

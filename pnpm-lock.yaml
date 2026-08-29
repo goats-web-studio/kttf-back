@@ -1,0 +1,24 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      '@kttf/shared':
+        specifier: github:goats-web-studio/kttf-shared#f5bbfca39b108f7bd6ee3db989e8ef01c37da699
+        version: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/f5bbfca39b108f7bd6ee3db989e8ef01c37da699
+
+packages:
+
+  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/f5bbfca39b108f7bd6ee3db989e8ef01c37da699':
+    resolution: {gitHosted: true, integrity: sha512-E+qQqNocR20Diwi8wT5a3ELwOtRoVVdpzdgb/l/WmNhyA7qVsHyz3eWo4rJdnI/UlxvD2dQXQUaU3bgwpvJMmQ==, tarball: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/f5bbfca39b108f7bd6ee3db989e8ef01c37da699}
+    version: 0.1.0
+    engines: {node: '>=24'}
+
+snapshots:
+
+  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/f5bbfca39b108f7bd6ee3db989e8ef01c37da699': {}
