@@ -5,9 +5,9 @@
  *
  * 1. Правит зависимость в package.json
  * 2. Правит разрешение сборочных скриптов — его ключ содержит тот же SHA
- * 3. Ставит зависимости
- * 4. Переписывает разрешение заново: pnpm при установке дописывает в файл
- *    строку-заглушку для предыдущего SHA, и без уборки они копятся
+ * 3. Ставит зависимости — первый заход спотыкается о запрет сборки для
+ *    предыдущего SHA, это ожидаемо
+ * 4. Убирает заглушку, оставленную pnpm, и ставит заново — уже начисто
  * 5. Проверяет, что пакет импортируется и считает верно
  *
  * Использование: node scripts/bump-shared.mjs <полный SHA>
@@ -26,7 +26,7 @@ if (!/^[0-9a-f]{40}$/.test(sha ?? '')) {
 }
 
 const ALLOW_FILE = 'pnpm-workspace.yaml';
-const SHARED_KEY = /^\s*"?@kttf\/shared@/;
+const SHARED_KEY = /^\s*['"]?@kttf\/shared@/;
 
 /**
  * Разрешение сборки для общего кода переписывается на месте, остальные ключи
@@ -61,11 +61,15 @@ function writeAllowBuilds() {
   writeFileSync(ALLOW_FILE, `${lines.join('\n').replace(/\n+$/, '')}\n`);
 }
 
-function run(command, args) {
-  const result = spawnSync(command, args, { stdio: 'inherit', shell: true });
-  if (result.status !== 0) {
-    console.error(`\nШаг «${command} ${args.join(' ')}» завершился с ошибкой.`);
-    process.exit(result.status ?? 1);
+function run(command) {
+  return spawnSync(command, { stdio: 'inherit', shell: true }).status ?? 1;
+}
+
+function runOrExit(command) {
+  const status = run(command);
+  if (status !== 0) {
+    console.error(`\nШаг «${command}» завершился с ошибкой.`);
+    process.exit(status);
   }
 }
 
@@ -74,12 +78,19 @@ pkg.dependencies['@kttf/shared'] = `github:${REPO}#${sha}`;
 writeFileSync('package.json', `${JSON.stringify(pkg, null, 2)}\n`);
 writeAllowBuilds();
 
+// Первая установка почти всегда завершается с ERR_PNPM_IGNORED_BUILDS: pnpm
+// помнит предыдущий SHA как пакет с запрещённой сборкой, дописывает для него
+// строку-заглушку в pnpm-workspace.yaml и выходит с ошибкой. Уборка снимает
+// причину, вторая установка обязана пройти чисто — и если первый отказ был не
+// в этом, она отвалится тем же образом, только уже громко.
 run('pnpm install');
-
-// Уборка после pnpm: заглушка для предыдущего SHA больше не нужна.
+writeAllowBuilds();
+runOrExit('pnpm install');
+// Вторая установка тоже успевает дописать заглушку, прежде чем забыть о
+// предыдущем SHA. Уборка повторяется, иначе мусор уезжает в коммит.
 writeAllowBuilds();
 
-run('node scripts/check-shared.mjs');
+runOrExit('node scripts/check-shared.mjs');
 
 console.log(`\n@kttf/shared обновлён на ${sha}`);
 console.log('Тот же SHA обязателен в kttf-front — иначе сервер и офлайн-консоль');
