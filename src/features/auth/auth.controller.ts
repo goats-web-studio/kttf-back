@@ -17,6 +17,7 @@ import {
   type AuthUserView,
   type RefreshInput,
   type RequestCodeInput,
+  type RequestCodeResult,
   type TokenPair,
   type VerifyCodeInput,
 } from '@kttf/shared/types';
@@ -34,7 +35,7 @@ export class AuthController {
   @HttpCode(HttpStatus.ACCEPTED)
   async requestCode(
     @Body(new ZodValidationPipe(requestCodeSchema)) body: RequestCodeInput,
-  ): Promise<{ expiresInSeconds: number }> {
+  ): Promise<RequestCodeResult> {
     return this.auth.requestCode(body.phone);
   }
 

@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@kttf/shared':
-        specifier: github:goats-web-studio/kttf-shared#6e0540fa058512f6cb5bdc9a2060e555c7405a19
-        version: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/6e0540fa058512f6cb5bdc9a2060e555c7405a19(zod@4.5.1)
+        specifier: github:goats-web-studio/kttf-shared#e4acf11c024c11e361b2189a833773c581af6a52
+        version: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/e4acf11c024c11e361b2189a833773c581af6a52(zod@4.5.1)
       '@nestjs/common':
         specifier: ^11.2.3
         version: 11.2.3(reflect-metadata@0.2.2)(rxjs@7.8.2)
@@ -355,8 +355,8 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/6e0540fa058512f6cb5bdc9a2060e555c7405a19':
-    resolution: {gitHosted: true, integrity: sha512-2yiwEFidtYfh2fjRVrDuZme1Ww3H21KQV7v7T3gQ+JwCYOrBZrSKauMxzm7Rw5ZRK4Xz2efu3qbHrCNuf4MNxw==, tarball: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/6e0540fa058512f6cb5bdc9a2060e555c7405a19}
+  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/e4acf11c024c11e361b2189a833773c581af6a52':
+    resolution: {gitHosted: true, integrity: sha512-g2CpHQE/MdkZMGtCYfPFwm9oGLnziCDtUStuA8VXDZGTmjYfFWlpRHyRolivp0p7YEmpLqEOq71mJiJ/p6Js/w==, tarball: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/e4acf11c024c11e361b2189a833773c581af6a52}
     version: 0.1.0
     engines: {node: '>=24'}
     peerDependencies:
@@ -2495,7 +2495,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.6.0
 
-  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/6e0540fa058512f6cb5bdc9a2060e555c7405a19(zod@4.5.1)':
+  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/e4acf11c024c11e361b2189a833773c581af6a52(zod@4.5.1)':
     dependencies:
       zod: 4.5.1
 
