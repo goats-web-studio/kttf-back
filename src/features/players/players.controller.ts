@@ -1,19 +1,19 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
-import { z } from 'zod';
-
-import { type Page } from '../../common/pagination.js';
-import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
-import { CurrentUserId, JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import {
   createPlayerSchema,
   listPlayersSchema,
   updatePlayerSchema,
   type CreatePlayerInput,
   type ListPlayersQuery,
+  type Page,
+  type PlayerView,
   type UpdatePlayerInput,
-} from './players.schemas.js';
+} from '@kttf/shared/types';
+import { z } from 'zod';
+
+import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
+import { CurrentUserId, JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { PlayersService } from './players.service.js';
-import type { PlayerView } from './players.types.js';
 
 const uuidParam = z.uuid();
 

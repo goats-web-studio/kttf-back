@@ -1,10 +1,11 @@
 import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 
+import { CODE_LENGTH } from '@kttf/shared/types';
 import { Inject, Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 
 import { ENV, type Env } from '../../infra/config/env.js';
-import { ACCESS_TOKEN_TTL_SECONDS, CODE_LENGTH } from './auth.constants.js';
+import { ACCESS_TOKEN_TTL_SECONDS } from './auth.constants.js';
 
 /** Полезная нагрузка access-токена. Ролей здесь нет: они меняются чаще токена. */
 export interface AccessTokenPayload {

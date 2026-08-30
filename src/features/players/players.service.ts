@@ -1,11 +1,16 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
+import type {
+  CreatePlayerInput,
+  ListPlayersQuery,
+  Page,
+  PlayerView,
+  UpdatePlayerInput,
+} from '@kttf/shared/types';
 import { Injectable } from '@nestjs/common';
 
 import { defined } from '../../common/objects.js';
-import { type Page, pageOf, skipOf } from '../../common/pagination.js';
+import { pageOf, skipOf } from '../../common/pagination.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
-import type { CreatePlayerInput, ListPlayersQuery, UpdatePlayerInput } from './players.schemas.js';
-import type { PlayerView } from './players.types.js';
 
 const playerFields = {
   id: true,

@@ -11,24 +11,25 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { z } from 'zod';
-
-import { type Page } from '../../common/pagination.js';
-import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
-import { CurrentUserId, JwtAuthGuard } from '../auth/jwt-auth.guard.js';
-import { RequireClubRole } from './club-role.guard.js';
 import {
   addMemberSchema,
   createClubSchema,
   listClubsSchema,
   updateClubSchema,
   type AddMemberInput,
+  type ClubMemberView,
+  type ClubView,
   type CreateClubInput,
   type ListClubsQuery,
+  type Page,
   type UpdateClubInput,
-} from './clubs.schemas.js';
+} from '@kttf/shared/types';
+import { z } from 'zod';
+
+import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
+import { CurrentUserId, JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import { RequireClubRole } from './club-role.guard.js';
 import { ClubsService } from './clubs.service.js';
-import type { ClubMemberView, ClubView } from './clubs.types.js';
 
 const uuidParam = z.uuid();
 

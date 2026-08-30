@@ -1,4 +1,5 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
+import type { AuthSession, AuthUserView, TokenPair } from '@kttf/shared/types';
 import { Inject, Injectable } from '@nestjs/common';
 
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
@@ -11,7 +12,6 @@ import {
 } from './auth.constants.js';
 import { CODE_SENDER, type CodeSender } from './code-sender.js';
 import { TokenService } from './token.service.js';
-import type { AuthSession, AuthUserView, TokenPair } from './auth.types.js';
 
 /** Пользователь с тем, что нужно для ответа. Форма выборки в одном месте. */
 const userView = {

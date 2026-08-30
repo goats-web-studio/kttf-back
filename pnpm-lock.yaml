@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@kttf/shared':
-        specifier: github:goats-web-studio/kttf-shared#3d25cf1b41435e733ba925fcaa8763e63383e03c
-        version: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/3d25cf1b41435e733ba925fcaa8763e63383e03c
+        specifier: github:goats-web-studio/kttf-shared#6e0540fa058512f6cb5bdc9a2060e555c7405a19
+        version: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/6e0540fa058512f6cb5bdc9a2060e555c7405a19(zod@4.5.1)
       '@nestjs/common':
         specifier: ^11.2.3
         version: 11.2.3(reflect-metadata@0.2.2)(rxjs@7.8.2)
@@ -355,10 +355,12 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/3d25cf1b41435e733ba925fcaa8763e63383e03c':
-    resolution: {gitHosted: true, integrity: sha512-1Ca7LVedWeljSuWdypLHpCRVmT7cXr5YQPavPTMcg/bZJRNJr6pM4ILKRp8I/CZYZf05ObeiiEinAeMzU8IQgw==, tarball: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/3d25cf1b41435e733ba925fcaa8763e63383e03c}
+  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/6e0540fa058512f6cb5bdc9a2060e555c7405a19':
+    resolution: {gitHosted: true, integrity: sha512-2yiwEFidtYfh2fjRVrDuZme1Ww3H21KQV7v7T3gQ+JwCYOrBZrSKauMxzm7Rw5ZRK4Xz2efu3qbHrCNuf4MNxw==, tarball: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/6e0540fa058512f6cb5bdc9a2060e555c7405a19}
     version: 0.1.0
     engines: {node: '>=24'}
+    peerDependencies:
+      zod: ^4.5.2
 
   '@lukeed/csprng@1.1.0':
     resolution: {integrity: sha512-Z7C/xXCiGWsg0KuKsHTKJxbWhpI3Vs5GwLfOean7MGyVFGqdRgBbAjOCh6u4bbjPc/8MJ2pZmK/0DLdCbivLDA==}
@@ -2493,7 +2495,9 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.6.0
 
-  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/3d25cf1b41435e733ba925fcaa8763e63383e03c': {}
+  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/6e0540fa058512f6cb5bdc9a2060e555c7405a19(zod@4.5.1)':
+    dependencies:
+      zod: 4.5.1
 
   '@lukeed/csprng@1.1.0': {}
 

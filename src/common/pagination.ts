@@ -1,28 +1,12 @@
-import { z } from 'zod';
+import type { Page, PageQuery } from '@kttf/shared/types';
 
 /**
- * Постраничность списков.
+ * Серверные помощники постраничности.
  *
- * Потолок обязателен: без него `?limit=100000` превращает публичный список в
- * способ положить базу одним запросом. ТС 8.1 требует p95 меньше 200 мс —
- * выборка без границы это требование не выполнит никогда.
+ * Сам контракт — `pageQuerySchema`, `PageQuery` и конверт `Page` — живёт в
+ * общем коде: его обязаны одинаково понимать обе стороны. Здесь остаётся то,
+ * что нужно только серверу: арифметика смещения для запроса к базе.
  */
-export const MAX_PAGE_SIZE = 100;
-export const DEFAULT_PAGE_SIZE = 20;
-
-export const pageQuerySchema = z.object({
-  page: z.coerce.number().int().positive().default(1),
-  limit: z.coerce.number().int().positive().max(MAX_PAGE_SIZE).default(DEFAULT_PAGE_SIZE),
-});
-
-export type PageQuery = z.infer<typeof pageQuerySchema>;
-
-export interface Page<T> {
-  readonly items: readonly T[];
-  readonly total: number;
-  readonly page: number;
-  readonly limit: number;
-}
 
 /** Смещение для запроса к базе. */
 export function skipOf({ page, limit }: PageQuery): number {

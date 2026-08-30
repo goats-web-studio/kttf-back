@@ -1,7 +1,8 @@
+import { CODE_LENGTH } from '@kttf/shared/types';
 import { JwtService } from '@nestjs/jwt';
 import { describe, expect, it } from 'vitest';
 
-import { ACCESS_TOKEN_TTL_SECONDS, CODE_LENGTH } from './auth.constants.js';
+import { ACCESS_TOKEN_TTL_SECONDS } from './auth.constants.js';
 import { TokenService } from './token.service.js';
 
 const SECRET = 'test_secret_at_least_32_characters_long';

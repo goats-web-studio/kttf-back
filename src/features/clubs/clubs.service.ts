@@ -1,16 +1,18 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
+import type {
+  AddMemberInput,
+  ClubMemberView,
+  ClubView,
+  CreateClubInput,
+  ListClubsQuery,
+  Page,
+  UpdateClubInput,
+} from '@kttf/shared/types';
 import { Injectable } from '@nestjs/common';
 
 import { defined } from '../../common/objects.js';
-import { type Page, pageOf, skipOf } from '../../common/pagination.js';
+import { pageOf, skipOf } from '../../common/pagination.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
-import type {
-  AddMemberInput,
-  CreateClubInput,
-  ListClubsQuery,
-  UpdateClubInput,
-} from './clubs.schemas.js';
-import type { ClubMemberView, ClubView } from './clubs.types.js';
 
 /**
  * Поля клуба в ответах.

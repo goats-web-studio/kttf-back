@@ -9,18 +9,21 @@ import {
   UseGuards,
 } from '@nestjs/common';
 
-import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
-import { AuthService } from './auth.service.js';
 import {
   refreshSchema,
   requestCodeSchema,
   verifyCodeSchema,
+  type AuthSession,
+  type AuthUserView,
   type RefreshInput,
   type RequestCodeInput,
+  type TokenPair,
   type VerifyCodeInput,
-} from './auth.schemas.js';
+} from '@kttf/shared/types';
+
+import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
+import { AuthService } from './auth.service.js';
 import { CurrentUserId, JwtAuthGuard } from './jwt-auth.guard.js';
-import type { AuthSession, AuthUserView, TokenPair } from './auth.types.js';
 
 /** Контракт — ТС 7.1. Маршруты и их формы менять нельзя без правки документа. */
 @Controller('auth')
