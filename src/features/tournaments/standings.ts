@@ -1,6 +1,7 @@
 import { applyWithdrawals, calculateStandings } from '@kttf/shared/brackets';
 import type { GroupStandingsView, TournamentStandingsView } from '@kttf/shared/types';
 
+import { parseSetScores, setsToWinOf } from './stage-config.js';
 import type { MatchRecord, StageRecord } from './tournaments.select.js';
 
 /**
@@ -11,21 +12,6 @@ import type { MatchRecord, StageRecord } from './tournaments.select.js';
  * своё в приложении нельзя — офлайн-консоль обязана получить те же места
  * (запрет №2 брифа).
  */
-
-/** До скольких сетов идёт встреча. Лежит в `Stage.config`, положенной при жеребьёвке. */
-function setsToWinOf(stage: StageRecord): number {
-  const config = stage.config;
-
-  if (typeof config === 'object' && config !== null && !Array.isArray(config)) {
-    const value = (config as Record<string, unknown>).setsToWin;
-
-    if (typeof value === 'number' && value > 0) return value;
-  }
-
-  // Умолчание на случай этапа, созданного до появления поля: три сета —
-  // самая частая схема, и таблица без него не считалась бы вовсе.
-  return 3;
-}
 
 function playedOf(match: MatchRecord): {
   a: string;
@@ -54,25 +40,6 @@ function playedOf(match: MatchRecord): {
     ...(setScores === null ? {} : { setScores }),
     resultType: match.resultType ?? 'NORMAL',
   };
-}
-
-/** Счёт по сетам нужен правилам 3 и 5 разрешения равенства — ТЗ 6.6. */
-function parseSetScores(value: unknown): (readonly [number, number])[] | null {
-  if (!Array.isArray(value)) return null;
-
-  const scores: [number, number][] = [];
-
-  for (const entry of value) {
-    if (!Array.isArray(entry) || entry.length !== 2) return null;
-
-    const [left, right] = entry as unknown[];
-
-    if (typeof left !== 'number' || typeof right !== 'number') return null;
-
-    scores.push([left, right]);
-  }
-
-  return scores;
 }
 
 export interface StandingsInput {
@@ -125,7 +92,7 @@ function buildGroup(
 
   // Несыгранные встречи снявшегося уходят соперникам технической победой,
   // чтобы таблица и рейтинг считали одно и то же (ADR-009).
-  const walkovers = applyWithdrawals(pending, withdrawn, setsToWinOf(stage));
+  const walkovers = applyWithdrawals(pending, withdrawn, setsToWinOf(stage.config));
 
   const decisions = group.tieDecisions
     .map((decision) => parseOrderedIds(decision.orderedIds))

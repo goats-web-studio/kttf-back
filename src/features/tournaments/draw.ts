@@ -1,4 +1,11 @@
-import { buildKnockout, scheduleRoundRobin, splitIntoGroups } from '@kttf/shared/brackets';
+import {
+  buildKnockout,
+  scheduleRoundRobin,
+  splitIntoGroups,
+  type AdvancingSelection,
+  type KnockoutOptions,
+  type ParticipantId,
+} from '@kttf/shared/brackets';
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import type {
   BracketSourceView,
@@ -177,44 +184,59 @@ function planKnockout(
     });
   }
 
-  const bracket = buildKnockout(
-    seeded.map((participant) => participant.playerId),
-    { thirdPlace: config.thirdPlace },
-  );
+  return {
+    stages: [
+      planKnockoutStage(
+        seeded.map((participant) => participant.playerId),
+        { thirdPlace: config.thirdPlace },
+        { order: 0, name: 'Олимпийская сетка', setsToWin: config.setsToWin },
+        makeId,
+      ),
+    ],
+    clubCollisions: [],
+  };
+}
+
+/**
+ * Этап-сетка из уже посеянного списка.
+ *
+ * Общий для олимпийки с жеребьёвки и для плей-офф, который достраивается по
+ * итогам групп: сетка та же самая, отличается только откуда взялся посев.
+ */
+function planKnockoutStage(
+  participants: readonly ParticipantId[],
+  options: KnockoutOptions,
+  stage: { order: number; name: string; setsToWin: number },
+  makeId: () => string,
+): PlannedStage {
+  const bracket = buildKnockout(participants, options);
 
   // Движок ссылается на встречи своими идентификаторами вида «R2M0».
   // База ссылается на них же по первичному ключу, поэтому ключи выдаются
   // заранее и перевод делается по карте.
   const ids = new Map(bracket.matches.map((match) => [match.id, makeId()]));
 
-  const matches = bracket.matches.map((match) => ({
-    id: mustGet(ids, match.id),
-    groupKey: null,
-    playerAId: participantOf(match.a),
-    playerBId: participantOf(match.b),
-    sourceA: sourceOf(match.a, ids),
-    sourceB: sourceOf(match.b, ids),
-    bracketRound: match.round,
-    bracketSlot: match.slot,
-  }));
-
   return {
-    stages: [
-      {
-        order: 0,
-        type: 'KNOCKOUT',
-        name: 'Олимпийская сетка',
-        config: {
-          setsToWin: config.setsToWin,
-          thirdPlace: config.thirdPlace,
-          bracketSize: bracket.bracketSize,
-          byes: bracket.byes,
-        },
-        groups: [],
-        matches,
-      },
-    ],
-    clubCollisions: [],
+    order: stage.order,
+    type: 'KNOCKOUT',
+    name: stage.name,
+    config: {
+      setsToWin: stage.setsToWin,
+      thirdPlace: options.thirdPlace ?? false,
+      bracketSize: bracket.bracketSize,
+      byes: bracket.byes,
+    },
+    groups: [],
+    matches: bracket.matches.map((match) => ({
+      id: mustGet(ids, match.id),
+      groupKey: null,
+      playerAId: participantOf(match.a),
+      playerBId: participantOf(match.b),
+      sourceA: sourceOf(match.a, ids),
+      sourceB: sourceOf(match.b, ids),
+      bracketRound: match.round,
+      bracketSlot: match.slot,
+    })),
   };
 }
 
@@ -251,6 +273,23 @@ function planGroupStage(
     order,
     participants: group.participants,
   }));
+
+  // Сколько человек дойдёт до следующего этапа, видно уже здесь: группа
+  // меньше зоны выхода отдаёт всех, кто в ней есть. Проверка стоит на
+  // жеребьёвке, а не на достройке, потому что достройка случается посреди
+  // турнира при вводе счёта — отказывать судье там поздно и не за что.
+  const advancing = groups.reduce(
+    (total, group) => total + Math.min(group.participants.length, config.advancePerGroup),
+    0,
+  );
+
+  if (advancing < 2) {
+    throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Too few participants advance from groups', {
+      advancing,
+      advancePerGroup: config.advancePerGroup,
+      groups: groups.length,
+    });
+  }
 
   const matches = groups.flatMap((group) =>
     scheduleRoundRobin(group.participants, 1).map((match) => ({
@@ -306,4 +345,77 @@ function mustGet(ids: Map<string, string>, key: string): string {
   }
 
   return value;
+}
+
+/**
+ * Этап по итогам групп — плей-офф либо финальные группы.
+ *
+ * Его не существовало при жеребьёвке: он сеется результатами групп, а до
+ * первой сыгранной встречи результатов нет. Отбор вышедших делает движок
+ * (`selectAdvancing`), здесь только раскладка по моделям — та же граница,
+ * что и во всей остальной жеребьёвке.
+ *
+ * @returns `null`, если схема турнира следующего этапа не предполагает.
+ */
+export function planNextStage(
+  config: FormatConfig,
+  selection: AdvancingSelection,
+  makeId: () => string,
+): PlannedStage | null {
+  if (config.type === 'GROUPS_KNOCKOUT') {
+    return planKnockoutStage(
+      selection.seeded,
+      { thirdPlace: config.thirdPlace },
+      { order: 1, name: 'Плей-офф', setsToWin: config.koSetsToWin },
+      makeId,
+    );
+  }
+
+  if (config.type === 'GROUPS_FINAL_GROUPS') {
+    return planFinalGroups(config, selection, makeId);
+  }
+
+  return null;
+}
+
+/**
+ * Финальные группы — ТЗ 5.1, «финалы по местам».
+ *
+ * k-я группа собирает тех, кто занял k-е место в своей группе: победители
+ * играют за первые места, вторые номера — за следующие. Число финальных групп
+ * совпадает с числом выходящих — это закреплено схемой конфигурации.
+ */
+function planFinalGroups(
+  config: Extract<FormatConfig, { type: 'GROUPS_FINAL_GROUPS' }>,
+  selection: AdvancingSelection,
+  makeId: () => string,
+): PlannedStage {
+  const groups = selection.byPlace.map((participants, index) => ({
+    key: `final-${String(index + 1)}`,
+    label: `Финальная гр. ${String(index + 1)}`,
+    order: index,
+    participants,
+  }));
+
+  const matches = groups.flatMap((group) =>
+    scheduleRoundRobin(group.participants, 1).map((match) => ({
+      id: makeId(),
+      groupKey: group.key,
+      playerAId: match.a,
+      playerBId: match.b,
+      sourceA: null,
+      sourceB: null,
+      bracketRound: match.round,
+      bracketSlot: null,
+    })),
+  );
+
+  return {
+    order: 1,
+    type: 'GROUPS',
+    name: 'Финальные группы',
+    config: { setsToWin: config.setsToWin },
+    groups,
+    matches,
+  };
 }

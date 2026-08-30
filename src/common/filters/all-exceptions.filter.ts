@@ -25,6 +25,16 @@ const STATUS_BY_CODE: Readonly<Record<ErrorCode, number>> = {
   NOT_FOUND: HttpStatus.NOT_FOUND,
   RATE_LIMITED: HttpStatus.TOO_MANY_REQUESTS,
   INTERNAL_ERROR: HttpStatus.INTERNAL_SERVER_ERROR,
+
+  // Встречи — ТС 7.6. Отказ по состоянию турнира или встречи — это конфликт,
+  // а не кривой запрос: тело верное, изменилось положение дел.
+  TOURNAMENT_NOT_RUNNING: HttpStatus.CONFLICT,
+  MATCH_NOT_READY: HttpStatus.CONFLICT,
+  MATCH_ALREADY_FINISHED: HttpStatus.CONFLICT,
+  MATCH_HAS_NO_RESULT: HttpStatus.CONFLICT,
+  DOWNSTREAM_MATCH_PLAYED: HttpStatus.CONFLICT,
+  INVALID_SCORE: HttpStatus.BAD_REQUEST,
+  TIE_DECISION_INVALID: HttpStatus.BAD_REQUEST,
 };
 
 const CODE_BY_STATUS: Readonly<Record<number, ErrorCode>> = {

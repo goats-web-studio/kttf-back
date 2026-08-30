@@ -1,7 +1,9 @@
+import type { AdvancingSelection } from '@kttf/shared/brackets';
+import { AppError } from '@kttf/shared/errors';
 import type { FormatConfig } from '@kttf/shared/types';
 import { describe, expect, it } from 'vitest';
 
-import { type DrawParticipant, planDraw, seedParticipants } from './draw.js';
+import { type DrawParticipant, planDraw, planNextStage, seedParticipants } from './draw.js';
 
 function makeIdFactory(): () => string {
   let counter = 0;
@@ -204,5 +206,109 @@ describe('групповой этап', () => {
     const plan = planDraw(GROUPS, participants(8), null, makeIdFactory());
 
     expect(plan.clubCollisions).toEqual([]);
+  });
+});
+
+describe('достройка этапа по итогам групп', () => {
+  const GROUPS_KNOCKOUT: FormatConfig = {
+    type: 'GROUPS_KNOCKOUT',
+    groupCount: 2,
+    advancePerGroup: 2,
+    groupSetsToWin: 3,
+    koSetsToWin: 4,
+    thirdPlace: true,
+  };
+
+  const FINAL_GROUPS: FormatConfig = {
+    type: 'GROUPS_FINAL_GROUPS',
+    groupCount: 2,
+    advancePerGroup: 2,
+    finalGroupCount: 2,
+    setsToWin: 3,
+  };
+
+  const SELECTION: AdvancingSelection = {
+    seeded: ['a1', 'b1', 'a2', 'b2'],
+    byPlace: [
+      ['a1', 'b1'],
+      ['a2', 'b2'],
+    ],
+    blocked: [],
+  };
+
+  it('плей-офф — это сетка вторым этапом', () => {
+    const stage = planNextStage(GROUPS_KNOCKOUT, SELECTION, makeIdFactory());
+
+    expect(stage).toMatchObject({ order: 1, type: 'KNOCKOUT', name: 'Плей-офф' });
+    // Полуфиналы, финал и встреча за третье место.
+    expect(stage?.matches).toHaveLength(4);
+  });
+
+  it('плей-офф играется по своей планке сетов, а не по групповой', () => {
+    const stage = planNextStage(GROUPS_KNOCKOUT, SELECTION, makeIdFactory());
+
+    expect(stage?.config).toMatchObject({ setsToWin: 4 });
+  });
+
+  it('участники плей-офф известны сразу: они уже вышли', () => {
+    const stage = planNextStage(GROUPS_KNOCKOUT, SELECTION, makeIdFactory());
+    const first = stage?.matches.filter((match) => match.bracketRound === 1) ?? [];
+
+    expect(first).toHaveLength(2);
+    for (const match of first) {
+      expect(match.playerAId).not.toBeNull();
+      expect(match.playerBId).not.toBeNull();
+    }
+  });
+
+  it('финал ссылается на победителей полуфиналов', () => {
+    const stage = planNextStage(GROUPS_KNOCKOUT, SELECTION, makeIdFactory());
+    const final = stage?.matches.find(
+      (match) => match.bracketRound === 2 && match.bracketSlot === 0,
+    );
+
+    expect(final?.sourceA).toMatchObject({ kind: 'WINNER' });
+    expect(final?.sourceB).toMatchObject({ kind: 'WINNER' });
+    expect(final?.playerAId).toBeNull();
+  });
+
+  it('финальные группы собираются по местам', () => {
+    // ТЗ 5.1, «финалы по местам»: k-я группа — те, кто занял k-е место.
+    const stage = planNextStage(FINAL_GROUPS, SELECTION, makeIdFactory());
+
+    expect(stage).toMatchObject({ order: 1, type: 'GROUPS', name: 'Финальные группы' });
+    expect(stage?.groups.map((group) => group.participants)).toEqual([
+      ['a1', 'b1'],
+      ['a2', 'b2'],
+    ]);
+  });
+
+  it('в финальной группе играют все со всеми', () => {
+    const stage = planNextStage(FINAL_GROUPS, SELECTION, makeIdFactory());
+
+    // Две группы по двое: по одной встрече в каждой.
+    expect(stage?.matches).toHaveLength(2);
+    expect(stage?.matches.every((match) => match.groupKey !== null)).toBe(true);
+  });
+
+  it('схемы без второго этапа его и не получают', () => {
+    expect(planNextStage(ROUND_ROBIN, SELECTION, makeIdFactory())).toBeNull();
+  });
+});
+
+describe('жеребьёвка отвергает конфигурацию, из которой некому выйти', () => {
+  it('из групп по одному при одной группе выходит один — плей-офф не собрать', () => {
+    // Проверка стоит здесь, а не на достройке: достройка случается посреди
+    // турнира при вводе счёта, и отказывать судье там поздно и не за что.
+    const config: FormatConfig = {
+      type: 'GROUPS_KNOCKOUT',
+      groupCount: 1,
+      advancePerGroup: 1,
+      groupSetsToWin: 3,
+      koSetsToWin: 3,
+      thirdPlace: false,
+    };
+
+    expect(() => planDraw(config, participants(4), null, makeIdFactory())).toThrow(AppError);
   });
 });

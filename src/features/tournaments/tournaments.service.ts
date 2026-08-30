@@ -6,6 +6,8 @@ import {
   seedingConfigSchema,
   type DrawResult,
   type SeedingConfig,
+  type TieDecisionInput,
+  type TieDecisionResult,
   type TournamentStandingsView,
 } from '@kttf/shared/types';
 import type {
@@ -26,9 +28,11 @@ import { pageOf, skipOf } from '../../common/pagination.js';
 import { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
 
+import { advanceAfterGroups } from './advance.js';
 import { type DrawParticipant, planDraw } from './draw.js';
 import { checkEligibility } from './eligibility.js';
 import { buildStandings } from './standings.js';
+import { writeStage } from './stage-writer.js';
 import {
   acceptsRegistrations,
   isDeletable,
@@ -522,42 +526,7 @@ export class TournamentsService {
       await tx.stage.deleteMany({ where: { tournamentId: id } });
 
       for (const stage of plan.stages) {
-        const created = await tx.stage.create({
-          data: {
-            tournamentId: id,
-            order: stage.order,
-            type: stage.type,
-            name: stage.name,
-            config: stage.config as Prisma.InputJsonValue,
-          },
-          select: { id: true },
-        });
-
-        const groupIds = new Map<string, string>();
-
-        for (const group of stage.groups) {
-          const createdGroup = await tx.group.create({
-            data: { stageId: created.id, label: group.label, order: group.order },
-            select: { id: true },
-          });
-
-          groupIds.set(group.key, createdGroup.id);
-        }
-
-        await tx.match.createMany({
-          data: stage.matches.map((match) => ({
-            id: match.id,
-            tournamentId: id,
-            stageId: created.id,
-            groupId: match.groupKey === null ? null : (groupIds.get(match.groupKey) ?? null),
-            playerAId: match.playerAId,
-            playerBId: match.playerBId,
-            sourceA: match.sourceA ?? Prisma.DbNull,
-            sourceB: match.sourceB ?? Prisma.DbNull,
-            bracketRound: match.bracketRound,
-            bracketSlot: match.bracketSlot,
-          })),
-        });
+        await writeStage(tx, id, stage);
       }
     });
 
@@ -648,6 +617,70 @@ export class TournamentsService {
       stages,
       withdrawn: withdrawn.map((registration) => registration.playerId),
     });
+  }
+
+  /**
+   * Решение судьи по равенству в таблице — ADR-008.
+   *
+   * Движок жребия не бросает: он применяет правила 1–5 ТЗ 6.6 и возвращает
+   * неразрешённые группы равенства. Порядок внутри такой группы называет
+   * судья, и решение сохраняется как данные — так расчёт остаётся чистым
+   * и одинаковым в консоли и на сервере.
+   *
+   * Разрешённое равенство может открыть следующий этап: пока места в зоне
+   * выхода неизвестны, плей-офф сеять нечем.
+   */
+  async resolveTie(
+    id: string,
+    input: TieDecisionInput,
+    userId: string,
+  ): Promise<TieDecisionResult> {
+    const tournament = await this.load(id);
+
+    await this.assertClubStaff(tournament.clubId, userId);
+
+    if (tournament.status !== 'RUNNING') {
+      throw new AppError(ERROR_CODES.TOURNAMENT_NOT_RUNNING, 'Tournament is not running', {
+        id,
+        status: tournament.status,
+      });
+    }
+
+    const group = await this.prisma.group.findUnique({
+      where: { id: input.groupId },
+      select: { id: true, stage: { select: { tournamentId: true } } },
+    });
+
+    if (group?.stage.tournamentId !== id) {
+      throw new AppError(ERROR_CODES.NOT_FOUND, 'Group not found', { groupId: input.groupId });
+    }
+
+    const before = await this.standings(id, userId);
+    assertResolvesTie(before, input);
+
+    const next = await this.prisma.$transaction(async (tx) => {
+      await tx.tieDecision.create({
+        data: {
+          groupId: input.groupId,
+          orderedIds: [...input.orderedIds],
+          decidedBy: userId,
+          ...(input.note === undefined ? {} : { note: input.note }),
+        },
+      });
+
+      return advanceAfterGroups(tx, id);
+    });
+
+    const stage =
+      next.stageId === null
+        ? null
+        : await this.prisma.stage.findUnique({ where: { id: next.stageId }, select: stageFields });
+
+    return {
+      standings: await this.standings(id, userId),
+      nextStage: stage === null ? null : toStageView(stage),
+      blockedByTies: [...next.blockedByTies],
+    };
   }
 
   private async loadStages(id: string): Promise<StageRecord[]> {
@@ -850,4 +883,33 @@ function shuffle<T>(items: readonly T[]): T[] {
   }
 
   return result;
+}
+
+/**
+ * Решение обязано относиться к настоящему равенству.
+ *
+ * Иначе судья мог бы переставить любые строки таблицы, а места — расчётная
+ * величина, а не мнение. Порядок внутри равенства он назначает, само равенство
+ * определяет движок.
+ */
+function assertResolvesTie(standings: TournamentStandingsView, input: TieDecisionInput): void {
+  const group = standings.groups.find((candidate) => candidate.groupId === input.groupId);
+  const proposed = [...input.orderedIds].sort();
+
+  const matches = group?.unresolved.some((tie) => {
+    const participants = [...tie.participants].sort();
+
+    return (
+      participants.length === proposed.length &&
+      participants.every((participant, index) => participant === proposed[index])
+    );
+  });
+
+  if (matches !== true) {
+    throw new AppError(
+      ERROR_CODES.TIE_DECISION_INVALID,
+      'No unresolved tie matches this decision',
+      { groupId: input.groupId, orderedIds: input.orderedIds },
+    );
+  }
 }

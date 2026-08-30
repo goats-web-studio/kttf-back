@@ -68,6 +68,13 @@ describe('AllExceptionsFilter', () => {
       NOT_FOUND: 404,
       RATE_LIMITED: 429,
       INTERNAL_ERROR: 500,
+      TOURNAMENT_NOT_RUNNING: 409,
+      MATCH_NOT_READY: 409,
+      MATCH_ALREADY_FINISHED: 409,
+      MATCH_HAS_NO_RESULT: 409,
+      DOWNSTREAM_MATCH_PLAYED: 409,
+      INVALID_SCORE: 400,
+      TIE_DECISION_INVALID: 400,
     };
 
     for (const code of Object.values(ERROR_CODES)) {
