@@ -7,6 +7,7 @@ import { AuthService } from './auth.service.js';
 import { CODE_SENDER } from './code-sender.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { LogCodeSender } from './log-code-sender.js';
+import { OptionalJwtGuard } from './optional-jwt.guard.js';
 import { TokenService } from './token.service.js';
 
 @Module({
@@ -21,10 +22,11 @@ import { TokenService } from './token.service.js';
     AuthService,
     TokenService,
     JwtAuthGuard,
+    OptionalJwtGuard,
     // Пока провайдера SMS нет, код уходит в лог (ОВ-9). Подключение
     // настоящего провайдера — замена одной этой строки.
     { provide: CODE_SENDER, useClass: LogCodeSender },
   ],
-  exports: [TokenService, JwtAuthGuard],
+  exports: [TokenService, JwtAuthGuard, OptionalJwtGuard],
 })
 export class AuthModule {}

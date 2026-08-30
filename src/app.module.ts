@@ -4,6 +4,7 @@ import { AuthModule } from './features/auth/auth.module.js';
 import { ClubsModule } from './features/clubs/clubs.module.js';
 import { HealthModule } from './features/health/health.module.js';
 import { PlayersModule } from './features/players/players.module.js';
+import { TournamentsModule } from './features/tournaments/tournaments.module.js';
 import { ConfigModule } from './infra/config/config.module.js';
 import { PrismaModule } from './infra/prisma/prisma.module.js';
 
@@ -15,6 +16,14 @@ import { PrismaModule } from './infra/prisma/prisma.module.js';
  * что применяется ко всем запросам одинаково.
  */
 @Module({
-  imports: [ConfigModule, PrismaModule, AuthModule, ClubsModule, PlayersModule, HealthModule],
+  imports: [
+    ConfigModule,
+    PrismaModule,
+    AuthModule,
+    ClubsModule,
+    PlayersModule,
+    TournamentsModule,
+    HealthModule,
+  ],
 })
 export class AppModule {}
