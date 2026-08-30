@@ -300,7 +300,11 @@ model TieDecision {
   groupId String
   group   Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
 
-  // Участники в порядке, который выбрал судья: массив Registration.id
+  // Участники в порядке, который выбрал судья: массив Player.id.
+  //
+  // Именно Player.id, а не Registration.id: встреча ссылается на игроков,
+  // и таблица считается по тем же ключам. Два разных ключа для одного
+  // участника разошлись бы при первом же сравнении.
   orderedIds Json
 
   decidedBy String
@@ -316,8 +320,18 @@ model Match {
   stageId      String
   groupId      String?
 
-  playerAId String
-  playerBId String
+  // Участник может быть ещё не определён: в олимпийской сетке полуфинал —
+  // это «победитель такой-то встречи». Пока он не сыгран, игрока здесь нет,
+  // а откуда он возьмётся, сказано в sourceA/sourceB. Без этого сетку нельзя
+  // развернуть целиком при жеребьёвке, а ТЗ 9.4 требует показывать её
+  // в результатах, и второй экран показывает её по ходу турнира. См. ADR-019.
+  playerAId String?
+  playerBId String?
+
+  // { "kind": "WINNER" | "LOSER", "matchId": "<Match.id>" } либо null,
+  // если участник известен сразу.
+  sourceA Json?
+  sourceB Json?
 
   status      MatchStatus @default(PENDING)
   tableNumber Int?

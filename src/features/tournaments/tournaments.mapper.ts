@@ -1,14 +1,23 @@
 import {
+  bracketSourceSchema,
   formatConfigSchema,
   seedingConfigSchema,
+  type BracketSourceView,
+  type MatchView,
   type PlayerView,
   type RegistrationView,
+  type StageView,
   type TournamentView,
 } from '@kttf/shared/types';
 
 import type { Prisma } from '../../generated/prisma/client.js';
 
-import type { RegistrationRecord, TournamentRecord } from './tournaments.select.js';
+import type {
+  MatchRecord,
+  RegistrationRecord,
+  StageRecord,
+  TournamentRecord,
+} from './tournaments.select.js';
 
 /**
  * Запись базы в ответ API.
@@ -96,5 +105,65 @@ export function toRegistrationView(registration: RegistrationRecord): Registrati
     matchesAtStart: registration.matchesAtStart,
     createdAt: registration.createdAt.toISOString(),
     player: toPlayerView(registration.player),
+  };
+}
+
+/** Источник участника лежит в колонке `Json` и типа не имеет — ADR-019. */
+function toSource(value: unknown): BracketSourceView | null {
+  if (value === null || value === undefined) return null;
+
+  const parsed = bracketSourceSchema.safeParse(value);
+
+  return parsed.success ? parsed.data : null;
+}
+
+export function toMatchView(match: MatchRecord): MatchView {
+  return {
+    id: match.id,
+    stageId: match.stageId,
+    groupId: match.groupId,
+    playerAId: match.playerAId,
+    playerBId: match.playerBId,
+    sourceA: toSource(match.sourceA),
+    sourceB: toSource(match.sourceB),
+    status: match.status,
+    tableNumber: match.tableNumber,
+    setsA: match.setsA,
+    setsB: match.setsB,
+    resultType: match.resultType,
+    bracketRound: match.bracketRound,
+    bracketSlot: match.bracketSlot,
+  };
+}
+
+export function toStageView(stage: StageRecord): StageView {
+  const matches = [...stage.matches].sort(
+    (left, right) =>
+      (left.bracketRound ?? 0) - (right.bracketRound ?? 0) ||
+      (left.bracketSlot ?? 0) - (right.bracketSlot ?? 0),
+  );
+
+  return {
+    id: stage.id,
+    order: stage.order,
+    type: stage.type,
+    name: stage.name,
+    groups: stage.groups.map((group) => ({
+      id: group.id,
+      label: group.label,
+      order: group.order,
+      // Отдельной колонки под состав группы в модели нет: он выводится из
+      // её встреч, а в круговой схеме играют все со всеми.
+      participants: [
+        ...new Set(
+          matches
+            .filter((match) => match.groupId === group.id)
+            .flatMap((match) =>
+              [match.playerAId, match.playerBId].filter((id): id is string => id !== null),
+            ),
+        ),
+      ],
+    })),
+    matches: matches.map(toMatchView),
   };
 }

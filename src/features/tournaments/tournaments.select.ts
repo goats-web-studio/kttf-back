@@ -76,7 +76,47 @@ export const registrationFields = {
   player: { select: playerFields },
 } as const;
 
+export const matchFields = {
+  id: true,
+  stageId: true,
+  groupId: true,
+  playerAId: true,
+  playerBId: true,
+  sourceA: true,
+  sourceB: true,
+  status: true,
+  tableNumber: true,
+  setsA: true,
+  setsB: true,
+  setScores: true,
+  resultType: true,
+  bracketRound: true,
+  bracketSlot: true,
+} as const;
+
+export const stageFields = {
+  id: true,
+  order: true,
+  type: true,
+  name: true,
+  config: true,
+  groups: {
+    select: {
+      id: true,
+      label: true,
+      order: true,
+      tieDecisions: { select: { orderedIds: true }, orderBy: { decidedAt: 'desc' } },
+    },
+    orderBy: { order: 'asc' },
+  },
+  // Порядок одним полем: массив под `as const` становится readonly, а Prisma
+  // такой не принимает. Внутри круга встречи досортировываются в памяти.
+  matches: { select: matchFields, orderBy: { bracketRound: 'asc' } },
+} as const;
+
 export type TournamentRecord = Prisma.TournamentGetPayload<{ select: typeof tournamentFields }>;
+export type StageRecord = Prisma.StageGetPayload<{ select: typeof stageFields }>;
+export type MatchRecord = Prisma.MatchGetPayload<{ select: typeof matchFields }>;
 export type RegistrationRecord = Prisma.RegistrationGetPayload<{
   select: typeof registrationFields;
 }>;

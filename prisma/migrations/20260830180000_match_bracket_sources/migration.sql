@@ -1,0 +1,6 @@
+-- AlterTable
+ALTER TABLE "Match" ADD COLUMN     "sourceA" JSONB,
+ADD COLUMN     "sourceB" JSONB,
+ALTER COLUMN "playerAId" DROP NOT NULL,
+ALTER COLUMN "playerBId" DROP NOT NULL;
+

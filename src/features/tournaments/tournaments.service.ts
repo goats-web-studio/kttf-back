@@ -1,6 +1,13 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
+import {
+  formatConfigSchema,
+  seedingConfigSchema,
+  type DrawResult,
+  type SeedingConfig,
+  type TournamentStandingsView,
+} from '@kttf/shared/types';
 import type {
   CreateTournamentInput,
   DuplicateTournamentInput,
@@ -16,21 +23,25 @@ import { Injectable } from '@nestjs/common';
 
 import { defined } from '../../common/objects.js';
 import { pageOf, skipOf } from '../../common/pagination.js';
-import type { Prisma } from '../../generated/prisma/client.js';
+import { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
 
+import { type DrawParticipant, planDraw } from './draw.js';
 import { checkEligibility } from './eligibility.js';
+import { buildStandings } from './standings.js';
 import {
   acceptsRegistrations,
   isDeletable,
   nextStatus,
   type TournamentAction,
 } from './tournament-lifecycle.js';
-import { toRegistrationView, toTournamentView } from './tournaments.mapper.js';
+import { toRegistrationView, toStageView, toTournamentView } from './tournaments.mapper.js';
 import {
   OCCUPYING_STATUSES,
   playerFields,
   registrationFields,
+  type StageRecord,
+  stageFields,
   type TournamentRecord,
   tournamentFields,
 } from './tournaments.select.js';
@@ -463,6 +474,190 @@ export class TournamentsService {
     });
   }
 
+  /**
+   * Жеребьёвка — ТЗ 5.3.
+   *
+   * Схемы строит движок из общего кода, здесь только раскладка его вывода по
+   * моделям. Повторная жеребьёвка стирает предыдущую целиком: ТЗ 5.3 требует
+   * пересчёта при снятии участника до начала, а частичная правка сетки
+   * оставила бы встречи, которых в новой расстановке не существует.
+   */
+  async draw(id: string, userId: string): Promise<DrawResult> {
+    const tournament = await this.load(id);
+
+    await this.assertClubStaff(tournament.clubId, userId);
+
+    if (tournament.status !== 'REG_CLOSED') {
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Close the registration before the draw', {
+        id,
+        status: tournament.status,
+      });
+    }
+
+    const registrations = await this.prisma.registration.findMany({
+      where: { tournamentId: id, status: { in: OCCUPYING_STATUSES } },
+      select: { seed: true, player: { select: { id: true, rating: true, clubId: true } } },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const participants: DrawParticipant[] = registrations.map((registration) => ({
+      playerId: registration.player.id,
+      rating: Number(registration.player.rating),
+      clubId: registration.player.clubId,
+      seed: registration.seed,
+    }));
+
+    const config = formatConfigSchema.parse(tournament.formatConfig);
+    const seeding: SeedingConfig | null =
+      tournament.seedingConfig === null
+        ? null
+        : seedingConfigSchema.parse(tournament.seedingConfig);
+
+    // Случайность вносится здесь: сама жеребьёвка обязана оставаться чистой
+    // и воспроизводимой по той последовательности, которую ей дали.
+    const ordered = seeding?.method === 'RANDOM' ? shuffle(participants) : participants;
+    const plan = planDraw(config, ordered, seeding, () => randomUUID());
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.stage.deleteMany({ where: { tournamentId: id } });
+
+      for (const stage of plan.stages) {
+        const created = await tx.stage.create({
+          data: {
+            tournamentId: id,
+            order: stage.order,
+            type: stage.type,
+            name: stage.name,
+            config: stage.config as Prisma.InputJsonValue,
+          },
+          select: { id: true },
+        });
+
+        const groupIds = new Map<string, string>();
+
+        for (const group of stage.groups) {
+          const createdGroup = await tx.group.create({
+            data: { stageId: created.id, label: group.label, order: group.order },
+            select: { id: true },
+          });
+
+          groupIds.set(group.key, createdGroup.id);
+        }
+
+        await tx.match.createMany({
+          data: stage.matches.map((match) => ({
+            id: match.id,
+            tournamentId: id,
+            stageId: created.id,
+            groupId: match.groupKey === null ? null : (groupIds.get(match.groupKey) ?? null),
+            playerAId: match.playerAId,
+            playerBId: match.playerBId,
+            sourceA: match.sourceA ?? Prisma.DbNull,
+            sourceB: match.sourceB ?? Prisma.DbNull,
+            bracketRound: match.bracketRound,
+            bracketSlot: match.bracketSlot,
+          })),
+        });
+      }
+    });
+
+    const stages = await this.loadStages(id);
+
+    return {
+      tournamentId: id,
+      stages: stages.map(toStageView),
+      // Несведённые одноклубники возвращаются всегда, даже пустым списком:
+      // организатор обязан увидеть их здесь, а не в зале (ADR-011).
+      clubCollisions: [...plan.clubCollisions],
+    };
+  }
+
+  /**
+   * Старт турнира — ТЗ 4.1 и ТС 5.4.
+   *
+   * Рейтинги фиксируются здесь и только здесь. Без снимка расчёт зависел бы
+   * от порядка обработки встреч, и локальный расчёт консоли разошёлся бы
+   * с серверным — приоритет №1 брифа.
+   */
+  async start(id: string, userId: string): Promise<TournamentView> {
+    const tournament = await this.load(id);
+
+    await this.assertClubStaff(tournament.clubId, userId);
+
+    const target = nextStatus(tournament.status, 'start');
+
+    if (target === undefined) {
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Transition is not allowed', {
+        id,
+        from: tournament.status,
+        action: 'start',
+      });
+    }
+
+    const stages = await this.prisma.stage.count({ where: { tournamentId: id } });
+
+    if (stages === 0) {
+      // ТЗ 4.1: в «Идёт» переводит не только нажатие, но и сформированные
+      // группы. Без них турниру нечего вести.
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Draw the tournament before starting', {
+        id,
+      });
+    }
+
+    const registrations = await this.prisma.registration.findMany({
+      where: { tournamentId: id, status: { in: OCCUPYING_STATUSES } },
+      select: { id: true, player: { select: { rating: true, ratedMatches: true } } },
+    });
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      for (const registration of registrations) {
+        await tx.registration.update({
+          where: { id: registration.id },
+          data: {
+            status: 'PLAYING',
+            ratingAtStart: registration.player.rating,
+            matchesAtStart: registration.player.ratedMatches,
+          },
+        });
+      }
+
+      return tx.tournament.update({
+        where: { id },
+        data: { status: target, startedAt: new Date() },
+        select: tournamentFields,
+      });
+    });
+
+    return toTournamentView(updated);
+  }
+
+  /** Групповые таблицы — ТЗ 6.6. Открыты всем, кому открыт сам турнир. */
+  async standings(id: string, userId?: string): Promise<TournamentStandingsView> {
+    await this.findById(id, userId);
+
+    const [stages, withdrawn] = await Promise.all([
+      this.loadStages(id),
+      this.prisma.registration.findMany({
+        where: { tournamentId: id, status: { in: ['WITHDRAWN', 'NO_SHOW'] } },
+        select: { playerId: true },
+      }),
+    ]);
+
+    return buildStandings({
+      tournamentId: id,
+      stages,
+      withdrawn: withdrawn.map((registration) => registration.playerId),
+    });
+  }
+
+  private async loadStages(id: string): Promise<StageRecord[]> {
+    return this.prisma.stage.findMany({
+      where: { tournamentId: id },
+      select: stageFields,
+      orderBy: { order: 'asc' },
+    });
+  }
+
   // ---------- вспомогательное ----------
 
   private async load(id: string): Promise<TournamentRecord> {
@@ -637,4 +832,22 @@ async function promoteFromWaitlist(
   if (next === null) return;
 
   await tx.registration.update({ where: { id: next.id }, data: { status: 'CONFIRMED' } });
+}
+
+/** Перемешивание для случайного посева. Криптостойкое — своего велосипеда не надо. */
+function shuffle<T>(items: readonly T[]): T[] {
+  const result = [...items];
+
+  for (let index = result.length - 1; index > 0; index -= 1) {
+    const swap = randomInt(0, index + 1);
+    const left = result[index];
+    const right = result[swap];
+
+    if (left !== undefined && right !== undefined) {
+      result[index] = right;
+      result[swap] = left;
+    }
+  }
+
+  return result;
 }

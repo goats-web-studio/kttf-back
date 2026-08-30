@@ -12,6 +12,8 @@ import {
   type RegisterInput,
   type RegistrationView,
   type TournamentView,
+  type DrawResult,
+  type TournamentStandingsView,
   type UpdateRegistrationInput,
   type UpdateTournamentInput,
 } from '@kttf/shared/types';
@@ -41,8 +43,8 @@ const uuidParam = z.uuid();
 /**
  * Контракт — ТС 7.5. Маршруты и их формы менять нельзя без правки документа.
  *
- * Жеребьёвка, старт, завершение, снимок, синхронизация и таблицы сюда пока не
- * входят: они читают встречи и этапы, которых ещё нет.
+ * Завершение, снимок и синхронизация сюда пока не входят: первое требует
+ * результатов всех встреч, остальные два — офлайн-режима консоли.
  *
  * Чтение открыто без токена — это публичный календарь (ТЗ 9.2). Токен, если
  * он есть, влияет только на видимость черновиков.
@@ -134,6 +136,35 @@ export class TournamentsController {
     @CurrentUserId() userId: string,
   ): Promise<TournamentView> {
     return this.tournaments.transition(id, 'closeRegistration', userId);
+  }
+
+  /** Жеребьёвка — ТЗ 5.3. Повторная стирает предыдущую. */
+  @Post(':id/draw')
+  @UseGuards(JwtAuthGuard)
+  async draw(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @CurrentUserId() userId: string,
+  ): Promise<DrawResult> {
+    return this.tournaments.draw(id, userId);
+  }
+
+  /** Старт: здесь фиксируются рейтинги участников — ТС 5.4. */
+  @Post(':id/start')
+  @UseGuards(JwtAuthGuard)
+  async start(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @CurrentUserId() userId: string,
+  ): Promise<TournamentView> {
+    return this.tournaments.start(id, userId);
+  }
+
+  @Get(':id/standings')
+  @UseGuards(OptionalJwtGuard)
+  async standings(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @OptionalUserId() userId?: string,
+  ): Promise<TournamentStandingsView> {
+    return this.tournaments.standings(id, userId);
   }
 
   @Post(':id/cancel')

@@ -31,6 +31,8 @@ const USER_ID = '22222222-2222-4222-8222-222222222222';
 const TOURNAMENT_ID = '33333333-3333-4333-8333-333333333333';
 const PLAYER_ID = '44444444-4444-4444-8444-444444444444';
 const REGISTRATION_ID = '55555555-5555-4555-8555-555555555555';
+const STAGE_ID = '66666666-6666-4666-8666-666666666666';
+const GROUP_ID = '77777777-7777-4777-8777-777777777777';
 
 const FAR_FUTURE = new Date('2030-01-01T10:00:00.000Z');
 
@@ -113,6 +115,14 @@ function makePrisma() {
       delete: vi.fn().mockResolvedValue({}),
     },
     player: { findUnique: vi.fn().mockResolvedValue(player) },
+    stage: {
+      deleteMany: vi.fn().mockResolvedValue({}),
+      create: vi.fn().mockResolvedValue({ id: STAGE_ID }),
+      count: vi.fn().mockResolvedValue(1),
+      findMany: vi.fn().mockResolvedValue([]),
+    },
+    group: { create: vi.fn().mockResolvedValue({ id: GROUP_ID }) },
+    match: { createMany: vi.fn().mockResolvedValue({ count: 0 }) },
     clubMember: {
       findUnique: vi.fn().mockResolvedValue({ role: 'OWNER' }),
       findMany: vi.fn().mockResolvedValue([{ clubId: CLUB_ID }]),
@@ -437,5 +447,114 @@ describe('лист ожидания', () => {
 
     expect(result.status).toBe(403);
     expect(prisma.registration.delete).not.toHaveBeenCalled();
+  });
+});
+
+describe('жеребьёвка — ТЗ 5.3', () => {
+  /** Четверо участников: меньше двух движок не примет. */
+  function fourPlayers() {
+    return [0, 1, 2, 3].map((index) => ({
+      seed: null,
+      player: {
+        id: `${String(index)}0000000-0000-4000-8000-000000000000`,
+        rating: { toString: () => '250.00' },
+        clubId: null,
+      },
+    }));
+  }
+
+  it('до закрытия регистрации не проводится', async () => {
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/draw`, { auth: true });
+
+    expect(result.status).toBe(400);
+    expect(prisma.match.createMany).not.toHaveBeenCalled();
+  });
+
+  it('после закрытия раскладывает участников по встречам', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(makeTournament({ status: 'REG_CLOSED' }));
+    prisma.registration.findMany.mockResolvedValue(fourPlayers());
+
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/draw`, { auth: true });
+
+    expect(result.status).toBe(201);
+    expect(prisma.match.createMany).toHaveBeenCalledOnce();
+    // Несведённые одноклубники возвращаются всегда, даже пустым списком.
+    expect(result.body).toMatchObject({ clubCollisions: [] });
+  });
+
+  it('повторная жеребьёвка стирает предыдущую целиком', async () => {
+    // ТЗ 5.3 требует пересчёта при снятии участника: частичная правка
+    // оставила бы встречи, которых в новой расстановке не существует.
+    prisma.tournament.findUnique.mockResolvedValue(makeTournament({ status: 'REG_CLOSED' }));
+    prisma.registration.findMany.mockResolvedValue(fourPlayers());
+
+    await call('POST', `/tournaments/${TOURNAMENT_ID}/draw`, { auth: true });
+
+    expect(prisma.stage.deleteMany).toHaveBeenCalledOnce();
+  });
+
+  it('посторонний жеребьёвку не проводит', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(makeTournament({ status: 'REG_CLOSED' }));
+    prisma.clubMember.findUnique.mockResolvedValue(null);
+
+    expect((await call('POST', `/tournaments/${TOURNAMENT_ID}/draw`, { auth: true })).status).toBe(
+      403,
+    );
+  });
+});
+
+describe('старт — ТС 5.4', () => {
+  it('без жеребьёвки турнир не начинается', async () => {
+    // ТЗ 4.1: в «Идёт» переводит не только нажатие, но и сформированные группы.
+    prisma.tournament.findUnique.mockResolvedValue(makeTournament({ status: 'REG_CLOSED' }));
+    prisma.stage.count.mockResolvedValue(0);
+
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/start`, { auth: true });
+
+    expect(result.status).toBe(400);
+    expect(prisma.tournament.update).not.toHaveBeenCalled();
+  });
+
+  it('фиксирует рейтинги участников на момент старта', async () => {
+    // Без снимка расчёт зависит от порядка обработки встреч, и локальный
+    // расчёт консоли расходится с серверным (ТС 5.4).
+    prisma.tournament.findUnique.mockResolvedValue(makeTournament({ status: 'REG_CLOSED' }));
+    prisma.registration.findMany.mockResolvedValue([
+      { id: REGISTRATION_ID, player: { rating: '250.00', ratedMatches: 12 } },
+    ]);
+
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/start`, { auth: true });
+
+    expect(result.status).toBe(201);
+
+    const update = prisma.registration.update.mock.calls[0]?.[0] as
+      { data?: Record<string, unknown> } | undefined;
+
+    expect(update?.data).toMatchObject({
+      status: 'PLAYING',
+      ratingAtStart: '250.00',
+      matchesAtStart: 12,
+    });
+  });
+
+  it('из открытой регистрации не стартует', async () => {
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/start`, { auth: true });
+
+    expect(result.status).toBe(400);
+  });
+});
+
+describe('таблицы — ТЗ 6.6', () => {
+  it('открыты без токена, как и сам турнир', async () => {
+    const result = await call('GET', `/tournaments/${TOURNAMENT_ID}/standings`);
+
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ tournamentId: TOURNAMENT_ID, groups: [] });
+  });
+
+  it('черновик таблиц не показывает', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(makeTournament({ status: 'DRAFT' }));
+
+    expect((await call('GET', `/tournaments/${TOURNAMENT_ID}/standings`)).status).toBe(404);
   });
 });
