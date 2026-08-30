@@ -121,7 +121,14 @@ function makePrisma() {
       count: vi.fn().mockResolvedValue(1),
       findMany: vi.fn().mockResolvedValue([]),
     },
-    group: { create: vi.fn().mockResolvedValue({ id: GROUP_ID }) },
+    group: {
+      create: vi.fn().mockResolvedValue({ id: GROUP_ID }),
+      findUnique: vi.fn().mockResolvedValue({
+        id: GROUP_ID,
+        stage: { tournamentId: TOURNAMENT_ID },
+      }),
+    },
+    tieDecision: { create: vi.fn().mockResolvedValue({}) },
     match: { createMany: vi.fn().mockResolvedValue({ count: 0 }) },
     clubMember: {
       findUnique: vi.fn().mockResolvedValue({ role: 'OWNER' }),
@@ -556,5 +563,119 @@ describe('таблицы — ТЗ 6.6', () => {
     prisma.tournament.findUnique.mockResolvedValue(makeTournament({ status: 'DRAFT' }));
 
     expect((await call('GET', `/tournaments/${TOURNAMENT_ID}/standings`)).status).toBe(404);
+  });
+});
+
+describe('решение судьи по равенству — ADR-008', () => {
+  const PA = '00000000-0000-4000-8000-0000000000c1';
+  const PB = '00000000-0000-4000-8000-0000000000c2';
+  const PC = '00000000-0000-4000-8000-0000000000c3';
+
+  /**
+   * Круг побед на троих: каждый выиграл у одного и проиграл другому с тем же
+   * счётом. Правила 1–5 ТЗ 6.6 таких не разделяют, места остаются пустыми.
+   */
+  function tiedGroup() {
+    const match = (id: string, a: string, b: string) => ({
+      id,
+      stageId: STAGE_ID,
+      groupId: GROUP_ID,
+      playerAId: a,
+      playerBId: b,
+      sourceA: null,
+      sourceB: null,
+      status: 'FINISHED',
+      tableNumber: null,
+      setsA: 3,
+      setsB: 0,
+      setScores: null,
+      resultType: 'NORMAL',
+      bracketRound: 1,
+      bracketSlot: null,
+    });
+
+    return [
+      {
+        id: STAGE_ID,
+        order: 0,
+        type: 'ROUND_ROBIN',
+        name: 'Круговая',
+        config: { setsToWin: 3 },
+        groups: [{ id: GROUP_ID, label: 'Круговая', order: 0, tieDecisions: [] }],
+        matches: [match('m1', PA, PB), match('m2', PB, PC), match('m3', PC, PA)],
+      },
+    ];
+  }
+
+  beforeEach(() => {
+    prisma.tournament.findUnique.mockResolvedValue(makeTournament({ status: 'RUNNING' }));
+    prisma.stage.findMany.mockResolvedValue(tiedGroup());
+    prisma.registration.findMany.mockResolvedValue([]);
+  });
+
+  it('сохраняет порядок, названный судьёй', async () => {
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/tie-decisions`, {
+      body: { groupId: GROUP_ID, orderedIds: [PA, PB, PC] },
+      auth: true,
+    });
+
+    expect(result.status).toBe(201);
+
+    const created = prisma.tieDecision.create.mock.calls[0]?.[0] as
+      { data?: Record<string, unknown> } | undefined;
+
+    expect(created?.data).toMatchObject({ groupId: GROUP_ID, decidedBy: USER_ID });
+    expect(created?.data?.orderedIds).toEqual([PA, PB, PC]);
+  });
+
+  it('порядок, не отвечающий ни одному равенству, отклоняется', async () => {
+    // Места — величина расчётная. Судья решает, кто выше внутри равенства,
+    // а не переставляет таблицу как хочет.
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/tie-decisions`, {
+      body: { groupId: GROUP_ID, orderedIds: [PA, PB] },
+      auth: true,
+    });
+
+    expect(result.status).toBe(400);
+    expect((result.body?.error as { code?: string } | undefined)?.code).toBe(
+      'TIE_DECISION_INVALID',
+    );
+    expect(prisma.tieDecision.create).not.toHaveBeenCalled();
+  });
+
+  it('в неидущем турнире равенство не разрешают', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(makeTournament({ status: 'REG_CLOSED' }));
+
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/tie-decisions`, {
+      body: { groupId: GROUP_ID, orderedIds: [PA, PB, PC] },
+      auth: true,
+    });
+
+    expect(result.status).toBe(409);
+  });
+
+  it('группа чужого турнира не находится', async () => {
+    prisma.group.findUnique.mockResolvedValue({
+      id: GROUP_ID,
+      stage: { tournamentId: 'другой' },
+    });
+
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/tie-decisions`, {
+      body: { groupId: GROUP_ID, orderedIds: [PA, PB, PC] },
+      auth: true,
+    });
+
+    expect(result.status).toBe(404);
+  });
+
+  it('посторонний решения не принимает', async () => {
+    prisma.clubMember.findUnique.mockResolvedValue(null);
+
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/tie-decisions`, {
+      body: { groupId: GROUP_ID, orderedIds: [PA, PB, PC] },
+      auth: true,
+    });
+
+    expect(result.status).toBe(403);
   });
 });

@@ -3,6 +3,7 @@ import {
   duplicateTournamentSchema,
   listTournamentsSchema,
   registerSchema,
+  tieDecisionSchema,
   updateRegistrationSchema,
   updateTournamentSchema,
   type CreateTournamentInput,
@@ -11,6 +12,8 @@ import {
   type Page,
   type RegisterInput,
   type RegistrationView,
+  type TieDecisionInput,
+  type TieDecisionResult,
   type TournamentView,
   type DrawResult,
   type TournamentStandingsView,
@@ -165,6 +168,17 @@ export class TournamentsController {
     @OptionalUserId() userId?: string,
   ): Promise<TournamentStandingsView> {
     return this.tournaments.standings(id, userId);
+  }
+
+  /** Решение судьи по равенству в таблице — ADR-008. */
+  @Post(':id/tie-decisions')
+  @UseGuards(JwtAuthGuard)
+  async resolveTie(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @Body(new ZodValidationPipe(tieDecisionSchema)) body: TieDecisionInput,
+    @CurrentUserId() userId: string,
+  ): Promise<TieDecisionResult> {
+    return this.tournaments.resolveTie(id, body, userId);
   }
 
   @Post(':id/cancel')
