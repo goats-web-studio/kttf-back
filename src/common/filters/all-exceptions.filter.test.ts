@@ -75,6 +75,9 @@ describe('AllExceptionsFilter', () => {
       DOWNSTREAM_MATCH_PLAYED: 409,
       INVALID_SCORE: 400,
       TIE_DECISION_INVALID: 400,
+      TOURNAMENT_NOT_COMPLETE: 409,
+      TIES_UNRESOLVED: 409,
+      RATING_SNAPSHOT_MISSING: 409,
     };
 
     for (const code of Object.values(ERROR_CODES)) {

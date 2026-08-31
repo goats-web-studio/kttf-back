@@ -15,6 +15,7 @@ export const TOURNAMENT_ACTIONS = [
   'closeRegistration',
   'start',
   'finish',
+  'rate',
   'cancel',
 ] as const;
 
@@ -29,6 +30,11 @@ const TRANSITIONS: Readonly<Record<TournamentAction, Readonly<Record<string, Tou
     start: { REG_CLOSED: 'RUNNING' },
     // Требует, чтобы все встречи имели результат. Тоже условие сверх таблицы.
     finish: { RUNNING: 'FINISHED' },
+    // Условие сверх таблицы — «расчёт рейтинга выполнен успешно» (ТЗ 4.1).
+    // Отдельным маршрутом наружу не выходит: обсчёт делает тот же `finish`
+    // второй транзакцией, и в «Завершён» турнир остаётся только если расчёт
+    // не удался. Тогда повторный вызов доводит его до «Обсчитан».
+    rate: { FINISHED: 'RATED' },
     cancel: {
       DRAFT: 'CANCELLED',
       PUBLISHED: 'CANCELLED',

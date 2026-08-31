@@ -35,6 +35,12 @@ const STATUS_BY_CODE: Readonly<Record<ErrorCode, number>> = {
   DOWNSTREAM_MATCH_PLAYED: HttpStatus.CONFLICT,
   INVALID_SCORE: HttpStatus.BAD_REQUEST,
   TIE_DECISION_INVALID: HttpStatus.BAD_REQUEST,
+
+  // Завершение турнира — ТС 7.5. Тоже конфликт состояния: запрос верный,
+  // турнир к нему не готов. Отсутствие снимка — не вина запроса вовсе.
+  TOURNAMENT_NOT_COMPLETE: HttpStatus.CONFLICT,
+  TIES_UNRESOLVED: HttpStatus.CONFLICT,
+  RATING_SNAPSHOT_MISSING: HttpStatus.CONFLICT,
 };
 
 const CODE_BY_STATUS: Readonly<Record<number, ErrorCode>> = {

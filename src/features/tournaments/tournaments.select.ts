@@ -54,6 +54,7 @@ const tournamentScalars = {
   createdAt: true,
   startedAt: true,
   finishedAt: true,
+  ratedAt: true,
 } as const;
 
 export const tournamentFields = {

@@ -71,6 +71,7 @@ export function toTournamentView(tournament: TournamentRecord): TournamentView {
     createdAt: tournament.createdAt.toISOString(),
     startedAt: tournament.startedAt?.toISOString() ?? null,
     finishedAt: tournament.finishedAt?.toISOString() ?? null,
+    ratedAt: tournament.ratedAt?.toISOString() ?? null,
   };
 }
 

@@ -78,6 +78,7 @@ function makeTournament(overrides: Record<string, unknown> = {}) {
     createdAt: new Date('2026-08-29T00:00:00.000Z'),
     startedAt: null,
     finishedAt: null,
+    ratedAt: null,
     _count: { registrations: 0 },
     ...overrides,
   };
@@ -101,8 +102,10 @@ function makePrisma() {
       findMany: vi.fn().mockResolvedValue([makeTournament()]),
       count: vi.fn().mockResolvedValue(1),
       findUnique: vi.fn().mockResolvedValue(makeTournament()),
+      findUniqueOrThrow: vi.fn().mockResolvedValue(makeTournament({ status: 'RATED' })),
       create: vi.fn().mockResolvedValue(makeTournament()),
       update: vi.fn().mockResolvedValue(makeTournament()),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       delete: vi.fn().mockResolvedValue({}),
     },
     registration: {
@@ -114,7 +117,12 @@ function makePrisma() {
       update: vi.fn().mockResolvedValue(registration),
       delete: vi.fn().mockResolvedValue({}),
     },
-    player: { findUnique: vi.fn().mockResolvedValue(player) },
+    player: {
+      findUnique: vi.fn().mockResolvedValue(player),
+      update: vi.fn().mockResolvedValue(player),
+    },
+    ratingEvent: { createMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    auditLog: { create: vi.fn().mockResolvedValue({}) },
     stage: {
       deleteMany: vi.fn().mockResolvedValue({}),
       create: vi.fn().mockResolvedValue({ id: STAGE_ID }),
@@ -548,6 +556,182 @@ describe('старт — ТС 5.4', () => {
     const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/start`, { auth: true });
 
     expect(result.status).toBe(400);
+  });
+});
+
+describe('завершение и рейтинг — ТЗ 4.1, ТЗ 7.3', () => {
+  const PA = '00000000-0000-4000-8000-0000000000a1';
+  const PB = '00000000-0000-4000-8000-0000000000a2';
+
+  /** Круговая на двоих: одна встреча, места определяются без судьи. */
+  function stage(setsA: number | null) {
+    return [
+      {
+        id: STAGE_ID,
+        order: 0,
+        type: 'ROUND_ROBIN',
+        name: 'Круговая',
+        config: { setsToWin: 3 },
+        groups: [{ id: GROUP_ID, label: 'Круговая', order: 0, tieDecisions: [] }],
+        matches: [
+          {
+            id: 'm1',
+            stageId: STAGE_ID,
+            groupId: GROUP_ID,
+            playerAId: PA,
+            playerBId: PB,
+            sourceA: null,
+            sourceB: null,
+            status: setsA === null ? 'PENDING' : 'FINISHED',
+            tableNumber: null,
+            setsA,
+            setsB: setsA === null ? null : 1,
+            setScores: null,
+            resultType: setsA === null ? null : 'NORMAL',
+            bracketRound: 1,
+            bracketSlot: null,
+          },
+        ],
+      },
+    ];
+  }
+
+  function played(id: string) {
+    return {
+      id: `reg-${id}`,
+      tournamentId: TOURNAMENT_ID,
+      status: 'PLAYING',
+      isRated: true,
+      seed: null,
+      ratingAtStart: '300.00',
+      matchesAtStart: 25,
+      createdAt: new Date('2026-08-30T00:00:00.000Z'),
+      player: { ...player, id, rating: { toString: () => '300.00' }, ratedMatches: 25 },
+    };
+  }
+
+  beforeEach(() => {
+    prisma.tournament.findUnique.mockResolvedValue(makeTournament({ status: 'RUNNING' }));
+    prisma.stage.findMany.mockResolvedValue(stage(3));
+    prisma.registration.findMany.mockResolvedValue([played(PA), played(PB)]);
+  });
+
+  it('несыгранная встреча держит турнир', async () => {
+    prisma.stage.findMany.mockResolvedValue(stage(null));
+
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/finish`, { auth: true });
+
+    expect(result.status).toBe(409);
+    expect((result.body?.error as { code?: string } | undefined)?.code).toBe(
+      'TOURNAMENT_NOT_COMPLETE',
+    );
+    expect(prisma.tournament.update).not.toHaveBeenCalled();
+    expect(prisma.ratingEvent.createMany).not.toHaveBeenCalled();
+  });
+
+  it('неразрешённое равенство держит турнир — ADR-008', async () => {
+    // Две встречи с одинаковым счётом в обе стороны правилами 1–5 не
+    // разделяются: пока места не определены, завершать нечего.
+    const tied = stage(3);
+    tied[0]?.matches.push({ ...tied[0].matches[0], id: 'm2', setsA: 1, setsB: 3 } as never);
+    prisma.stage.findMany.mockResolvedValue(tied);
+
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/finish`, { auth: true });
+
+    expect(result.status).toBe(409);
+    expect((result.body?.error as { code?: string } | undefined)?.code).toBe('TIES_UNRESOLVED');
+    expect(prisma.ratingEvent.createMany).not.toHaveBeenCalled();
+  });
+
+  it('сыгравший без снимка на старте останавливает обсчёт — ТС 5.4', async () => {
+    prisma.registration.findMany.mockResolvedValue([played(PA)]);
+
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/finish`, { auth: true });
+
+    expect(result.status).toBe(409);
+    expect((result.body?.error as { code?: string } | undefined)?.code).toBe(
+      'RATING_SNAPSHOT_MISSING',
+    );
+  });
+
+  it('пишет журнал, двигает проекции и переводит в «Обсчитан»', async () => {
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/finish`, { auth: true });
+
+    expect(result.status).toBe(201);
+    expect(result.body).toMatchObject({ status: 'RATED' });
+
+    const closed = prisma.tournament.update.mock.calls[0]?.[0] as
+      { data?: Record<string, unknown> } | undefined;
+    expect(closed?.data).toMatchObject({ status: 'FINISHED' });
+
+    const events = (
+      prisma.ratingEvent.createMany.mock.calls[0]?.[0] as
+        { data?: Record<string, unknown>[] } | undefined
+    )?.data;
+
+    expect(events).toHaveLength(2);
+    expect(events?.[0]).toMatchObject({
+      playerId: PA,
+      matchId: 'm1',
+      tournamentId: TOURNAMENT_ID,
+      type: 'MATCH',
+      ratingBefore: 300,
+      createdBy: USER_ID,
+    });
+    // Оба рейтинговые: система замкнута, очков не прибавилось (ТС 5.5).
+    expect(Number(events?.[0]?.delta) + Number(events?.[1]?.delta)).toBe(0);
+
+    expect(prisma.player.update).toHaveBeenCalledTimes(2);
+    const projection = prisma.player.update.mock.calls[0]?.[0] as
+      { data?: Record<string, unknown> } | undefined;
+    expect(projection?.data).toMatchObject({ ratedMatches: 26, isProvisional: false });
+
+    const rated = prisma.tournament.updateMany.mock.calls[0]?.[0] as
+      { where?: Record<string, unknown>; data?: Record<string, unknown> } | undefined;
+    expect(rated?.where).toMatchObject({ id: TOURNAMENT_ID, status: 'FINISHED' });
+    expect(rated?.data).toMatchObject({ status: 'RATED' });
+  });
+
+  it('из «Завершён» доводит до обсчёта, не закрывая турнир заново', async () => {
+    // Упавший расчёт оставляет турнир в «Завершён» — повторный вызов
+    // обязан дочитать его до конца, а не отказать.
+    prisma.tournament.findUnique.mockResolvedValue(makeTournament({ status: 'FINISHED' }));
+
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/finish`, { auth: true });
+
+    expect(result.status).toBe(201);
+    expect(prisma.tournament.update).not.toHaveBeenCalled();
+    expect(prisma.ratingEvent.createMany).toHaveBeenCalled();
+  });
+
+  it('обсчитанный турнир второй раз рейтинг не получает', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(makeTournament({ status: 'RATED' }));
+
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/finish`, { auth: true });
+
+    expect(result.status).toBe(400);
+    expect(prisma.ratingEvent.createMany).not.toHaveBeenCalled();
+  });
+
+  it('гонка двух вызовов начисляет рейтинг один раз', async () => {
+    // Замком служит сам переход: он идёт первым и только из «Завершён».
+    prisma.tournament.updateMany.mockResolvedValue({ count: 0 });
+
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/finish`, { auth: true });
+
+    expect(result.status).toBe(400);
+  });
+
+  it('судье клуба завершение закрыто — ADR-014', async () => {
+    prisma.clubMember.findUnique.mockResolvedValue(null);
+
+    expect(
+      (await call('POST', `/tournaments/${TOURNAMENT_ID}/finish`, { auth: true })).status,
+    ).toBe(403);
+  });
+
+  it('без токена не завершается', async () => {
+    expect((await call('POST', `/tournaments/${TOURNAMENT_ID}/finish`)).status).toBe(401);
   });
 });
 

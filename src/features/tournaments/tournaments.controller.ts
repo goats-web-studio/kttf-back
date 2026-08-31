@@ -46,8 +46,7 @@ const uuidParam = z.uuid();
 /**
  * Контракт — ТС 7.5. Маршруты и их формы менять нельзя без правки документа.
  *
- * Завершение, снимок и синхронизация сюда пока не входят: первое требует
- * результатов всех встреч, остальные два — офлайн-режима консоли.
+ * Снимок и синхронизация сюда пока не входят: оба ждут офлайн-режима консоли.
  *
  * Чтение открыто без токена — это публичный календарь (ТЗ 9.2). Токен, если
  * он есть, влияет только на видимость черновиков.
@@ -159,6 +158,21 @@ export class TournamentsController {
     @CurrentUserId() userId: string,
   ): Promise<TournamentView> {
     return this.tournaments.start(id, userId);
+  }
+
+  /**
+   * Завершение и обсчёт — ТЗ 4.1 и ТЗ 7.3.
+   *
+   * Один маршрут на оба перехода: ТС 7.5 отдельного не даёт. Из «Завершён»
+   * вызов доводит до «Обсчитан», не повторяя того, что уже сделано.
+   */
+  @Post(':id/finish')
+  @UseGuards(JwtAuthGuard)
+  async finish(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @CurrentUserId() userId: string,
+  ): Promise<TournamentView> {
+    return this.tournaments.finish(id, userId);
   }
 
   @Get(':id/standings')

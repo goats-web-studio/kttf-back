@@ -1,6 +1,7 @@
 import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
+import { calculateTournamentRating, type TournamentLevel } from '@kttf/shared/rating';
 import {
   formatConfigSchema,
   seedingConfigSchema,
@@ -31,6 +32,13 @@ import { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { advanceAfterGroups } from './advance.js';
 import { type DrawParticipant, planDraw } from './draw.js';
 import { checkEligibility } from './eligibility.js';
+import {
+  buildRatingRun,
+  playersWithoutSnapshot,
+  unfinishedMatches,
+  unresolvedTies,
+  withdrawnPlayers,
+} from './finish.js';
 import { buildStandings } from './standings.js';
 import { writeStage } from './stage-writer.js';
 import {
@@ -598,6 +606,177 @@ export class TournamentsService {
     });
 
     return toTournamentView(updated);
+  }
+
+  /**
+   * Завершение турнира и рейтинг по итогам — ТЗ 4.1, ТЗ 7.3, ТС 7.5.
+   *
+   * Два перехода за один вызов, но **двумя транзакциями**. ТЗ 4.1 разводит
+   * «Завершён» и «Обсчитан» условием «расчёт рейтинга выполнен успешно»,
+   * а ТС 7.5 даёт под них один маршрут. Поэтому первая транзакция закрывает
+   * турнир, вторая начисляет рейтинг: упавший расчёт оставляет турнир
+   * в «Завершён», и повторный вызов доводит дело до конца, ничего не
+   * пересчитывая заново.
+   *
+   * Начисление идёт против рейтингов, зафиксированных на старте (ТС 5.4),
+   * а не против текущих. Сам расчёт — в общем коде: офлайн-консоль обязана
+   * получить те же числа тем же кодом (запрет №2 брифа).
+   */
+  async finish(id: string, userId: string): Promise<TournamentView> {
+    const tournament = await this.load(id);
+
+    await this.assertClubStaff(tournament.clubId, userId);
+
+    if (tournament.status === 'RUNNING') {
+      await this.closeTournament(id, userId);
+    } else if (tournament.status !== 'FINISHED') {
+      // Из «Обсчитан» второй раз рейтинг не начисляется: он уже разошёлся
+      // по журналу и профилям, и повторный проход удвоил бы его.
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Transition is not allowed', {
+        id,
+        from: tournament.status,
+        action: 'finish',
+      });
+    }
+
+    return this.applyRating(id, tournament.level, userId);
+  }
+
+  /**
+   * Первая транзакция: турнир доигран, места определены, переход в «Завершён».
+   *
+   * Обе проверки — условия ТЗ 4.1 сверх таблицы переходов. Незавершённое
+   * равенство останавливает завершение так же жёстко, как несыгранная
+   * встреча: результат турнира — это места, а не набор счетов (ADR-008).
+   */
+  private async closeTournament(id: string, userId: string): Promise<void> {
+    const [stages, registrations] = await Promise.all([
+      this.loadStages(id),
+      this.prisma.registration.findMany({
+        where: { tournamentId: id },
+        select: registrationFields,
+      }),
+    ]);
+
+    const withdrawn = withdrawnPlayers(registrations);
+    const unfinished = unfinishedMatches(stages, withdrawn);
+
+    if (unfinished.length > 0) {
+      throw new AppError(ERROR_CODES.TOURNAMENT_NOT_COMPLETE, 'Tournament has unplayed matches', {
+        id,
+        matchIds: unfinished,
+      });
+    }
+
+    const ties = unresolvedTies(
+      buildStandings({ tournamentId: id, stages, withdrawn: [...withdrawn] }),
+    );
+
+    if (ties.length > 0) {
+      throw new AppError(ERROR_CODES.TIES_UNRESOLVED, 'Some ties are not resolved by referee', {
+        id,
+        groups: ties,
+      });
+    }
+
+    const outsiders = playersWithoutSnapshot(stages, registrations);
+
+    if (outsiders.length > 0) {
+      throw new AppError(
+        ERROR_CODES.RATING_SNAPSHOT_MISSING,
+        'Some players have no rating snapshot taken at start',
+        { id, playerIds: outsiders },
+      );
+    }
+
+    await this.prisma.tournament.update({
+      where: { id },
+      data: { status: 'FINISHED', finishedAt: new Date() },
+      select: { id: true },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        actorId: userId,
+        action: 'tournament.finished',
+        entityType: 'Tournament',
+        entityId: id,
+      },
+    });
+  }
+
+  /**
+   * Вторая транзакция: журнал рейтинга, проекции игроков, переход в «Обсчитан».
+   *
+   * Переход служит и замком: он идёт первым и только из «Завершён», поэтому
+   * два одновременных вызова не начислят рейтинг дважды — второй не найдёт
+   * турнир в нужном статусе и откатится целиком.
+   */
+  private async applyRating(
+    id: string,
+    level: TournamentLevel,
+    userId: string,
+  ): Promise<TournamentView> {
+    const [stages, registrations] = await Promise.all([
+      this.loadStages(id),
+      this.prisma.registration.findMany({
+        where: { tournamentId: id },
+        select: registrationFields,
+      }),
+    ]);
+
+    const run = buildRatingRun(level, registrations, stages);
+    const result = calculateTournamentRating(run);
+
+    return this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.tournament.updateMany({
+        where: { id, status: 'FINISHED' },
+        data: { status: 'RATED', ratedAt: new Date() },
+      });
+
+      if (claimed.count === 0) {
+        throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Transition is not allowed', {
+          id,
+          action: 'rate',
+        });
+      }
+
+      await tx.ratingEvent.createMany({
+        data: result.events.map((event) => ({
+          playerId: event.playerId,
+          matchId: event.matchId,
+          tournamentId: id,
+          type: 'MATCH' as const,
+          ratingBefore: event.ratingBefore,
+          delta: event.delta,
+          ratingAfter: event.ratingAfter,
+          opponentRating: event.opponentRating,
+          kFactor: event.kFactor,
+          tFactor: event.tFactor,
+          mFactor: event.mFactor,
+          expected: event.expected,
+          gapMultiplier: event.gapMultiplier,
+          imbalance: event.imbalance,
+          clamped: event.clamped,
+          createdBy: userId,
+        })),
+      });
+
+      for (const player of result.players) {
+        await tx.player.update({
+          where: { id: player.playerId },
+          data: {
+            rating: player.rating,
+            ratedMatches: player.ratedMatches,
+            isProvisional: player.isProvisional,
+          },
+        });
+      }
+
+      return toTournamentView(
+        await tx.tournament.findUniqueOrThrow({ where: { id }, select: tournamentFields }),
+      );
+    });
   }
 
   /** Групповые таблицы — ТЗ 6.6. Открыты всем, кому открыт сам турнир. */

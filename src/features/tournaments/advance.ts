@@ -6,9 +6,10 @@ import { formatConfigSchema, type FormatConfig } from '@kttf/shared/types';
 import type { Prisma } from '../../generated/prisma/client.js';
 
 import { planNextStage } from './draw.js';
+import { isStageComplete } from './stage-completion.js';
 import { buildStandings } from './standings.js';
 import { writeStage } from './stage-writer.js';
-import { type StageRecord, stageFields } from './tournaments.select.js';
+import { stageFields } from './tournaments.select.js';
 
 /**
  * Достройка этапа по итогам группового этапа.
@@ -66,7 +67,7 @@ export async function advanceAfterGroups(
   });
   const withdrawn = withdrawnRows.map((registration) => registration.playerId);
 
-  if (!isComplete(groupStage, new Set(withdrawn))) return NOTHING;
+  if (!isStageComplete(groupStage, new Set(withdrawn))) return NOTHING;
 
   const standings = buildStandings({ tournamentId, stages: [groupStage], withdrawn });
 
@@ -85,24 +86,4 @@ export async function advanceAfterGroups(
   if (planned === null) return NOTHING;
 
   return { stageId: await writeStage(tx, tournamentId, planned), blockedByTies: [] };
-}
-
-/**
- * Сыграна ли группа целиком.
- *
- * Встречи снявшегося ждать нельзя: он их не сыграет никогда. Техническую
- * победу сопернику даёт расчёт таблицы, а не запись в базе (ADR-009),
- * поэтому такая встреча так и остаётся без результата и завершению этапа
- * не мешает.
- */
-function isComplete(stage: StageRecord, withdrawn: ReadonlySet<string>): boolean {
-  return stage.matches.every(
-    (match) =>
-      match.setsA !== null ||
-      match.playerAId === null ||
-      match.playerBId === null ||
-      match.status === 'CANCELLED' ||
-      withdrawn.has(match.playerAId) ||
-      withdrawn.has(match.playerBId),
-  );
 }
