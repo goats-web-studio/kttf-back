@@ -93,6 +93,8 @@ export const matchFields = {
   resultType: true,
   bracketRound: true,
   bracketSlot: true,
+  startedAt: true,
+  finishedAt: true,
 } as const;
 
 export const stageFields = {

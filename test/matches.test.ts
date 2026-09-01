@@ -494,6 +494,27 @@ describe('назначение на стол — ТЗ 6.2', () => {
     expect(matchById(M1)).toMatchObject({ tableNumber: 3, status: 'PLAYING' });
   });
 
+  it('отдаёт время выхода на стол и время закрытия', async () => {
+    // Очередь консоли сортируется по тому, кто дольше не играл (ТЗ 6.1).
+    // Колонки в базе были и раньше, наружу они не выходили.
+    const assigned = await call('POST', `/matches/${M1}/assign`, {
+      body: { tableNumber: 3 },
+      auth: true,
+    });
+
+    expect(assigned.body).toMatchObject({ finishedAt: null });
+    expect(typeof (assigned.body as { startedAt: unknown }).startedAt).toBe('string');
+
+    const played = await call('POST', `/matches/${M1}/result`, {
+      body: { setsA: 3, setsB: 0 },
+      auth: true,
+    });
+
+    expect(typeof (played.body as { match: { finishedAt: unknown } }).match.finishedAt).toBe(
+      'string',
+    );
+  });
+
   it('сыгранную встречу на стол не ставят', async () => {
     await call('POST', `/matches/${M1}/result`, { body: { setsA: 3, setsB: 0 }, auth: true });
 

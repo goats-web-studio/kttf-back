@@ -134,6 +134,8 @@ export function toMatchView(match: MatchRecord): MatchView {
     resultType: match.resultType,
     bracketRound: match.bracketRound,
     bracketSlot: match.bracketSlot,
+    startedAt: match.startedAt?.toISOString() ?? null,
+    finishedAt: match.finishedAt?.toISOString() ?? null,
   };
 }
 
