@@ -9,6 +9,7 @@ import {
   type SeedingConfig,
   type TieDecisionInput,
   type TieDecisionResult,
+  type TournamentResultsView,
   type TournamentStandingsView,
 } from '@kttf/shared/types';
 import type {
@@ -39,6 +40,7 @@ import {
   unresolvedTies,
   withdrawnPlayers,
 } from './finish.js';
+import { buildResults } from './results.js';
 import { buildStandings } from './standings.js';
 import { writeStage } from './stage-writer.js';
 import {
@@ -51,6 +53,7 @@ import { toRegistrationView, toStageView, toTournamentView } from './tournaments
 import {
   OCCUPYING_STATUSES,
   playerFields,
+  ratingEventFields,
   registrationFields,
   type StageRecord,
   stageFields,
@@ -776,6 +779,47 @@ export class TournamentsService {
       return toTournamentView(
         await tx.tournament.findUniqueOrThrow({ where: { id }, select: tournamentFields }),
       );
+    });
+  }
+
+  /**
+   * Публичные результаты — ТЗ 9.4. Открыты без токена, как и календарь.
+   *
+   * Отдаётся то, что дала схема проведения: у круговой нет сетки, у олимпийки
+   * нет таблиц, а в «группах плюс сетка» часть участников мест не разыгрывает.
+   * Пустая секция здесь — ответ, а не пропуск (ADR-023).
+   */
+  async results(id: string, userId?: string): Promise<TournamentResultsView> {
+    const tournament = await this.prisma.tournament.findUnique({
+      where: { id },
+      select: tournamentFields,
+    });
+
+    if (tournament === null || (tournament.status === 'DRAFT' && !(await this.isClubStaff(tournament.clubId, userId)))) {
+      throw new AppError(ERROR_CODES.NOT_FOUND, 'Tournament not found', { id });
+    }
+
+    const [stages, registrations, events] = await Promise.all([
+      this.loadStages(id),
+      this.prisma.registration.findMany({
+        where: { tournamentId: id },
+        select: registrationFields,
+        orderBy: { createdAt: 'asc' },
+      }),
+      this.prisma.ratingEvent.findMany({
+        where: { tournamentId: id },
+        select: ratingEventFields,
+      }),
+    ]);
+
+    const withdrawn = withdrawnPlayers(registrations);
+
+    return buildResults({
+      tournament,
+      stages,
+      registrations,
+      standings: buildStandings({ tournamentId: id, stages, withdrawn: [...withdrawn] }),
+      events,
     });
   }
 

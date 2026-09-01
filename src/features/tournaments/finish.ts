@@ -150,7 +150,15 @@ function toRatedMatch(match: PlayedMatch): RatedMatch {
   };
 }
 
-function byBracketPosition(left: MatchRecord, right: MatchRecord): number {
+/**
+ * Структурный порядок встреч: этап, круг, позиция, идентификатор.
+ *
+ * Экспортируется, потому что тот же порядок нужен публичным результатам:
+ * журнал `RatingEvent` своего порядка не хранит — все события турнира пишутся
+ * одним `createMany` и получают одинаковый `createdAt`. Второе определение
+ * того же порядка неизбежно разошлось бы с этим.
+ */
+export function byBracketPosition(left: MatchRecord, right: MatchRecord): number {
   const round = (left.bracketRound ?? 0) - (right.bracketRound ?? 0);
   if (round !== 0) return round;
 

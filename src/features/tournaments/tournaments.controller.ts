@@ -16,6 +16,7 @@ import {
   type TieDecisionResult,
   type TournamentView,
   type DrawResult,
+  type TournamentResultsView,
   type TournamentStandingsView,
   type UpdateRegistrationInput,
   type UpdateTournamentInput,
@@ -173,6 +174,16 @@ export class TournamentsController {
     @CurrentUserId() userId: string,
   ): Promise<TournamentView> {
     return this.tournaments.finish(id, userId);
+  }
+
+  /** Публичные результаты — ТЗ 9.4. Открыты без токена, как и календарь. */
+  @Get(':id/results')
+  @UseGuards(OptionalJwtGuard)
+  async results(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @OptionalUserId() userId?: string,
+  ): Promise<TournamentResultsView> {
+    return this.tournaments.results(id, userId);
   }
 
   @Get(':id/standings')

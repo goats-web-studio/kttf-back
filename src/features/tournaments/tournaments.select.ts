@@ -115,6 +115,15 @@ export const stageFields = {
   matches: { select: matchFields, orderBy: { bracketRound: 'asc' } },
 } as const;
 
+/** Журнал рейтинга для публичных результатов — ТЗ 9.4. */
+export const ratingEventFields = {
+  playerId: true,
+  matchId: true,
+  ratingBefore: true,
+  delta: true,
+  ratingAfter: true,
+} as const;
+
 export type TournamentRecord = Prisma.TournamentGetPayload<{ select: typeof tournamentFields }>;
 export type StageRecord = Prisma.StageGetPayload<{ select: typeof stageFields }>;
 export type MatchRecord = Prisma.MatchGetPayload<{ select: typeof matchFields }>;
