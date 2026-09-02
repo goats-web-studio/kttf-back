@@ -29,6 +29,7 @@ import { defined } from '../../common/objects.js';
 import { pageOf, skipOf } from '../../common/pagination.js';
 import { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
+import { ScreenEventsService } from '../screen/screen-events.service.js';
 
 import { advanceAfterGroups } from './advance.js';
 import { type DrawParticipant, planDraw } from './draw.js';
@@ -68,7 +69,10 @@ function publicToken(): string {
 
 @Injectable()
 export class TournamentsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly screen: ScreenEventsService,
+  ) {}
 
   /**
    * Календарь — ТЗ 9.2, доступен без токена.
@@ -543,6 +547,10 @@ export class TournamentsService {
 
     const stages = await this.loadStages(id);
 
+    // Экран зала показывает сетку сразу после жеребьёвки, а не после старта:
+    // до первой встречи зрителю интересно как раз то, кто с кем играет.
+    this.screen.changed(id);
+
     return {
       tournamentId: id,
       stages: stages.map(toStageView),
@@ -608,6 +616,8 @@ export class TournamentsService {
       });
     });
 
+    this.screen.changed(id);
+
     return toTournamentView(updated);
   }
 
@@ -642,7 +652,11 @@ export class TournamentsService {
       });
     }
 
-    return this.applyRating(id, tournament.level, userId);
+    const rated = await this.applyRating(id, tournament.level, userId);
+
+    this.screen.changed(id);
+
+    return rated;
   }
 
   /**
@@ -898,6 +912,8 @@ export class TournamentsService {
       next.stageId === null
         ? null
         : await this.prisma.stage.findUnique({ where: { id: next.stageId }, select: stageFields });
+
+    this.screen.changed(id);
 
     return {
       standings: await this.standings(id, userId),

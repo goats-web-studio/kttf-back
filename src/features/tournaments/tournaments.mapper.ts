@@ -75,7 +75,7 @@ export function toTournamentView(tournament: TournamentRecord): TournamentView {
   };
 }
 
-function toPlayerView(player: RegistrationRecord['player']): PlayerView {
+export function toPlayerView(player: RegistrationRecord['player']): PlayerView {
   return {
     id: player.id,
     userId: player.userId,

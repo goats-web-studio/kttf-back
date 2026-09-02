@@ -13,6 +13,7 @@ import { Injectable } from '@nestjs/common';
 
 import { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
+import { ScreenEventsService } from '../screen/screen-events.service.js';
 import { advanceAfterGroups } from '../tournaments/advance.js';
 import { setsToWinOf } from '../tournaments/stage-config.js';
 import { toMatchView, toStageView } from '../tournaments/tournaments.mapper.js';
@@ -40,7 +41,10 @@ type MatchWithContext = Prisma.MatchGetPayload<{ select: typeof matchWithContext
 
 @Injectable()
 export class MatchesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly screen: ScreenEventsService,
+  ) {}
 
   async findById(id: string): Promise<MatchDetailView> {
     const match = await this.load(id);
@@ -71,6 +75,8 @@ export class MatchesService {
       data: { tableNumber: input.tableNumber, status: 'PLAYING', startedAt: new Date() },
       select: matchFields,
     });
+
+    this.screen.changed(match.tournamentId);
 
     return toMatchView(updated);
   }
@@ -123,6 +129,8 @@ export class MatchesService {
 
       return { written, advanced: await this.applyAdvancement(tx, match.stage.id) };
     });
+
+    this.screen.changed(match.tournamentId);
 
     return {
       match: toMatchView(updated.written),
@@ -219,6 +227,10 @@ export class MatchesService {
 
     const nextStage =
       outcome.next.stageId === null ? null : await this.loadStage(outcome.next.stageId);
+
+    // После транзакции, а не внутри: экран, разбуженный до коммита, перечитал
+    // бы базу и увидел состояние без только что введённого счёта.
+    this.screen.changed(match.tournamentId);
 
     return {
       match: toMatchView(outcome.written),
