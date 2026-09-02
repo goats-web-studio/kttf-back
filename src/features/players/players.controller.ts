@@ -2,11 +2,18 @@ import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@ne
 import {
   createPlayerSchema,
   listPlayersSchema,
+  playerMatchesQuerySchema,
+  ratingHistoryQuerySchema,
   updatePlayerSchema,
   type CreatePlayerInput,
+  type HeadToHeadView,
   type ListPlayersQuery,
   type Page,
+  type PlayerMatchesQuery,
+  type PlayerMatchView,
   type PlayerView,
+  type RatingHistoryQuery,
+  type RatingHistoryView,
   type UpdatePlayerInput,
 } from '@kttf/shared/types';
 import { z } from 'zod';
@@ -20,10 +27,8 @@ const uuidParam = z.uuid();
 /**
  * Контракт — ТС 7.2.
  *
- * Трёх маршрутов раздела здесь нет: `rating-history`, `matches` и
- * `head-to-head`. Все три читают журнал рейтинга и встречи, которых до
- * появления турниров попросту не существует. Заводить их сейчас означало бы
- * отдавать пустые списки там, где клиент вправе ждать данные.
+ * История игрока открыта без входа, как и остальное чтение: результаты
+ * турниров — спортивный факт, а не персональные данные (ТЗ 9.3).
  */
 @Controller('players')
 export class PlayersController {
@@ -39,6 +44,31 @@ export class PlayersController {
   @Get(':id')
   async findOne(@Param('id', new ZodValidationPipe(uuidParam)) id: string): Promise<PlayerView> {
     return this.players.findById(id);
+  }
+
+  /** Кривая рейтинга — ТЗ 9.3. Границы по времени необязательны. */
+  @Get(':id/rating-history')
+  async ratingHistory(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @Query(new ZodValidationPipe(ratingHistoryQuerySchema)) query: RatingHistoryQuery,
+  ): Promise<RatingHistoryView> {
+    return this.players.ratingHistory(id, query);
+  }
+
+  @Get(':id/matches')
+  async matches(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @Query(new ZodValidationPipe(playerMatchesQuerySchema)) query: PlayerMatchesQuery,
+  ): Promise<Page<PlayerMatchView>> {
+    return this.players.matches(id, query);
+  }
+
+  @Get(':id/head-to-head/:opponentId')
+  async headToHead(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @Param('opponentId', new ZodValidationPipe(uuidParam)) opponentId: string,
+  ): Promise<HeadToHeadView> {
+    return this.players.headToHead(id, opponentId);
   }
 
   /**

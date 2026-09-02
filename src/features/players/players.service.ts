@@ -1,16 +1,24 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import type {
   CreatePlayerInput,
+  HeadToHeadView,
   ListPlayersQuery,
   Page,
+  PlayerMatchesQuery,
+  PlayerMatchView,
   PlayerView,
+  RatingHistoryQuery,
+  RatingHistoryView,
   UpdatePlayerInput,
 } from '@kttf/shared/types';
 import { Injectable } from '@nestjs/common';
 
 import { defined } from '../../common/objects.js';
 import { pageOf, skipOf } from '../../common/pagination.js';
+import { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
+
+import { buildRatingPoints, summarize, toPlayerMatch } from './history.js';
 
 const playerFields = {
   id: true,
@@ -28,6 +36,33 @@ const playerFields = {
   isProvisional: true,
   createdAt: true,
 } as const;
+
+/** Сыгранная встреча этого игрока: без результата в истории показывать нечего. */
+function playedBy(playerId: string) {
+  return {
+    OR: [{ playerAId: playerId }, { playerBId: playerId }],
+    setsA: { not: null },
+  };
+}
+
+/** Поля встречи для истории. Дельта берётся только своя — журнал общий. */
+function matchFields(playerId: string) {
+  return {
+    id: true,
+    tournamentId: true,
+    playerAId: true,
+    playerBId: true,
+    setsA: true,
+    setsB: true,
+    resultType: true,
+    finishedAt: true,
+    tournament: { select: { name: true } },
+    stage: { select: { name: true } },
+    ratingEvents: { where: { playerId }, select: { delta: true } },
+  } as const;
+}
+
+type MatchRow = Prisma.MatchGetPayload<{ select: ReturnType<typeof matchFields> }>;
 
 @Injectable()
 export class PlayersService {
@@ -62,6 +97,91 @@ export class PlayersService {
     ]);
 
     return pageOf(rows.map(toPlayerView), total, query);
+  }
+
+  /**
+   * Кривая рейтинга — ТЗ 9.3, ТС 7.2.
+   *
+   * Отдаётся журнал, свёрнутый по турнирам, и текущее значение проекции.
+   * Мест в турнирах здесь нет намеренно: их считает движок по таблицам и
+   * сетке всего турнира (ADR-023), и повторять этот расчёт для каждого
+   * турнира истории значило бы читать пол-базы ради одной колонки. Место
+   * показывает страница результатов турнира, куда ведёт ссылка.
+   */
+  async ratingHistory(id: string, query: RatingHistoryQuery): Promise<RatingHistoryView> {
+    const player = await this.load(id);
+
+    const events = await this.prisma.ratingEvent.findMany({
+      where: {
+        playerId: id,
+        ...(query.from === undefined && query.to === undefined
+          ? {}
+          : {
+              createdAt: {
+                ...(query.from === undefined ? {} : { gte: new Date(query.from) }),
+                ...(query.to === undefined ? {} : { lte: new Date(query.to) }),
+              },
+            }),
+      },
+      select: {
+        tournamentId: true,
+        ratingBefore: true,
+        delta: true,
+        ratingAfter: true,
+        createdAt: true,
+        tournament: { select: { name: true, startsAt: true } },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return {
+      playerId: id,
+      current: player.rating.toString(),
+      points: buildRatingPoints(events),
+    };
+  }
+
+  /** История встреч — ТЗ 9.3, ТС 7.2. Свежие сверху: их и смотрят. */
+  async matches(id: string, query: PlayerMatchesQuery): Promise<Page<PlayerMatchView>> {
+    await this.load(id);
+
+    const where = playedBy(id);
+
+    const [rows, total] = await Promise.all([
+      this.prisma.match.findMany({
+        where,
+        select: matchFields(id),
+        orderBy: [{ finishedAt: { sort: 'desc', nulls: 'last' } }],
+        skip: skipOf(query),
+        take: query.limit,
+      }),
+      this.prisma.match.count({ where }),
+    ]);
+
+    return pageOf(await this.withOpponents(rows, id), total, query);
+  }
+
+  /**
+   * Личный счёт против соперника — ТЗ 9.3, ТС 7.2.
+   *
+   * Встречи не разбиваются на страницы: их между двумя игроками единицы,
+   * а итог обязан считаться по всем — по странице он был бы неверным.
+   */
+  async headToHead(id: string, opponentId: string): Promise<HeadToHeadView> {
+    await this.load(id);
+    const opponent = await this.findById(opponentId);
+
+    const rows = await this.prisma.match.findMany({
+      where: {
+        AND: [playedBy(id), playedBy(opponentId)],
+      },
+      select: matchFields(id),
+      orderBy: [{ finishedAt: { sort: 'desc', nulls: 'last' } }],
+    });
+
+    const matches = await this.withOpponents(rows, id);
+
+    return { playerId: id, opponent, ...summarize(matches), matches };
   }
 
   async findById(id: string): Promise<PlayerView> {
@@ -178,6 +298,47 @@ export class PlayersService {
   }
 
   /** Ссылка на несуществующий клуб иначе упала бы отказом внешнего ключа. */
+  /**
+   * Подстановка соперников одним запросом.
+   *
+   * Иначе на странице в двадцать встреч уходит двадцать запросов, а игрок
+   * в турнире встречается с одними и теми же людьми не по разу.
+   */
+  private async withOpponents(
+    rows: readonly MatchRow[],
+    playerId: string,
+  ): Promise<PlayerMatchView[]> {
+    const ids = [
+      ...new Set(
+        rows
+          .map((row) => (row.playerAId === playerId ? row.playerBId : row.playerAId))
+          .filter((id): id is string => id !== null),
+      ),
+    ];
+
+    const players = await this.prisma.player.findMany({
+      where: { id: { in: ids } },
+      select: playerFields,
+    });
+
+    const byId = new Map(players.map((player) => [player.id, toPlayerView(player)]));
+
+    return rows.map((row) => toPlayerMatch(row, playerId, byId));
+  }
+
+  private async load(id: string): Promise<{ id: string; rating: Prisma.Decimal }> {
+    const player = await this.prisma.player.findUnique({
+      where: { id },
+      select: { id: true, rating: true },
+    });
+
+    if (player === null) {
+      throw new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { id });
+    }
+
+    return player;
+  }
+
   private async assertClubExists(clubId: string | undefined): Promise<void> {
     if (clubId === undefined) return;
 

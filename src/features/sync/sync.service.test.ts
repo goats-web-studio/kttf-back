@@ -23,7 +23,13 @@ const MATCH_ID = '00000000-0000-4000-8000-000000000003';
 const OTHER_MATCH = '00000000-0000-4000-8000-000000000004';
 const USER_ID = '00000000-0000-4000-8000-000000000005';
 
-function op(seq: number, over: Partial<SyncOperation> = {}): SyncOperation {
+/**
+ * Операция очереди.
+ *
+ * Правки принимаются свободным набором полей: у разных типов операций поля
+ * разные, а `Partial` поверх размеченного объединения их не сводит.
+ */
+function op(seq: number, over: Record<string, unknown> = {}): SyncOperation {
   return {
     clientOpId: `00000000-0000-4000-8000-00000000010${String(seq)}`,
     seq,
@@ -32,7 +38,7 @@ function op(seq: number, over: Partial<SyncOperation> = {}): SyncOperation {
     matchId: MATCH_ID,
     payload: { setsA: 3, setsB: 1, resultType: 'NORMAL' },
     ...over,
-  } as SyncOperation;
+  } as unknown as SyncOperation;
 }
 
 /** Запись турнира в том виде, в каком её читает маппер. */
@@ -79,9 +85,13 @@ let journal: {
 function makePrisma() {
   return {
     tournament: {
-      findUnique: vi.fn(() => Promise.resolve(tournamentRow)),
+      findUnique: vi.fn((): Promise<typeof tournamentRow | null> => Promise.resolve(tournamentRow)),
     },
-    clubMember: { findUnique: vi.fn(() => Promise.resolve({ role: 'REFEREE' })) },
+    clubMember: {
+      findUnique: vi.fn((): Promise<{ role: string } | null> =>
+        Promise.resolve({ role: 'REFEREE' }),
+      ),
+    },
     match: {
       findUnique: vi.fn((args: { where: { id: string } }) =>
         Promise.resolve(
