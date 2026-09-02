@@ -171,6 +171,7 @@ describe('олимпийская сетка', () => {
 describe('групповой этап', () => {
   const GROUPS: FormatConfig = {
     type: 'GROUPS_KNOCKOUT',
+    groupRounds: 1,
     groupCount: 2,
     advancePerGroup: 2,
     groupSetsToWin: 3,
@@ -193,6 +194,30 @@ describe('групповой этап', () => {
     expect(plan.stages[0]?.matches).toHaveLength(12);
   });
 
+  it('два круга удваивают встречи и продолжают нумерацию туров', () => {
+    // ТЗ 5.2: кругов в группе один или два. До появления параметра здесь
+    // стояла единица, и второй круг задать было нечем.
+    const plan = planDraw({ ...GROUPS, groupRounds: 2 }, participants(8), null, makeIdFactory());
+
+    expect(plan.stages[0]?.matches).toHaveLength(24);
+
+    // Туры второго круга идут следом за первым, а не начинаются заново:
+    // очередь консоли видит единую последовательность.
+    const rounds = (plan.stages[0]?.matches ?? [])
+      .map((match) => match.bracketRound)
+      .filter((round): round is number => round !== null);
+
+    expect([...new Set(rounds)].sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it('кругов в этапе записано столько же, сколько разыграно', () => {
+    // Планка сетов и число кругов лежат в конфигурации этапа: по ней
+    // считается таблица и проверяется счёт.
+    const plan = planDraw({ ...GROUPS, groupRounds: 2 }, participants(8), null, makeIdFactory());
+
+    expect(plan.stages[0]?.config).toMatchObject({ rounds: 2 });
+  });
+
   it('несведённые одноклубники возвращаются списком', () => {
     // Их не может не быть: четверо из одного клуба на две группы —
     // совпадение неизбежно арифметически (ADR-011).
@@ -212,6 +237,7 @@ describe('групповой этап', () => {
 describe('достройка этапа по итогам групп', () => {
   const GROUPS_KNOCKOUT: FormatConfig = {
     type: 'GROUPS_KNOCKOUT',
+    groupRounds: 1,
     groupCount: 2,
     advancePerGroup: 2,
     groupSetsToWin: 3,
@@ -221,6 +247,7 @@ describe('достройка этапа по итогам групп', () => {
 
   const FINAL_GROUPS: FormatConfig = {
     type: 'GROUPS_FINAL_GROUPS',
+    groupRounds: 1,
     groupCount: 2,
     advancePerGroup: 2,
     finalGroupCount: 2,
@@ -291,6 +318,15 @@ describe('достройка этапа по итогам групп', () => {
     expect(stage?.matches.every((match) => match.groupKey !== null)).toBe(true);
   });
 
+  it('финальные группы играют столько же кругов, сколько групповой этап', () => {
+    // У этой схемы одно поле на оба этапа — ровно как `setsToWin`.
+    // Отдельного параметра для финальных групп ТЗ 5.2 не задаёт.
+    const stage = planNextStage({ ...FINAL_GROUPS, groupRounds: 2 }, SELECTION, makeIdFactory());
+
+    expect(stage?.matches).toHaveLength(4);
+    expect(stage?.config).toMatchObject({ rounds: 2 });
+  });
+
   it('схемы без второго этапа его и не получают', () => {
     expect(planNextStage(ROUND_ROBIN, SELECTION, makeIdFactory())).toBeNull();
   });
@@ -304,6 +340,7 @@ describe('жеребьёвка отвергает конфигурацию, из
       type: 'GROUPS_KNOCKOUT',
       groupCount: 1,
       advancePerGroup: 1,
+      groupRounds: 1,
       groupSetsToWin: 3,
       koSetsToWin: 3,
       thirdPlace: false,

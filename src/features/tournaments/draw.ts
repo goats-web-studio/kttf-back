@@ -179,6 +179,10 @@ function planKnockout(
     // Утешительная сетка для проигравших в первом круге — ТЗ 5.1. Движок её
     // не строит, а собирать сетку в приложении запрещено запретом №2:
     // офлайн-консоль должна получить ту же сетку тем же кодом.
+    //
+    // Сюда этот флаг больше не доходит: его отвергает схема конфигурации при
+    // создании турнира (ADR-024). Проверка остаётся вторым рубежом на случай,
+    // когда запрет в схеме снимут раньше, чем появится построитель.
     throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Consolation bracket is not supported yet', {
       format: config.type,
     });
@@ -292,7 +296,7 @@ function planGroupStage(
   }
 
   const matches = groups.flatMap((group) =>
-    scheduleRoundRobin(group.participants, 1).map((match) => ({
+    scheduleRoundRobin(group.participants, config.groupRounds).map((match) => ({
       id: makeId(),
       groupKey: group.key,
       playerAId: match.a,
@@ -310,7 +314,7 @@ function planGroupStage(
         order: 0,
         type: 'GROUPS',
         name: 'Групповой этап',
-        config: { setsToWin, advancePerGroup: config.advancePerGroup },
+        config: { setsToWin, advancePerGroup: config.advancePerGroup, rounds: config.groupRounds },
         groups,
         matches,
       },
@@ -397,8 +401,11 @@ function planFinalGroups(
     participants,
   }));
 
+  // Кругов столько же, сколько в группах: у этой схемы одно поле на оба
+  // этапа, ровно как `setsToWin`. Отдельного параметра для финальных групп
+  // ТЗ 5.2 не задаёт, и выдумывать его здесь не за что.
   const matches = groups.flatMap((group) =>
-    scheduleRoundRobin(group.participants, 1).map((match) => ({
+    scheduleRoundRobin(group.participants, config.groupRounds).map((match) => ({
       id: makeId(),
       groupKey: group.key,
       playerAId: match.a,
@@ -414,7 +421,7 @@ function planFinalGroups(
     order: 1,
     type: 'GROUPS',
     name: 'Финальные группы',
-    config: { setsToWin: config.setsToWin },
+    config: { setsToWin: config.setsToWin, rounds: config.groupRounds },
     groups,
     matches,
   };
