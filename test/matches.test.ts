@@ -112,6 +112,8 @@ interface Db {
   formatConfig: unknown;
   status: string;
   role: string | null;
+  /** Версия турнира: растёт на каждое изменение — ТС 6.3. */
+  version: number;
 }
 
 function makeDb(over: Partial<Db> = {}): Db {
@@ -124,6 +126,7 @@ function makeDb(over: Partial<Db> = {}): Db {
     formatConfig: KNOCKOUT,
     status: 'RUNNING',
     role: 'OWNER',
+    version: 0,
     ...over,
   };
 }
@@ -242,6 +245,12 @@ function makePrisma(db: Db) {
     },
     tournament: {
       findUnique: vi.fn(() => Promise.resolve({ formatConfig: db.formatConfig })),
+      // Счётчик версии для офлайн-синхронизации — ТС 6.3. Считается по-настоящему:
+      // консоль по нему узнаёт, что снимок устарел.
+      update: vi.fn(() => {
+        db.version += 1;
+        return Promise.resolve({ id: TOURNAMENT_ID });
+      }),
     },
     registration: {
       findMany: vi.fn(() => Promise.resolve(db.withdrawn.map((playerId) => ({ playerId })))),
@@ -424,6 +433,16 @@ describe('ввод счёта — ТЗ 6.3', () => {
 
     expect(matchById(FINAL).playerAId).toBe(P4);
     expect(result.body.updated).toMatchObject([{ id: FINAL, playerAId: P4 }]);
+  });
+
+  it('версия турнира растёт: снимок офлайн-консоли устарел — ТС 6.3', async () => {
+    const before = db.version;
+
+    await call('POST', `/matches/${M1}/result`, { body: { setsA: 3, setsB: 0 }, auth: true });
+
+    // По этому числу консоль, вернувшаяся из офлайна, узнаёт, что за время
+    // её отсутствия турнир изменился, и подтягивает снимок заново.
+    expect(db.version).toBe(before + 1);
   });
 
   it('счёт не по схеме отвергается', async () => {

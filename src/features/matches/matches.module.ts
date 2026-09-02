@@ -10,5 +10,7 @@ import { MatchesService } from './matches.service.js';
   imports: [AuthModule, ScreenModule],
   controllers: [MatchesController],
   providers: [MatchesService],
+  // Синхронизация офлайн-очереди применяет операции этим же сервисом (ТС 6.3).
+  exports: [MatchesService],
 })
 export class MatchesModule {}

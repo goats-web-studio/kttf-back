@@ -53,11 +53,11 @@ model Session {
 
 // Коды из SMS. Живут 5 минут, лимит 5 запросов на телефон в час (ТС 8.3).
 model AuthCode {
-  id        String   @id @default(uuid())
+  id        String    @id @default(uuid())
   phone     String
   codeHash  String
-  attempts  Int      @default(0)
-  createdAt DateTime @default(now())
+  attempts  Int       @default(0)
+  createdAt DateTime  @default(now())
   expiresAt DateTime
   usedAt    DateTime?
 
@@ -184,16 +184,21 @@ model Tournament {
 
   publicToken String @unique // второй экран, ТЗ 6.5
 
+  // Офлайн-синхронизация, ТС 6.3: растёт на каждое изменение турнира.
+  // Консоль присылает версию снимка, против которого работала.
+  version Int @default(0)
+
   createdAt  DateTime  @default(now())
   startedAt  DateTime?
   finishedAt DateTime?
   ratedAt    DateTime?
 
-  registrations Registration[]
-  stages        Stage[]
-  matches       Match[]
-  ratingEvents  RatingEvent[]
-  transactions  Transaction[]
+  registrations  Registration[]
+  stages         Stage[]
+  matches        Match[]
+  ratingEvents   RatingEvent[]
+  transactions   Transaction[]
+  syncOperations SyncOperation[]
 
   @@index([status, startsAt])
   @@index([clubId, startsAt(sort: Desc)])
@@ -500,6 +505,38 @@ enum AnomalyStatus {
   REVIEWING
   CONFIRMED
   DISMISSED
+}
+
+// ============ Синхронизация офлайн-консоли ============
+
+// ТС 6.3 и ADR-026. Журнал операций, пришедших из очереди консоли.
+//
+// Запись появляется ДО применения операции: обрыв между применением
+// и отметкой оставил бы её неотмеченной, и повторная отправка применила бы
+// счёт дважды. Уникальный (tournamentId, clientOpId) — это и есть
+// идемпотентность синхронизации.
+model SyncOperation {
+  id           String     @id @default(uuid())
+  tournamentId String
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+
+  clientOpId String // UUID, выданный клиентом
+  seq        Int // порядок в очереди клиента
+  type       String // тип операции, ТС 6.2
+  payload    Json?
+
+  // Версия снимка, против которого судья вводил операцию. Ничего не
+  // блокирует: конфликт решает порядок (ADR-026). Нужна для разбора спора.
+  basedOnVersion Int
+
+  actorId        String
+  receivedAt     DateTime  @default(now())
+  appliedAt      DateTime?
+  // Код отказа из общего перечня. Заполнен — операция отклонена.
+  rejectedReason String?
+
+  @@unique([tournamentId, clientOpId])
+  @@index([tournamentId, seq])
 }
 
 // ============ Журнал действий ============

@@ -43,6 +43,7 @@ import {
 } from './finish.js';
 import { buildResults } from './results.js';
 import { buildStandings } from './standings.js';
+import { bumpVersion } from './tournament-state.js';
 import { writeStage } from './stage-writer.js';
 import {
   acceptsRegistrations,
@@ -446,6 +447,10 @@ export class TournamentsService {
         await promoteFromWaitlist(tx, id, tournament.maxParticipants);
       }
 
+      // Снятие участника меняет таблицы: несыгранное уходит соперникам
+      // технической победой (ADR-009), и снимок консоли обязан это увидеть.
+      await bumpVersion(tx, id);
+
       return result;
     });
 
@@ -543,6 +548,8 @@ export class TournamentsService {
       for (const stage of plan.stages) {
         await writeStage(tx, id, stage);
       }
+
+      await bumpVersion(tx, id);
     });
 
     const stages = await this.loadStages(id);
@@ -609,9 +616,10 @@ export class TournamentsService {
         });
       }
 
+      // Версия растёт здесь же: старт меняет и статус, и снимки рейтингов.
       return tx.tournament.update({
         where: { id },
-        data: { status: target, startedAt: new Date() },
+        data: { status: target, startedAt: new Date(), version: { increment: 1 } },
         select: tournamentFields,
       });
     });
@@ -708,7 +716,7 @@ export class TournamentsService {
 
     await this.prisma.tournament.update({
       where: { id },
-      data: { status: 'FINISHED', finishedAt: new Date() },
+      data: { status: 'FINISHED', finishedAt: new Date(), version: { increment: 1 } },
       select: { id: true },
     });
 
@@ -748,7 +756,7 @@ export class TournamentsService {
     return this.prisma.$transaction(async (tx) => {
       const claimed = await tx.tournament.updateMany({
         where: { id, status: 'FINISHED' },
-        data: { status: 'RATED', ratedAt: new Date() },
+        data: { status: 'RATED', ratedAt: new Date(), version: { increment: 1 } },
       });
 
       if (claimed.count === 0) {
@@ -809,7 +817,10 @@ export class TournamentsService {
       select: tournamentFields,
     });
 
-    if (tournament === null || (tournament.status === 'DRAFT' && !(await this.isClubStaff(tournament.clubId, userId)))) {
+    if (
+      tournament === null ||
+      (tournament.status === 'DRAFT' && !(await this.isClubStaff(tournament.clubId, userId)))
+    ) {
       throw new AppError(ERROR_CODES.NOT_FOUND, 'Tournament not found', { id });
     }
 
@@ -905,7 +916,11 @@ export class TournamentsService {
         },
       });
 
-      return advanceAfterGroups(tx, id);
+      const advanced = await advanceAfterGroups(tx, id);
+
+      await bumpVersion(tx, id);
+
+      return advanced;
     });
 
     const stage =

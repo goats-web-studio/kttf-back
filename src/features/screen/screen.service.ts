@@ -3,14 +3,9 @@ import type { ScreenView } from '@kttf/shared/types';
 import { Injectable } from '@nestjs/common';
 
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
-import { withdrawnPlayers } from '../tournaments/finish.js';
-import { buildStandings } from '../tournaments/standings.js';
+import { loadTournamentState } from '../tournaments/tournament-state.js';
 import { toPlayerView, toStageView, toTournamentView } from '../tournaments/tournaments.mapper.js';
-import {
-  registrationFields,
-  stageFields,
-  tournamentFields,
-} from '../tournaments/tournaments.select.js';
+import { tournamentFields } from '../tournaments/tournaments.select.js';
 
 /**
  * Второй экран зала — ТЗ 6.5, маршрут ТС 7.7.
@@ -41,28 +36,13 @@ export class ScreenService {
       throw new AppError(ERROR_CODES.NOT_FOUND, 'Screen not found', { publicToken });
     }
 
-    const [stages, registrations] = await Promise.all([
-      this.prisma.stage.findMany({
-        where: { tournamentId: tournament.id },
-        select: stageFields,
-        orderBy: { order: 'asc' },
-      }),
-      this.prisma.registration.findMany({
-        where: { tournamentId: tournament.id },
-        select: registrationFields,
-        orderBy: { createdAt: 'asc' },
-      }),
-    ]);
+    const state = await loadTournamentState(this.prisma, tournament);
 
     return {
       tournament: toTournamentView(tournament),
-      players: registrations.map((registration) => toPlayerView(registration.player)),
-      standings: buildStandings({
-        tournamentId: tournament.id,
-        stages,
-        withdrawn: [...withdrawnPlayers(registrations)],
-      }),
-      stages: stages.map(toStageView),
+      players: state.registrations.map((registration) => toPlayerView(registration.player)),
+      standings: state.standings,
+      stages: state.stages.map(toStageView),
       updatedAt: new Date().toISOString(),
     };
   }

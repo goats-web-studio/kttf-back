@@ -51,6 +51,9 @@ const tournamentScalars = {
   description: true,
   prizeInfo: true,
   publicToken: true,
+  // Версия для офлайн-синхронизации, ТС 6.3. В ответ API не уходит: её место —
+  // снимок консоли, а не карточка турнира.
+  version: true,
   createdAt: true,
   startedAt: true,
   finishedAt: true,

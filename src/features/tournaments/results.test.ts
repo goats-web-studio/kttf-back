@@ -126,7 +126,14 @@ function tournament(formatType: string): TournamentRecord {
     formatConfig:
       formatType === 'ROUND_ROBIN'
         ? { type: 'ROUND_ROBIN', rounds: 1, setsToWin: 2 }
-        : { type: formatType, groupCount: 2, advancePerGroup: 1, groupSetsToWin: 2, koSetsToWin: 2, thirdPlace: false },
+        : {
+            type: formatType,
+            groupCount: 2,
+            advancePerGroup: 1,
+            groupSetsToWin: 2,
+            koSetsToWin: 2,
+            thirdPlace: false,
+          },
     seedingConfig: null,
     description: null,
     prizeInfo: null,
@@ -386,10 +393,10 @@ describe('состав участников', () => {
   });
 
   it('без мест участники идут по фамилии', () => {
-    const results = build([roundRobinStage([])], [
-      registration('a', 'Ямалов'),
-      registration('b', 'Абдиров'),
-    ]);
+    const results = build(
+      [roundRobinStage([])],
+      [registration('a', 'Ямалов'), registration('b', 'Абдиров')],
+    );
 
     expect(results.participants.map((row) => row.player.lastName)).toEqual(['Абдиров', 'Ямалов']);
   });

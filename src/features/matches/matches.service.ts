@@ -15,6 +15,8 @@ import { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { ScreenEventsService } from '../screen/screen-events.service.js';
 import { advanceAfterGroups } from '../tournaments/advance.js';
+import { assertConsoleAccess } from '../tournaments/console-access.js';
+import { bumpVersion } from '../tournaments/tournament-state.js';
 import { setsToWinOf } from '../tournaments/stage-config.js';
 import { toMatchView, toStageView } from '../tournaments/tournaments.mapper.js';
 import { matchFields, stageFields, type MatchRecord } from '../tournaments/tournaments.select.js';
@@ -70,10 +72,16 @@ export class MatchesService {
       throw new AppError(ERROR_CODES.MATCH_ALREADY_FINISHED, 'Match already has a result', { id });
     }
 
-    const updated = await this.prisma.match.update({
-      where: { id },
-      data: { tableNumber: input.tableNumber, status: 'PLAYING', startedAt: new Date() },
-      select: matchFields,
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const written = await tx.match.update({
+        where: { id },
+        data: { tableNumber: input.tableNumber, status: 'PLAYING', startedAt: new Date() },
+        select: matchFields,
+      });
+
+      await bumpVersion(tx, match.tournamentId);
+
+      return written;
     });
 
     this.screen.changed(match.tournamentId);
@@ -127,7 +135,11 @@ export class MatchesService {
         select: matchFields,
       });
 
-      return { written, advanced: await this.applyAdvancement(tx, match.stage.id) };
+      const advanced = await this.applyAdvancement(tx, match.stage.id);
+
+      await bumpVersion(tx, match.tournamentId);
+
+      return { written, advanced };
     });
 
     this.screen.changed(match.tournamentId);
@@ -221,6 +233,8 @@ export class MatchesService {
 
       const advanced = await this.applyAdvancement(tx, match.stage.id);
       const next = await advanceAfterGroups(tx, match.tournamentId);
+
+      await bumpVersion(tx, match.tournamentId);
 
       return { written, advanced, next };
     });
@@ -373,16 +387,9 @@ export class MatchesService {
    * доступ — консоль конкретного турнира (ADR-014, ADR-018).
    */
   private async assertConsole(match: MatchWithContext, userId: string): Promise<void> {
-    const membership = await this.prisma.clubMember.findUnique({
-      where: { clubId_userId: { clubId: match.tournament.clubId, userId } },
-      select: { role: true },
+    await assertConsoleAccess(this.prisma, match.tournament.clubId, userId, {
+      tournamentId: match.tournamentId,
     });
-
-    if (membership === null) {
-      throw new AppError(ERROR_CODES.FORBIDDEN, 'Not allowed to run this tournament', {
-        tournamentId: match.tournamentId,
-      });
-    }
   }
 }
 
