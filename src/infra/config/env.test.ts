@@ -5,7 +5,6 @@ import { parseEnv } from './env.js';
 const minimal = {
   DATABASE_URL: 'postgresql://user:pass@localhost:5433/kttf',
   JWT_SECRET: 'test_secret_at_least_32_characters_long',
-  AUTH_CODE_SECRET: 'code_secret_at_least_32_characters!!',
 };
 
 describe('parseEnv', () => {
@@ -40,7 +39,6 @@ describe('parseEnv', () => {
     expect(message).toContain('PORT');
     expect(message).toContain('DATABASE_URL');
     expect(message).toContain('JWT_SECRET');
-    expect(message).toContain('AUTH_CODE_SECRET');
   });
 
   it('короткий ключ подписи не принимается', () => {

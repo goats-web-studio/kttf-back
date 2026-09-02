@@ -19,8 +19,14 @@ datasource db {
 // ============ Пользователи ============
 
 model User {
-  id            String   @id @default(uuid())
-  phone         String   @unique // E.164, +7XXXXXXXXXX
+  id    String  @id @default(uuid())
+  phone String  @unique // E.164, +7XXXXXXXXXX
+  // Логин — второй способ войти (ADR-034). Необязателен: аккаунты, заведённые
+  // до перехода на пароль, живут без него.
+  login String? @unique
+  // scrypt с солью на пользователя, средствами node:crypto. Пустой означает,
+  // что войти этим аккаунтом пока нельзя.
+  passwordHash  String?
   phoneVerified Boolean  @default(false)
   email         String?  @unique
   locale        Locale   @default(RU)
@@ -52,19 +58,6 @@ model Session {
 }
 
 // Коды из SMS. Живут 5 минут, лимит 5 запросов на телефон в час (ТС 8.3).
-model AuthCode {
-  id        String    @id @default(uuid())
-  phone     String
-  codeHash  String
-  attempts  Int       @default(0)
-  createdAt DateTime  @default(now())
-  expiresAt DateTime
-  usedAt    DateTime?
-
-  @@index([phone, createdAt])
-  @@index([expiresAt])
-}
-
 // ============ Игроки ============
 
 model Player {

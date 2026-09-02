@@ -4,9 +4,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { ENV, type Env } from '../../infra/config/env.js';
 import { AuthController } from './auth.controller.js';
 import { AuthService } from './auth.service.js';
-import { CODE_SENDER } from './code-sender.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
-import { LogCodeSender } from './log-code-sender.js';
 import { OptionalJwtGuard } from './optional-jwt.guard.js';
 import { TokenService } from './token.service.js';
 
@@ -18,15 +16,7 @@ import { TokenService } from './token.service.js';
     }),
   ],
   controllers: [AuthController],
-  providers: [
-    AuthService,
-    TokenService,
-    JwtAuthGuard,
-    OptionalJwtGuard,
-    // Пока провайдера SMS нет, код уходит в лог (ОВ-9). Подключение
-    // настоящего провайдера — замена одной этой строки.
-    { provide: CODE_SENDER, useClass: LogCodeSender },
-  ],
+  providers: [AuthService, TokenService, JwtAuthGuard, OptionalJwtGuard],
   exports: [TokenService, JwtAuthGuard, OptionalJwtGuard],
 })
 export class AuthModule {}

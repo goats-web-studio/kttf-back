@@ -1,17 +1,29 @@
+import { randomBytes } from 'node:crypto';
+
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
-import type { AuthSession, AuthUserView, TokenPair } from '@kttf/shared/types';
-import { Inject, Injectable } from '@nestjs/common';
+import { PHONE_PATTERN } from '@kttf/shared/types';
+import type {
+  AuthSession,
+  AuthUserView,
+  LoginInput,
+  SignUpInput,
+  TokenPair,
+} from '@kttf/shared/types';
+import { Injectable } from '@nestjs/common';
 
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
-import {
-  CODE_MAX_ATTEMPTS,
-  CODE_RATE_WINDOW_MS,
-  CODE_REQUESTS_PER_HOUR,
-  CODE_TTL_MS,
-  SESSION_TTL_MS,
-} from './auth.constants.js';
-import { CODE_SENDER, type CodeSender } from './code-sender.js';
+import { SESSION_TTL_MS } from './auth.constants.js';
+import { hashPassword, verifyPassword } from './password.js';
 import { TokenService } from './token.service.js';
+
+/**
+ * Хеш, с которым сверяется пароль несуществующего пользователя.
+ *
+ * Считается один раз при загрузке модуля: сверка обязана занимать одинаковое
+ * время и для знакомого логина, и для незнакомого, иначе перебор находит
+ * существующие аккаунты по времени ответа.
+ */
+const DUMMY_HASH = hashPassword(randomBytes(32).toString('hex'));
 
 /** Пользователь с тем, что нужно для ответа. Форма выборки в одном месте. */
 const userView = {
@@ -24,102 +36,140 @@ export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tokens: TokenService,
-    @Inject(CODE_SENDER) private readonly sender: CodeSender,
   ) {}
 
   /**
-   * Запрос кода.
+   * Вход — ТЗ 2.1, ADR-034.
    *
-   * Ответ одинаков и для существующего номера, и для незнакомого: иначе
-   * эндпоинт превращается в проверку «есть ли такой человек на платформе».
+   * Логин или телефон одним полем: телефон узнаётся по формату, всё
+   * остальное считается логином. Отказ один на оба случая — «неизвестный
+   * логин» и «неверный пароль» обязаны выглядеть одинаково, иначе форма
+   * входа превращается в проверку, есть ли такой человек на платформе.
    */
-  async requestCode(phone: string): Promise<{ expiresInSeconds: number }> {
-    const since = new Date(Date.now() - CODE_RATE_WINDOW_MS);
-    const recent = await this.prisma.authCode.count({ where: { phone, createdAt: { gt: since } } });
+  async login(input: LoginInput, userAgent?: string): Promise<AuthSession> {
+    const identifier = input.identifier.trim();
+    const where = PHONE_PATTERN.test(identifier) ? { phone: identifier } : { login: identifier };
 
-    if (recent >= CODE_REQUESTS_PER_HOUR) {
-      throw new AppError(ERROR_CODES.RATE_LIMITED, 'Too many code requests for this phone', {
-        retryAfterSeconds: Math.ceil(CODE_RATE_WINDOW_MS / 1000),
-      });
+    const account = await this.prisma.user.findUnique({ where, include: userView });
+
+    // Пароль сверяется всегда, даже когда пользователя нет: иначе ответ
+    // приходит заметно быстрее для незнакомого логина, и перебор находит
+    // существующие аккаунты по времени ответа.
+    const stored = account?.passwordHash ?? DUMMY_HASH;
+    const matches = verifyPassword(input.password, stored);
+
+    if (account?.passwordHash == null || !matches) {
+      throw new AppError(ERROR_CODES.UNAUTHORIZED, 'Login or password is wrong');
     }
 
-    const code = this.tokens.generateCode();
-
-    await this.prisma.authCode.create({
-      data: {
-        phone,
-        codeHash: this.tokens.hashCode(code),
-        expiresAt: new Date(Date.now() + CODE_TTL_MS),
-      },
-    });
-
-    await this.sender.send(phone, code);
-
-    return { expiresInSeconds: Math.floor(CODE_TTL_MS / 1000) };
+    return this.startSession(account, userAgent);
   }
 
   /**
-   * Проверка кода и вход.
+   * Регистрация — ТЗ 2.1, ADR-034.
    *
-   * Первый успешный вход заводит аккаунт: в контракте ТС 7.1 нет отдельной
-   * регистрации, а ТЗ 2.1 не знает пароля — «повторный вход снова по коду».
-   * Профиль игрока (ТЗ 2.2) при этом не создаётся: он заполняется отдельно и
-   * до тех пор `playerId` пуст.
+   * Игроков заводит тренер, поэтому человек, придя сам, выбирает себя из
+   * тех, у кого ещё нет кабинета, и привязывается к своей истории. Без
+   * выбора аккаунт тоже заводится: у судьи и организатора профиля игрока
+   * может не быть вовсе.
    */
-  async verifyCode(phone: string, code: string, userAgent?: string): Promise<AuthSession> {
-    const candidate = await this.prisma.authCode.findFirst({
-      where: { phone, usedAt: null, expiresAt: { gt: new Date() } },
-      orderBy: { createdAt: 'desc' },
+  async signUp(input: SignUpInput, userAgent?: string): Promise<AuthSession> {
+    const taken = await this.prisma.user.findFirst({
+      where: { OR: [{ phone: input.phone }, { login: input.login }] },
+      select: { phone: true, login: true },
     });
 
-    if (candidate === null) {
-      throw new AppError(ERROR_CODES.UNAUTHORIZED, 'Code not found or expired');
+    if (taken !== null) {
+      // Занятый телефон и занятый логин различаются: это не секрет, а
+      // единственный способ объяснить человеку, что делать дальше.
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Phone or login already taken', {
+        field: taken.phone === input.phone ? 'phone' : 'login',
+      });
     }
 
-    if (candidate.attempts >= CODE_MAX_ATTEMPTS) {
-      throw new AppError(ERROR_CODES.RATE_LIMITED, 'Too many attempts for this code');
-    }
-
-    if (!this.tokens.matchesCode(code, candidate.codeHash)) {
-      await this.prisma.authCode.update({
-        where: { id: candidate.id },
-        data: { attempts: { increment: 1 } },
+    if (input.playerId !== undefined) {
+      const player = await this.prisma.player.findUnique({
+        where: { id: input.playerId },
+        select: { userId: true },
       });
 
-      throw new AppError(ERROR_CODES.UNAUTHORIZED, 'Code does not match');
+      if (player === null) {
+        throw new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { id: input.playerId });
+      }
+
+      if (player.userId !== null) {
+        // Чужая история: у этого игрока кабинет уже есть.
+        throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Player already has an account', {
+          field: 'playerId',
+        });
+      }
     }
 
     const refreshToken = this.tokens.generateRefreshToken();
+    const passwordHash = hashPassword(input.password);
 
-    // Одной транзакцией: код обязан погаситься ровно тогда, когда появилась
-    // сессия. Иначе отказ посередине оставляет либо использованный код без
-    // входа, либо действующий код после входа.
-    const user = await this.prisma.$transaction(async (tx) => {
-      await tx.authCode.update({ where: { id: candidate.id }, data: { usedAt: new Date() } });
-
-      const account = await tx.user.upsert({
-        where: { phone },
-        create: { phone, phoneVerified: true },
-        update: { phoneVerified: true },
+    const account = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.user.create({
+        data: { phone: input.phone, login: input.login, passwordHash },
         include: userView,
       });
 
+      if (input.playerId !== undefined) {
+        // Привязка условием на пустоту: между проверкой выше и этой строкой
+        // тем же игроком мог назваться кто-то ещё.
+        const linked = await tx.player.updateMany({
+          where: { id: input.playerId, userId: null },
+          data: { userId: created.id },
+        });
+
+        if (linked.count === 0) {
+          throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Player already has an account', {
+            field: 'playerId',
+          });
+        }
+      }
+
       await tx.session.create({
         data: {
-          userId: account.id,
+          userId: created.id,
           refreshToken: this.tokens.hashRefreshToken(refreshToken),
           expiresAt: new Date(Date.now() + SESSION_TTL_MS),
           ...(userAgent === undefined ? {} : { userAgent }),
         },
       });
 
-      return account;
+      return created;
     });
 
     return {
-      accessToken: this.tokens.issueAccessToken(user.id),
+      accessToken: this.tokens.issueAccessToken(account.id),
       refreshToken,
-      user: toView(user),
+      // Профиль игрока привязан в той же транзакции, а `account` прочитан до
+      // неё: перечитывать целиком незачем, известно ровно чего не хватает.
+      user: { ...toView(account), playerId: input.playerId ?? null },
+    };
+  }
+
+  /** Общее окончание входа: сессия в базе и пара токенов наружу. */
+  private async startSession(
+    account: UserRecord & { id: string },
+    userAgent?: string,
+  ): Promise<AuthSession> {
+    const refreshToken = this.tokens.generateRefreshToken();
+
+    await this.prisma.session.create({
+      data: {
+        userId: account.id,
+        refreshToken: this.tokens.hashRefreshToken(refreshToken),
+        expiresAt: new Date(Date.now() + SESSION_TTL_MS),
+        ...(userAgent === undefined ? {} : { userAgent }),
+      },
+    });
+
+    return {
+      accessToken: this.tokens.issueAccessToken(account.id),
+      refreshToken,
+      user: toView(account),
     };
   }
 
@@ -180,6 +230,8 @@ export class AuthService {
 interface UserRecord {
   id: string;
   phone: string;
+  login: string | null;
+  passwordHash?: string | null;
   email: string | null;
   locale: string;
   createdAt: Date;
@@ -191,6 +243,7 @@ function toView(user: UserRecord): AuthUserView {
   return {
     id: user.id,
     phone: user.phone,
+    login: user.login,
     email: user.email,
     locale: user.locale,
     createdAt: user.createdAt.toISOString(),

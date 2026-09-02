@@ -72,6 +72,10 @@ export class PlayersService {
     const where = {
       ...(query.city === undefined ? {} : { city: query.city }),
       ...(query.clubId === undefined ? {} : { clubId: query.clubId }),
+      // Игроки без кабинета — список для выбора себя при регистрации
+      // (ADR-034). Без фильтра это был бы список всех игроков страны, то
+      // есть приглашение занять чужую историю.
+      ...(query.withoutAccount === true ? { userId: null } : {}),
       ...(query.search === undefined
         ? {}
         : {

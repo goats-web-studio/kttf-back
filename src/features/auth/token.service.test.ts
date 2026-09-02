@@ -1,4 +1,3 @@
-import { CODE_LENGTH } from '@kttf/shared/types';
 import { JwtService } from '@nestjs/jwt';
 import { describe, expect, it } from 'vitest';
 
@@ -7,14 +6,13 @@ import { TokenService } from './token.service.js';
 
 const SECRET = 'test_secret_at_least_32_characters_long';
 
-function makeService(codeSecret = 'code_secret_at_least_32_characters!!'): TokenService {
+function makeService(): TokenService {
   return new TokenService(
     {
       NODE_ENV: 'test',
       PORT: 3000,
       DATABASE_URL: 'postgresql://x',
       JWT_SECRET: SECRET,
-      AUTH_CODE_SECRET: codeSecret,
     },
     new JwtService({ secret: SECRET }),
   );
@@ -34,7 +32,6 @@ describe('access-токен', () => {
         PORT: 3000,
         DATABASE_URL: 'postgresql://x',
         JWT_SECRET: 'someone_elses_secret_32_characters!!',
-        AUTH_CODE_SECRET: 'code_secret_at_least_32_characters!!',
       },
       new JwtService({ secret: 'someone_elses_secret_32_characters!!' }),
     );
@@ -68,60 +65,6 @@ describe('access-токен', () => {
     );
 
     expect(decoded.exp - decoded.iat).toBe(ACCESS_TOKEN_TTL_SECONDS);
-  });
-});
-
-describe('одноразовый код', () => {
-  it('нужной длины и только из цифр', () => {
-    const service = makeService();
-
-    for (let i = 0; i < 200; i += 1) {
-      expect(service.generateCode()).toMatch(new RegExp(`^[0-9]{${String(CODE_LENGTH)}}$`));
-    }
-  });
-
-  it('ведущие нули сохраняются: код — строка, а не число', () => {
-    // 000123 как число превращается в 123, и человек вводит не то, что видит.
-    const service = makeService();
-    const codes = Array.from({ length: 2000 }, () => service.generateCode());
-
-    expect(codes.every((code) => code.length === CODE_LENGTH)).toBe(true);
-  });
-
-  it('коды не повторяются подряд', () => {
-    const service = makeService();
-    const codes = new Set(Array.from({ length: 100 }, () => service.generateCode()));
-
-    expect(codes.size).toBeGreaterThan(50);
-  });
-
-  it('хеш сходится со своим кодом', () => {
-    const service = makeService();
-    const code = service.generateCode();
-
-    expect(service.matchesCode(code, service.hashCode(code))).toBe(true);
-  });
-
-  it('чужой код не подходит', () => {
-    const service = makeService();
-
-    expect(service.matchesCode('000000', service.hashCode('111111'))).toBe(false);
-  });
-
-  it('хеш зависит от ключа: утечка базы не выдаёт коды', () => {
-    // Без ключа таблица хешей для миллиона шестизначных кодов строится за
-    // секунды, и любой действующий код восстанавливается из базы.
-    const ours = makeService();
-    const theirs = makeService('other_secret_at_least_32_characters!');
-
-    expect(ours.hashCode('123456')).not.toBe(theirs.hashCode('123456'));
-  });
-
-  it('мусор вместо хеша не роняет сверку', () => {
-    const service = makeService();
-
-    expect(service.matchesCode('123456', 'не хеш')).toBe(false);
-    expect(service.matchesCode('123456', '')).toBe(false);
   });
 });
 

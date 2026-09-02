@@ -23,7 +23,6 @@ const env: Env = {
   PORT: 0,
   DATABASE_URL: 'postgresql://x',
   JWT_SECRET: 'test_secret_at_least_32_characters_long',
-  AUTH_CODE_SECRET: 'code_secret_at_least_32_characters!!',
 };
 
 const CLUB_ID = '11111111-1111-4111-8111-111111111111';

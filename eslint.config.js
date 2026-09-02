@@ -18,7 +18,7 @@ export default [
     languageOptions: {
       // Глобальные объекты Node перечислены поимённо, чтобы не тянуть пакет
       // `globals` ради двух файлов. Понадобится третий — дописать сюда.
-      globals: { console: 'readonly', process: 'readonly' },
+      globals: { console: 'readonly', process: 'readonly', URL: 'readonly' },
       parserOptions: { projectService: false, project: false },
     },
   },

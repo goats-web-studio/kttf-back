@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@kttf/shared':
-        specifier: github:goats-web-studio/kttf-shared#b006a4498a83658e9cd424ccd8f7997373a626c3
-        version: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/b006a4498a83658e9cd424ccd8f7997373a626c3(zod@4.5.1)
+        specifier: github:goats-web-studio/kttf-shared#39a7889e2e9706f439d5a56fbc0ac2235f13d74d
+        version: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/39a7889e2e9706f439d5a56fbc0ac2235f13d74d(zod@4.5.1)
       '@nestjs/common':
         specifier: ^11.2.3
         version: 11.2.3(reflect-metadata@0.2.2)(rxjs@7.8.2)
@@ -355,8 +355,8 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/b006a4498a83658e9cd424ccd8f7997373a626c3':
-    resolution: {gitHosted: true, tarball: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/b006a4498a83658e9cd424ccd8f7997373a626c3}
+  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/39a7889e2e9706f439d5a56fbc0ac2235f13d74d':
+    resolution: {gitHosted: true, integrity: sha512-AWS7dcRJkqdWht4p/KzBl1tDDruI0GgdiOIy0s3TTlnh9t5uqZh7KyX2i8T2jAz6qOTBeBsC8o88Cch2FIZTYA==, tarball: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/39a7889e2e9706f439d5a56fbc0ac2235f13d74d}
     version: 0.1.0
     engines: {node: '>=24'}
     peerDependencies:
@@ -2495,7 +2495,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.6.0
 
-  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/b006a4498a83658e9cd424ccd8f7997373a626c3(zod@4.5.1)':
+  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/39a7889e2e9706f439d5a56fbc0ac2235f13d74d(zod@4.5.1)':
     dependencies:
       zod: 4.5.1
 

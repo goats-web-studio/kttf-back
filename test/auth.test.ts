@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter.js';
 import { AuthModule } from '../src/features/auth/auth.module.js';
+import { hashPassword } from '../src/features/auth/password.js';
 import { ConfigModule } from '../src/infra/config/config.module.js';
 import { ENV, type Env } from '../src/infra/config/env.js';
 import { PrismaModule } from '../src/infra/prisma/prisma.module.js';
@@ -21,12 +22,15 @@ const env: Env = {
   PORT: 0,
   DATABASE_URL: 'postgresql://x',
   JWT_SECRET: 'test_secret_at_least_32_characters_long',
-  AUTH_CODE_SECRET: 'code_secret_at_least_32_characters!!',
 };
+
+const PASSWORD = 'parol123';
 
 const account = {
   id: 'user-1',
   phone: '+77015550101',
+  login: 'aslan',
+  passwordHash: hashPassword(PASSWORD),
   email: null,
   locale: 'RU',
   createdAt: new Date('2026-08-29T00:00:00.000Z'),
@@ -36,15 +40,14 @@ const account = {
 
 function makePrisma() {
   const prisma = {
-    authCode: {
-      count: vi.fn().mockResolvedValue(0),
-      create: vi.fn().mockResolvedValue({ id: 'code-1' }),
-      findFirst: vi.fn().mockResolvedValue(null),
-      update: vi.fn().mockResolvedValue({}),
-    },
     user: {
-      upsert: vi.fn().mockResolvedValue(account),
+      create: vi.fn().mockResolvedValue(account),
+      findFirst: vi.fn().mockResolvedValue(null),
       findUnique: vi.fn().mockResolvedValue(account),
+    },
+    player: {
+      findUnique: vi.fn().mockResolvedValue({ userId: null }),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
     session: {
       create: vi.fn().mockResolvedValue({}),
@@ -65,20 +68,9 @@ function makePrisma() {
 let app: INestApplication | undefined;
 let prisma: ReturnType<typeof makePrisma>;
 let base: string;
-/** Коды, которые адаптер написал бы в лог. */
-let sentCodes: string[];
 
 beforeEach(async () => {
   prisma = makePrisma();
-  sentCodes = [];
-
-  // Адаптер пишет код в лог — здесь лог и перехватывается: тест видит код так
-  // же, как его увидит разработчик, пока провайдера SMS нет.
-  const { Logger } = await import('@nestjs/common');
-  vi.spyOn(Logger.prototype, 'warn').mockImplementation((message: unknown) => {
-    const match = /: (\d{6}) /.exec(String(message));
-    if (match?.[1] !== undefined) sentCodes.push(match[1]);
-  });
 
   const moduleRef = await Test.createTestingModule({
     imports: [ConfigModule, PrismaModule, AuthModule],
@@ -128,82 +120,96 @@ async function get(path: string, token?: string) {
 
 /** Проходит вход целиком и отдаёт выданную пару токенов. */
 async function signIn() {
-  await post('/request-code', { phone: account.phone });
-  const code = sentCodes[0] ?? '';
-
-  const stored = prisma.authCode.create.mock.calls[0]?.[0] as { data: { codeHash: string } };
-  prisma.authCode.findFirst.mockResolvedValue({
-    id: 'code-1',
-    phone: account.phone,
-    codeHash: stored.data.codeHash,
-    attempts: 0,
-    expiresAt: new Date(Date.now() + 60_000),
-    usedAt: null,
-  });
-
-  const result = await post('/verify-code', { phone: account.phone, code });
+  const result = await post('/login', { identifier: account.login, password: PASSWORD });
 
   return result.body as { accessToken: string; refreshToken: string };
 }
 
-describe('POST /auth/request-code', () => {
-  it('принимает телефон и отвечает 202', async () => {
-    const result = await post('/request-code', { phone: account.phone });
+describe('POST /auth/login', () => {
+  it('верный пароль отдаёт пару токенов и пользователя', async () => {
+    const result = await post('/login', { identifier: account.login, password: PASSWORD });
 
-    expect(result.status).toBe(202);
-    expect(result.body).toEqual({ expiresInSeconds: 300 });
-    expect(sentCodes).toHaveLength(1);
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ user: { id: 'user-1', login: 'aslan' } });
   });
 
-  it('код в ответе не возвращается', async () => {
-    // Иначе эндпоинт выдаёт код любому, кто знает чужой номер.
-    const result = await post('/request-code', { phone: account.phone });
+  it('пускает и по телефону тем же полем', async () => {
+    const result = await post('/login', { identifier: account.phone, password: PASSWORD });
 
-    expect(JSON.stringify(result.body)).not.toContain(sentCodes[0] ?? 'нет кода');
+    expect(result.status).toBe(200);
+    expect(prisma.user.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { phone: account.phone } }),
+    );
   });
 
-  it('телефон не в формате E.164 отвергается в формате ТС 7.8', async () => {
-    const result = await post('/request-code', { phone: '87015550101' });
-
-    expect(result.status).toBe(400);
-    expect(result.body).toMatchObject({ error: { code: 'VALIDATION_FAILED' } });
-  });
-
-  it('пустое тело отвергается', async () => {
-    expect((await post('/request-code', {})).status).toBe(400);
-  });
-});
-
-describe('POST /auth/verify-code', () => {
-  it('верный код отдаёт пару токенов и пользователя', async () => {
-    const tokens = await signIn();
-
-    expect(tokens.accessToken).toBeTypeOf('string');
-    expect(tokens.refreshToken).toBeTypeOf('string');
-  });
-
-  it('неверный код — 401 в формате ТС 7.8', async () => {
-    await post('/request-code', { phone: account.phone });
-    prisma.authCode.findFirst.mockResolvedValue({
-      id: 'code-1',
-      phone: account.phone,
-      codeHash: 'что-то другое',
-      attempts: 0,
-      expiresAt: new Date(Date.now() + 60_000),
-      usedAt: null,
-    });
-
-    const result = await post('/verify-code', { phone: account.phone, code: '000000' });
+  it('неверный пароль — 401 в формате ТС 7.8', async () => {
+    const result = await post('/login', { identifier: account.login, password: 'ne-parol' });
 
     expect(result.status).toBe(401);
     expect(result.body).toMatchObject({ error: { code: 'UNAUTHORIZED' } });
   });
 
-  it('код не из шести цифр не доходит до сервиса', async () => {
-    const result = await post('/verify-code', { phone: account.phone, code: '12' });
+  it('хеш пароля наружу не выходит ни при удаче, ни при отказе', async () => {
+    const ok = await post('/login', { identifier: account.login, password: PASSWORD });
+    const no = await post('/login', { identifier: account.login, password: 'ne-parol' });
+
+    for (const result of [ok, no]) {
+      expect(JSON.stringify(result.body)).not.toContain('scrypt');
+    }
+  });
+
+  it('пустое тело отвергается схемой, до сервиса не доходит', async () => {
+    const result = await post('/login', {});
 
     expect(result.status).toBe(400);
-    expect(prisma.authCode.findFirst).not.toHaveBeenCalled();
+    expect(prisma.user.findUnique).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /auth/sign-up', () => {
+  const body = { login: 'novyi', password: PASSWORD, phone: '+77015550102' };
+
+  it('заводит аккаунт и сразу отдаёт сессию', async () => {
+    const result = await post('/sign-up', body);
+
+    expect(result.status).toBe(201);
+    expect(result.body).toMatchObject({ user: { id: 'user-1' } });
+  });
+
+  it('короткий пароль не доходит до сервиса', async () => {
+    const result = await post('/sign-up', { ...body, password: 'korotk1' });
+
+    expect(result.status).toBe(400);
+    expect(prisma.user.create).not.toHaveBeenCalled();
+  });
+
+  it('логин кириллицей отвергается схемой', async () => {
+    // Латинская «а» против кириллической — отказ во входе, которого человек
+    // не увидит глазами.
+    const result = await post('/sign-up', { ...body, login: 'аслан' });
+
+    expect(result.status).toBe(400);
+  });
+
+  it('занятый телефон отвергается с указанием поля', async () => {
+    prisma.user.findFirst.mockResolvedValue({ phone: body.phone, login: 'drugoi' });
+
+    const result = await post('/sign-up', body);
+
+    expect(result.status).toBe(400);
+    expect(result.body).toMatchObject({ error: { details: { field: 'phone' } } });
+  });
+
+  it('игрока с кабинетом занять нельзя', async () => {
+    prisma.player.findUnique.mockResolvedValue({ userId: 'user-2' });
+
+    const result = await post('/sign-up', {
+      ...body,
+      playerId: '00000000-0000-4000-8000-000000000009',
+    });
+
+    expect(result.status).toBe(400);
+    expect(result.body).toMatchObject({ error: { details: { field: 'playerId' } } });
   });
 });
 

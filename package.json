@@ -8,7 +8,7 @@
   },
   "packageManager": "pnpm@11.24.0",
   "dependencies": {
-    "@kttf/shared": "github:goats-web-studio/kttf-shared#b006a4498a83658e9cd424ccd8f7997373a626c3",
+    "@kttf/shared": "github:goats-web-studio/kttf-shared#39a7889e2e9706f439d5a56fbc0ac2235f13d74d",
     "@nestjs/common": "^11.2.3",
     "@nestjs/core": "^11.2.3",
     "@nestjs/jwt": "^11.0.2",
@@ -26,6 +26,7 @@
     "postinstall": "prisma generate",
     "db:migrate": "prisma migrate deploy",
     "db:studio": "prisma studio",
+    "set-password": "node --env-file=.env scripts/set-password.mjs",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
     "lint": "eslint .",

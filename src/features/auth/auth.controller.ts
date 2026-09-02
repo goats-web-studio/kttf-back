@@ -10,16 +10,15 @@ import {
 } from '@nestjs/common';
 
 import {
+  loginSchema,
   refreshSchema,
-  requestCodeSchema,
-  verifyCodeSchema,
+  signUpSchema,
   type AuthSession,
   type AuthUserView,
+  type LoginInput,
   type RefreshInput,
-  type RequestCodeInput,
-  type RequestCodeResult,
+  type SignUpInput,
   type TokenPair,
-  type VerifyCodeInput,
 } from '@kttf/shared/types';
 
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
@@ -31,21 +30,24 @@ import { CurrentUserId, JwtAuthGuard } from './jwt-auth.guard.js';
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
-  @Post('request-code')
-  @HttpCode(HttpStatus.ACCEPTED)
-  async requestCode(
-    @Body(new ZodValidationPipe(requestCodeSchema)) body: RequestCodeInput,
-  ): Promise<RequestCodeResult> {
-    return this.auth.requestCode(body.phone);
-  }
-
-  @Post('verify-code')
+  /** Вход логином или телефоном — ADR-034. */
+  @Post('login')
   @HttpCode(HttpStatus.OK)
-  async verifyCode(
-    @Body(new ZodValidationPipe(verifyCodeSchema)) body: VerifyCodeInput,
+  async login(
+    @Body(new ZodValidationPipe(loginSchema)) body: LoginInput,
     @Headers('user-agent') userAgent?: string,
   ): Promise<AuthSession> {
-    return this.auth.verifyCode(body.phone, body.code, userAgent);
+    return this.auth.login(body, userAgent);
+  }
+
+  /** Регистрация: аккаунт и, если человек себя назвал, привязка к игроку. */
+  @Post('sign-up')
+  @HttpCode(HttpStatus.CREATED)
+  async signUp(
+    @Body(new ZodValidationPipe(signUpSchema)) body: SignUpInput,
+    @Headers('user-agent') userAgent?: string,
+  ): Promise<AuthSession> {
+    return this.auth.signUp(body, userAgent);
   }
 
   @Post('refresh')

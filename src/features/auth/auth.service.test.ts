@@ -3,16 +3,27 @@ import { JwtService } from '@nestjs/jwt';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PrismaService } from '../../infra/prisma/prisma.service.js';
-import { CODE_MAX_ATTEMPTS, CODE_REQUESTS_PER_HOUR, SESSION_TTL_MS } from './auth.constants.js';
+import { SESSION_TTL_MS } from './auth.constants.js';
 import { AuthService } from './auth.service.js';
-import type { CodeSender } from './code-sender.js';
+import { hashPassword } from './password.js';
 import { TokenService } from './token.service.js';
 
+/**
+ * Вход и регистрация — ТЗ 2.1, ADR-034.
+ *
+ * Проверяется не только удачный путь: отказ обязан выглядеть одинаково для
+ * незнакомого логина и для неверного пароля, иначе форма входа превращается
+ * в проверку, есть ли такой человек на платформе.
+ */
+
 const SECRET = 'test_secret_at_least_32_characters_long';
+const PASSWORD = 'parol123';
 
 const account = {
   id: 'user-1',
   phone: '+70000000000',
+  login: 'aslan',
+  passwordHash: hashPassword(PASSWORD),
   email: null,
   locale: 'RU',
   createdAt: new Date('2026-08-29T00:00:00.000Z'),
@@ -22,15 +33,14 @@ const account = {
 
 function makePrisma() {
   const prisma = {
-    authCode: {
-      count: vi.fn().mockResolvedValue(0),
-      create: vi.fn().mockResolvedValue({ id: 'code-1' }),
-      findFirst: vi.fn().mockResolvedValue(null),
-      update: vi.fn().mockResolvedValue({}),
-    },
     user: {
-      upsert: vi.fn().mockResolvedValue(account),
+      create: vi.fn().mockResolvedValue(account),
+      findFirst: vi.fn().mockResolvedValue(null),
       findUnique: vi.fn().mockResolvedValue(account),
+    },
+    player: {
+      findUnique: vi.fn().mockResolvedValue({ userId: null }),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
     session: {
       create: vi.fn().mockResolvedValue({}),
@@ -47,212 +57,160 @@ function makePrisma() {
 }
 
 function makeService(prisma: ReturnType<typeof makePrisma>) {
-  const sent: { phone: string; code: string }[] = [];
-  const sender: CodeSender = {
-    send: (phone, code) => {
-      sent.push({ phone, code });
-      return Promise.resolve();
-    },
-  };
-
   const tokens = new TokenService(
     {
       NODE_ENV: 'test',
       PORT: 3000,
       DATABASE_URL: 'postgresql://x',
       JWT_SECRET: SECRET,
-      AUTH_CODE_SECRET: 'code_secret_at_least_32_characters!!',
     },
     new JwtService({ secret: SECRET }),
   );
 
-  const service = new AuthService(prisma as unknown as PrismaService, tokens, sender);
+  const service = new AuthService(prisma as unknown as PrismaService, tokens);
 
-  return { service, tokens, sent };
+  return { service, tokens };
 }
 
-describe('requestCode', () => {
+describe('вход', () => {
   let prisma: ReturnType<typeof makePrisma>;
 
   beforeEach(() => {
     prisma = makePrisma();
   });
 
-  it('отправляет код и сохраняет его хеш', async () => {
-    const { service, tokens, sent } = makeService(prisma);
-
-    await service.requestCode('+70000000000');
-
-    expect(sent).toHaveLength(1);
-    const stored = prisma.authCode.create.mock.calls[0]?.[0] as {
-      data: { codeHash: string; phone: string };
-    };
-    expect(stored.data.phone).toBe('+70000000000');
-    expect(tokens.matchesCode(sent[0]?.code ?? '', stored.data.codeHash)).toBe(true);
-  });
-
-  it('сам код в базу не попадает', async () => {
-    // Иначе утечка базы отдаёт действующие коды в открытом виде.
-    const { service, sent } = makeService(prisma);
-
-    await service.requestCode('+70000000000');
-
-    const stored = JSON.stringify(prisma.authCode.create.mock.calls[0]?.[0]);
-    expect(stored).not.toContain(sent[0]?.code);
-  });
-
-  it('отказывает после пяти запросов в час — ТС 8.3', async () => {
-    prisma.authCode.count.mockResolvedValue(CODE_REQUESTS_PER_HOUR);
-    const { service, sent } = makeService(prisma);
-
-    await expect(service.requestCode('+70000000000')).rejects.toMatchObject({
-      code: 'RATE_LIMITED',
-    });
-    expect(sent).toHaveLength(0);
-    expect(prisma.authCode.create).not.toHaveBeenCalled();
-  });
-
-  it('на границе лимита ещё пропускает', async () => {
-    prisma.authCode.count.mockResolvedValue(CODE_REQUESTS_PER_HOUR - 1);
+  it('пускает по логину и заводит сессию', async () => {
     const { service } = makeService(prisma);
 
-    await expect(service.requestCode('+70000000000')).resolves.toMatchObject({
-      expiresInSeconds: 300,
-    });
-  });
-});
+    const session = await service.login({ identifier: 'aslan', password: PASSWORD });
 
-describe('verifyCode', () => {
-  let prisma: ReturnType<typeof makePrisma>;
-
-  beforeEach(() => {
-    prisma = makePrisma();
-  });
-
-  function armCode(tokens: TokenService, code: string, attempts = 0) {
-    prisma.authCode.findFirst.mockResolvedValue({
-      id: 'code-1',
-      phone: '+70000000000',
-      codeHash: tokens.hashCode(code),
-      attempts,
-      expiresAt: new Date(Date.now() + 60_000),
-      usedAt: null,
-    });
-  }
-
-  it('верный код заводит сессию и возвращает пользователя', async () => {
-    const { service, tokens } = makeService(prisma);
-    armCode(tokens, '123456');
-
-    const result = await service.verifyCode('+70000000000', '123456', 'vitest');
-
-    expect(tokens.verifyAccessToken(result.accessToken)).toBe('user-1');
-    expect(result.user).toMatchObject({ id: 'user-1', phone: '+70000000000', playerId: null });
+    expect(prisma.user.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { login: 'aslan' } }),
+    );
+    expect(session.user.id).toBe('user-1');
     expect(prisma.session.create).toHaveBeenCalledOnce();
   });
 
-  it('в сессию уезжает хеш refresh-токена, а не он сам', async () => {
-    const { service, tokens } = makeService(prisma);
-    armCode(tokens, '123456');
+  it('телефон узнаётся по формату, а не по отдельному полю', async () => {
+    const { service } = makeService(prisma);
 
-    const result = await service.verifyCode('+70000000000', '123456');
+    await service.login({ identifier: '+70000000000', password: PASSWORD });
 
-    const created = prisma.session.create.mock.calls[0]?.[0] as {
-      data: { refreshToken: string; expiresAt: Date };
-    };
-    expect(created.data.refreshToken).toBe(tokens.hashRefreshToken(result.refreshToken));
-    expect(created.data.refreshToken).not.toBe(result.refreshToken);
-  });
-
-  it('сессия живёт 90 дней — ТЗ 2.1', async () => {
-    const { service, tokens } = makeService(prisma);
-    armCode(tokens, '123456');
-
-    const before = Date.now();
-    await service.verifyCode('+70000000000', '123456');
-
-    const created = prisma.session.create.mock.calls[0]?.[0] as { data: { expiresAt: Date } };
-    // Окно, а не точное значение: между снимком времени и вычислением срока
-    // проходит сколько-то миллисекунд, и точное сравнение мигает.
-    const lifetime = created.data.expiresAt.getTime() - before;
-    expect(lifetime).toBeGreaterThanOrEqual(SESSION_TTL_MS);
-    expect(lifetime).toBeLessThan(SESSION_TTL_MS + 5_000);
-  });
-
-  it('код гасится в той же транзакции, что и создание сессии', async () => {
-    // Иначе отказ посередине оставляет либо погашенный код без входа, либо
-    // действующий код после входа.
-    const { service, tokens } = makeService(prisma);
-    armCode(tokens, '123456');
-
-    await service.verifyCode('+70000000000', '123456');
-
-    expect(prisma.$transaction).toHaveBeenCalledOnce();
-
-    const update = prisma.authCode.update.mock.calls[0]?.[0] as {
-      where: { id: string };
-      data: { usedAt: Date };
-    };
-    expect(update.where.id).toBe('code-1');
-    expect(update.data.usedAt).toBeInstanceOf(Date);
-  });
-
-  it('первый вход заводит аккаунт, повторный — нет', async () => {
-    const { service, tokens } = makeService(prisma);
-    armCode(tokens, '123456');
-
-    await service.verifyCode('+70000000000', '123456');
-
-    // upsert покрывает оба случая одним запросом и не даёт гонке породить
-    // второй аккаунт на тот же телефон — ТЗ 2.1, один телефон = один аккаунт.
-    expect(prisma.user.upsert).toHaveBeenCalledWith(
+    expect(prisma.user.findUnique).toHaveBeenCalledWith(
       expect.objectContaining({ where: { phone: '+70000000000' } }),
     );
   });
 
-  it('без кода в базе — отказ', async () => {
+  it('неверный пароль и неизвестный логин отвергаются одинаково', async () => {
     const { service } = makeService(prisma);
 
-    await expect(service.verifyCode('+70000000000', '123456')).rejects.toMatchObject({
-      code: 'UNAUTHORIZED',
-    });
+    const wrongPassword = await service
+      .login({ identifier: 'aslan', password: 'ne-parol' })
+      .catch((error: unknown) => error);
+
+    prisma.user.findUnique.mockResolvedValue(null);
+    const unknownLogin = await service
+      .login({ identifier: 'kto-to', password: PASSWORD })
+      .catch((error: unknown) => error);
+
+    if (!isAppError(wrongPassword) || !isAppError(unknownLogin)) {
+      throw new Error('ожидались доменные ошибки');
+    }
+
+    expect(wrongPassword.code).toBe('UNAUTHORIZED');
+    expect(unknownLogin.code).toBe('UNAUTHORIZED');
+    expect(unknownLogin.message).toBe(wrongPassword.message);
   });
 
-  it('неверный код считает попытку и не пускает', async () => {
-    const { service, tokens } = makeService(prisma);
-    armCode(tokens, '123456');
+  it('аккаунт без пароля войти не даёт', async () => {
+    // Заведён до перехода на пароль (ADR-034): пароля нет, входа нет.
+    prisma.user.findUnique.mockResolvedValue({ ...account, passwordHash: null });
+    const { service } = makeService(prisma);
 
-    await expect(service.verifyCode('+70000000000', '000000')).rejects.toMatchObject({
+    await expect(service.login({ identifier: 'aslan', password: PASSWORD })).rejects.toMatchObject({
       code: 'UNAUTHORIZED',
-    });
-    expect(prisma.authCode.update).toHaveBeenCalledWith({
-      where: { id: 'code-1' },
-      data: { attempts: { increment: 1 } },
     });
     expect(prisma.session.create).not.toHaveBeenCalled();
   });
 
-  it('после пяти попыток код мёртв даже при верном вводе', async () => {
-    // Без этого шестизначный код перебирается за время его жизни.
-    const { service, tokens } = makeService(prisma);
-    armCode(tokens, '123456', CODE_MAX_ATTEMPTS);
-
-    await expect(service.verifyCode('+70000000000', '123456')).rejects.toMatchObject({
-      code: 'RATE_LIMITED',
-    });
-    expect(prisma.session.create).not.toHaveBeenCalled();
-  });
-
-  it('ищет только непогашенные и неистёкшие коды', async () => {
+  it('сессия живёт 90 дней — ТЗ 2.1', async () => {
     const { service } = makeService(prisma);
 
-    await expect(service.verifyCode('+70000000000', '123456')).rejects.toThrow();
+    await service.login({ identifier: 'aslan', password: PASSWORD });
 
-    const query = prisma.authCode.findFirst.mock.calls[0]?.[0] as {
-      where: { usedAt: null; expiresAt: { gt: Date } };
-    };
-    expect(query.where.usedAt).toBeNull();
-    expect(query.where.expiresAt.gt).toBeInstanceOf(Date);
+    const created = prisma.session.create.mock.calls[0]?.[0] as { data: { expiresAt: Date } };
+    const days = (created.data.expiresAt.getTime() - Date.now()) / (24 * 60 * 60 * 1000);
+
+    expect(Math.round(days)).toBe(Math.round(SESSION_TTL_MS / (24 * 60 * 60 * 1000)));
+  });
+});
+
+describe('регистрация', () => {
+  let prisma: ReturnType<typeof makePrisma>;
+  const input = { login: 'aslan', password: PASSWORD, phone: '+70000000000' };
+
+  beforeEach(() => {
+    prisma = makePrisma();
+  });
+
+  it('заводит аккаунт и сразу входит', async () => {
+    const { service } = makeService(prisma);
+
+    const session = await service.signUp(input);
+
+    expect(session.accessToken).not.toBe('');
+    expect(prisma.session.create).toHaveBeenCalledOnce();
+  });
+
+  it('пароль в базу открытым не попадает', async () => {
+    const { service } = makeService(prisma);
+
+    await service.signUp(input);
+
+    const stored = JSON.stringify(prisma.user.create.mock.calls[0]?.[0]);
+    expect(stored).not.toContain(PASSWORD);
+  });
+
+  it('занятый телефон или логин называет поле', async () => {
+    prisma.user.findFirst.mockResolvedValue({ phone: '+70000000000', login: 'drugoi' });
+    const { service } = makeService(prisma);
+
+    await expect(service.signUp(input)).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+      details: { field: 'phone' },
+    });
+    expect(prisma.user.create).not.toHaveBeenCalled();
+  });
+
+  it('привязывает к игроку, заведённому тренером', async () => {
+    const { service } = makeService(prisma);
+
+    const session = await service.signUp({ ...input, playerId: 'player-1' });
+
+    expect(prisma.player.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'player-1', userId: null } }),
+    );
+    expect(session.user.playerId).toBe('player-1');
+  });
+
+  it('чужого игрока занять нельзя', async () => {
+    prisma.player.findUnique.mockResolvedValue({ userId: 'user-2' });
+    const { service } = makeService(prisma);
+
+    await expect(service.signUp({ ...input, playerId: 'player-1' })).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+      details: { field: 'playerId' },
+    });
+  });
+
+  it('игрока, занятого между проверкой и записью, тоже не отдаёт', async () => {
+    // Гонка: проверка прошла, а привязать уже некого.
+    prisma.player.updateMany.mockResolvedValue({ count: 0 });
+    const { service } = makeService(prisma);
+
+    await expect(service.signUp({ ...input, playerId: 'player-1' })).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+    });
   });
 });
 
