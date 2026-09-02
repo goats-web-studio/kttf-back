@@ -1,5 +1,6 @@
 import {
   createTournamentSchema,
+  drawSwapSchema,
   duplicateTournamentSchema,
   listTournamentsSchema,
   registerSchema,
@@ -16,6 +17,7 @@ import {
   type TieDecisionResult,
   type TournamentView,
   type DrawResult,
+  type DrawSwapInput,
   type TournamentResultsView,
   type TournamentStandingsView,
   type UpdateRegistrationInput,
@@ -149,6 +151,22 @@ export class TournamentsController {
     @CurrentUserId() userId: string,
   ): Promise<DrawResult> {
     return this.tournaments.draw(id, userId);
+  }
+
+  /**
+   * Ручная корректировка жеребьёвки — ТЗ 5.3.
+   *
+   * Обмен двумя игроками: структура расстановки остаётся той, которую
+   * построил движок (ADR-033).
+   */
+  @Post(':id/draw/swap')
+  @UseGuards(JwtAuthGuard)
+  async swapDraw(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @Body(new ZodValidationPipe(drawSwapSchema)) input: DrawSwapInput,
+    @CurrentUserId() userId: string,
+  ): Promise<DrawResult> {
+    return this.tournaments.swapDraw(id, userId, input);
   }
 
   /** Старт: здесь фиксируются рейтинги участников — ТС 5.4. */

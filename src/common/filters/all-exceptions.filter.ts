@@ -35,6 +35,8 @@ const STATUS_BY_CODE: Readonly<Record<ErrorCode, number>> = {
   DOWNSTREAM_MATCH_PLAYED: HttpStatus.CONFLICT,
   INVALID_SCORE: HttpStatus.BAD_REQUEST,
   TIE_DECISION_INVALID: HttpStatus.BAD_REQUEST,
+  // Игрока нет в расстановке: тело запроса верное, состав турнира — другой.
+  DRAW_POSITION_NOT_FOUND: HttpStatus.CONFLICT,
 
   // Завершение турнира — ТС 7.5. Тоже конфликт состояния: запрос верный,
   // турнир к нему не готов. Отсутствие снимка — не вина запроса вовсе.

@@ -2,11 +2,14 @@ import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 
 import { checkEligibility } from '@kttf/shared/eligibility';
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
+import { findClubCollisions } from '@kttf/shared/brackets';
 import { calculateTournamentRating, type TournamentLevel } from '@kttf/shared/rating';
 import {
   formatConfigSchema,
   seedingConfigSchema,
+  type ClubCollisionView,
   type DrawResult,
+  type DrawSwapInput,
   type SeedingConfig,
   type TieDecisionInput,
   type TieDecisionResult,
@@ -34,6 +37,7 @@ import { ScreenEventsService } from '../screen/screen-events.service.js';
 
 import { advanceAfterGroups } from './advance.js';
 import { type DrawParticipant, planDraw } from './draw.js';
+import { planDrawSwap } from './draw-swap.js';
 import {
   buildRatingRun,
   playersWithoutSnapshot,
@@ -565,6 +569,94 @@ export class TournamentsService {
       // организатор обязан увидеть их здесь, а не в зале (ADR-011).
       clubCollisions: [...plan.clubCollisions],
     };
+  }
+
+  /**
+   * Ручная корректировка жеребьёвки — ТЗ 5.3.
+   *
+   * Обмен двумя игроками. Структура остаётся той, которую построил движок:
+   * меняются имена в готовых встречах, а не размеры групп и не круги сетки.
+   * Полная расстановка одним запросом отвергнута — сервер обязан был бы
+   * сверять её со схемой заново, а это второй способ ошибиться (ADR-033).
+   */
+  async swapDraw(id: string, userId: string, input: DrawSwapInput): Promise<DrawResult> {
+    const tournament = await this.load(id);
+
+    await this.assertClubStaff(tournament.clubId, userId);
+
+    // Правится расстановка, а не идущий турнир: после старта переставлять
+    // игрока значило бы менять уже сыгранное.
+    if (tournament.status !== 'REG_CLOSED') {
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Adjust the draw before the start', {
+        id,
+        status: tournament.status,
+      });
+    }
+
+    const stages = await this.loadStages(id);
+    const updates = planDrawSwap(
+      stages.flatMap((stage) => stage.matches),
+      input.playerAId,
+      input.playerBId,
+    );
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const update of updates) {
+        await tx.match.update({
+          where: { id: update.id },
+          data: { playerAId: update.playerAId, playerBId: update.playerBId },
+        });
+      }
+
+      await bumpVersion(tx, id);
+    });
+
+    const changed = await this.loadStages(id);
+
+    // Экран зала показывает сетку сразу после жеребьёвки: перестановку он
+    // обязан увидеть так же, иначе в зале будет висеть прежний состав.
+    this.screen.changed(id);
+
+    return {
+      tournamentId: id,
+      stages: changed.map(toStageView),
+      clubCollisions: await this.collisionsOf(id, changed),
+    };
+  }
+
+  /**
+   * Несведённые одноклубники по нынешнему составу групп — ADR-011.
+   *
+   * Считает движок: после ручной перестановки состав уже не тот, что выдала
+   * жеребьёвка, а второе описание правила разошлось бы с первым.
+   */
+  private async collisionsOf(id: string, stages: StageRecord[]): Promise<ClubCollisionView[]> {
+    const registrations = await this.prisma.registration.findMany({
+      where: { tournamentId: id },
+      select: { player: { select: { id: true, clubId: true } } },
+    });
+
+    const clubOf = new Map(
+      registrations.map((registration) => [
+        registration.player.id,
+        registration.player.clubId ?? undefined,
+      ]),
+    );
+
+    const groups = stages.flatMap((stage) =>
+      toStageView(stage).groups.map((group) => ({
+        label: group.label,
+        participants: group.participants,
+      })),
+    );
+
+    // Контракт отдаёт изменяемые массивы, движок — readonly: копия здесь
+    // дешевле, чем ослабленный тип в контракте.
+    return findClubCollisions(groups, clubOf).map((collision) => ({
+      club: collision.club,
+      group: collision.group,
+      participants: [...collision.participants],
+    }));
   }
 
   /**
