@@ -1,5 +1,6 @@
 import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 
+import { checkEligibility } from '@kttf/shared/eligibility';
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import { calculateTournamentRating, type TournamentLevel } from '@kttf/shared/rating';
 import {
@@ -33,7 +34,6 @@ import { ScreenEventsService } from '../screen/screen-events.service.js';
 
 import { advanceAfterGroups } from './advance.js';
 import { type DrawParticipant, planDraw } from './draw.js';
-import { checkEligibility } from './eligibility.js';
 import {
   buildRatingRun,
   playersWithoutSnapshot,
