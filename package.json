@@ -8,7 +8,7 @@
   },
   "packageManager": "pnpm@11.24.0",
   "dependencies": {
-    "@kttf/shared": "github:goats-web-studio/kttf-shared#7476ee2d719ab6e696b7249c17ddb77e3a1f0841",
+    "@kttf/shared": "github:goats-web-studio/kttf-shared#0b779c8a1c14fa548fc561cdc2865347e15771d8",
     "@nestjs/common": "^11.2.3",
     "@nestjs/core": "^11.2.3",
     "@nestjs/jwt": "^11.0.2",
