@@ -24,6 +24,9 @@ const env: Env = {
   PORT: 0,
   DATABASE_URL: 'postgresql://x',
   JWT_SECRET: 'test_secret_at_least_32_characters_long',
+  S3_ENDPOINT: 'http://localhost:9000',
+  S3_BUCKET: 'kttf-media',
+  S3_REGION: 'us-east-1',
 };
 
 const CLUB_ID = '11111111-1111-4111-8111-111111111111';
@@ -83,6 +86,17 @@ function makePrisma() {
         ratedMatches: 0,
         isProvisional: true,
         createdAt: new Date('2026-08-29T00:00:00.000Z'),
+        // Анкета ТЗ 2.2: выборка полного профиля отдаёт её всегда.
+        birthDate: null,
+        playingHand: null,
+        grip: null,
+        blade: null,
+        rubberForehand: null,
+        rubberBackhand: null,
+        bio: null,
+        coachPlayerId: null,
+        coachName: null,
+        coach: null,
       }),
       update: vi.fn().mockResolvedValue({}),
     },

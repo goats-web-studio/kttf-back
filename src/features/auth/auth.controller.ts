@@ -5,20 +5,25 @@ import {
   Headers,
   HttpCode,
   HttpStatus,
+  Patch,
   Post,
   UseGuards,
 } from '@nestjs/common';
 
 import {
+  changePasswordSchema,
   loginSchema,
   refreshSchema,
   signUpSchema,
+  updateAccountSchema,
   type AuthSession,
   type AuthUserView,
+  type ChangePasswordInput,
   type LoginInput,
   type RefreshInput,
   type SignUpInput,
   type TokenPair,
+  type UpdateAccountInput,
 } from '@kttf/shared/types';
 
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
@@ -69,5 +74,38 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   async me(@CurrentUserId() userId: string): Promise<AuthUserView> {
     return this.auth.findUser(userId);
+  }
+
+  /**
+   * Настройки аккаунта — ТЗ 2.1, ADR-035.
+   *
+   * Логин, почта, язык и Telegram. Спортивная анкета правится профилем
+   * игрока, `PATCH /players/:id`: это разные сущности, а не два раздела
+   * одного экрана.
+   */
+  @Patch('me')
+  @UseGuards(JwtAuthGuard)
+  async updateMe(
+    @Body(new ZodValidationPipe(updateAccountSchema)) body: UpdateAccountInput,
+    @CurrentUserId() userId: string,
+  ): Promise<AuthUserView> {
+    return this.auth.updateAccount(userId, body);
+  }
+
+  /**
+   * Смена пароля — ТЗ 2.1.
+   *
+   * Отдаёт новую пару токенов: остальные сессии при смене пароля обрываются,
+   * и без этого вкладка, из которой пароль сменили, умерла бы вместе с ними.
+   */
+  @Post('change-password')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  async changePassword(
+    @Body(new ZodValidationPipe(changePasswordSchema)) body: ChangePasswordInput,
+    @CurrentUserId() userId: string,
+    @Headers('user-agent') userAgent?: string,
+  ): Promise<TokenPair> {
+    return this.auth.changePassword(userId, body, userAgent);
   }
 }

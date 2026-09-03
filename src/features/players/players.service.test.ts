@@ -19,6 +19,17 @@ const player = {
   ratedMatches: 0,
   isProvisional: true,
   createdAt: new Date('2026-08-29T00:00:00.000Z'),
+  // Анкета ТЗ 2.2 — то, что отдаёт выборка полного профиля.
+  birthDate: null,
+  playingHand: null,
+  grip: null,
+  blade: null,
+  rubberForehand: null,
+  rubberBackhand: null,
+  bio: null,
+  coachPlayerId: null,
+  coachName: null,
+  coach: null,
 };
 
 const newcomer = {
@@ -211,5 +222,96 @@ describe('право править профиль', () => {
     await expect(service.assertCanEdit('player-1', 'user-2')).rejects.toMatchObject({
       code: 'FORBIDDEN',
     });
+  });
+});
+
+/**
+ * Анкета ТЗ 2.2 — ADR-035.
+ *
+ * Проверяется то, чего не проверит схема общего кода: связь с тренером
+ * и превращение даты в колонку `DATE`.
+ */
+describe('анкета игрока', () => {
+  it('сам себе тренером быть не может', async () => {
+    // Ссылка на себя — замкнутая ветка: список учеников включает самого
+    // игрока, и всякий обход дерева по нему зациклится.
+    await expect(service.update('player-1', { coachPlayerId: 'player-1' })).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+    });
+  });
+
+  it('несуществующий тренер отвергается до записи', async () => {
+    prisma.player.findUnique.mockImplementation((args: { where: { id: string } }) =>
+      args.where.id === 'player-1' ? player : null,
+    );
+
+    await expect(service.update('player-1', { coachPlayerId: 'нет-такого' })).rejects.toMatchObject(
+      { code: 'NOT_FOUND' },
+    );
+    expect(prisma.player.update).not.toHaveBeenCalled();
+  });
+
+  it('дата рождения ложится в базу полночью по UTC', async () => {
+    // new Date('2001-04-12') в поясе Алматы легла бы одиннадцатым апреля.
+    await service.update('player-1', { birthYear: 2001, birthDate: '2001-04-12' });
+
+    const data = (prisma.player.update.mock.calls[0]?.[0] as { data: { birthDate: Date } }).data;
+
+    expect(data.birthDate.toISOString()).toBe('2001-04-12T00:00:00.000Z');
+  });
+
+  it('null очищает дату, а не отменяет правку', async () => {
+    await service.update('player-1', { birthDate: null });
+
+    const data = (prisma.player.update.mock.calls[0]?.[0] as { data: { birthDate: null } }).data;
+
+    expect(data.birthDate).toBeNull();
+  });
+
+  it('имя выбранного тренера подставляется по связи', async () => {
+    // Экрану нужно одно поле для показа, а не развилка в каждом месте.
+    prisma.player.findUnique.mockResolvedValue({
+      ...player,
+      coachPlayerId: 'player-9',
+      coachName: null,
+      coach: { lastName: 'Сериков', firstName: 'Тимур' },
+    });
+
+    const view = await service.findById('player-1');
+
+    expect(view.coachName).toBe('Сериков Тимур');
+    expect(view.coachPlayerId).toBe('player-9');
+  });
+
+  it('вписанный руками тренер отдаётся как есть', async () => {
+    prisma.player.findUnique.mockResolvedValue({
+      ...player,
+      coachPlayerId: null,
+      coachName: 'Кто-то со стороны',
+      coach: null,
+    });
+
+    const view = await service.findById('player-1');
+
+    expect(view.coachName).toBe('Кто-то со стороны');
+    expect(view.coachPlayerId).toBeNull();
+  });
+
+  it('список тренеров — те, на кого уже сослались', async () => {
+    // Роли тренера в продукте ещё нет: список берётся из самих данных.
+    await service.list({ page: 1, limit: 20, coachesOnly: true });
+
+    const where = (prisma.player.findMany.mock.calls[0]?.[0] as { where: { students: unknown } })
+      .where;
+
+    expect(where.students).toEqual({ some: {} });
+  });
+
+  it('анкета не уезжает в списки', async () => {
+    // Краткий вид попадает в офлайн-снимок консоли (ТС 6).
+    const page = await service.list({ page: 1, limit: 20 });
+
+    expect(page.items[0]).not.toHaveProperty('bio');
+    expect(page.items[0]).not.toHaveProperty('blade');
   });
 });

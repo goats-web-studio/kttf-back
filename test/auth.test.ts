@@ -22,6 +22,9 @@ const env: Env = {
   PORT: 0,
   DATABASE_URL: 'postgresql://x',
   JWT_SECRET: 'test_secret_at_least_32_characters_long',
+  S3_ENDPOINT: 'http://localhost:9000',
+  S3_BUCKET: 'kttf-media',
+  S3_REGION: 'us-east-1',
 };
 
 const PASSWORD = 'parol123';

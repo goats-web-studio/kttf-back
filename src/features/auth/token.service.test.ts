@@ -13,6 +13,9 @@ function makeService(): TokenService {
       PORT: 3000,
       DATABASE_URL: 'postgresql://x',
       JWT_SECRET: SECRET,
+      S3_ENDPOINT: 'http://localhost:9000',
+      S3_BUCKET: 'kttf-media',
+      S3_REGION: 'us-east-1',
     },
     new JwtService({ secret: SECRET }),
   );
@@ -32,6 +35,9 @@ describe('access-токен', () => {
         PORT: 3000,
         DATABASE_URL: 'postgresql://x',
         JWT_SECRET: 'someone_elses_secret_32_characters!!',
+        S3_ENDPOINT: 'http://localhost:9000',
+        S3_BUCKET: 'kttf-media',
+        S3_REGION: 'us-east-1',
       },
       new JwtService({ secret: 'someone_elses_secret_32_characters!!' }),
     );

@@ -30,6 +30,10 @@ model User {
   phoneVerified Boolean  @default(false)
   email         String?  @unique
   locale        Locale   @default(RU)
+  // Числовой chat_id Telegram. Уведомления — V2 (ТЗ 10), но собирается такое
+  // годами, а понадобится сразу, поэтому поле заводится заранее. По @имени
+  // бот писать не может, отсюда число, а не ник.
+  telegramId    String?
   createdAt     DateTime @default(now())
 
   player    Player?
@@ -69,11 +73,33 @@ model Player {
   firstName  String
   middleName String? // необязательно — бриф, запрет №6
   birthYear  Int
+  // Полная дата рождения — необязательна (ADR-035). Источник истины для
+  // допуска остаётся birthYear: возрастные категории считаются по году,
+  // и сравнение с birthYearFrom/birthYearTo идёт с ним. Год и дата обязаны
+  // говорить одно и то же — правило в общем коде, createPlayerSchema.
+  birthDate  DateTime? @db.Date
   gender     Gender
   city       String
   photoUrl   String?
   clubId     String?
   club       Club?   @relation(fields: [clubId], references: [id])
+
+  // Анкета ТЗ 2.2. Инвентарь строкой, а не справочником: свой справочник
+  // моделей нужно наполнять и чистить, это отдельный продукт (ADR-035).
+  playingHand    PlayingHand?
+  grip           Grip?
+  blade          String?
+  rubberForehand String?
+  rubberBackhand String?
+  bio            String?
+
+  // Тренер задаётся либо выбором из уже заведённых игроков, либо строкой,
+  // но не обоими сразу. Роли тренера в продукте ещё нет: «тренер» — это тот,
+  // на кого сослались, и список берётся из самих данных.
+  coachPlayerId String?
+  coach         Player?  @relation("PlayerCoach", fields: [coachPlayerId], references: [id])
+  students      Player[] @relation("PlayerCoach")
+  coachName     String?
 
   // Проекция рейтинга. Источник истины — RatingEvent, это материализованное
   // представление для быстрых выборок (ТС 1.4).
@@ -90,11 +116,27 @@ model Player {
   @@index([rating(sort: Desc)])
   @@index([city, rating(sort: Desc)])
   @@index([lastName, firstName])
+  // Список тренеров — это выборка distinct по ссылке. Без индекса она
+  // прочитала бы всю таблицу игроков ради выпадающего списка в форме.
+  @@index([coachPlayerId])
 }
 
 enum Gender {
   MALE
   FEMALE
+}
+
+/// Игровая рука — ТЗ 2.2.
+enum PlayingHand {
+  RIGHT
+  LEFT
+}
+
+/// Хват — ТЗ 2.2. Третьего в настольном теннисе нет: европейский
+/// (горизонтальный) и азиатский, он же «перо».
+enum Grip {
+  SHAKEHAND
+  PENHOLD
 }
 
 // ============ Клубы ============

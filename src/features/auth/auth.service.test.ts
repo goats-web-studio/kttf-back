@@ -26,6 +26,7 @@ const account = {
   passwordHash: hashPassword(PASSWORD),
   email: null,
   locale: 'RU',
+  telegramId: null,
   createdAt: new Date('2026-08-29T00:00:00.000Z'),
   player: null,
   clubRoles: [],
@@ -37,6 +38,7 @@ function makePrisma() {
       create: vi.fn().mockResolvedValue(account),
       findFirst: vi.fn().mockResolvedValue(null),
       findUnique: vi.fn().mockResolvedValue(account),
+      update: vi.fn().mockResolvedValue(account),
     },
     player: {
       findUnique: vi.fn().mockResolvedValue({ userId: null }),
@@ -63,6 +65,9 @@ function makeService(prisma: ReturnType<typeof makePrisma>) {
       PORT: 3000,
       DATABASE_URL: 'postgresql://x',
       JWT_SECRET: SECRET,
+      S3_ENDPOINT: 'http://localhost:9000',
+      S3_BUCKET: 'kttf-media',
+      S3_REGION: 'us-east-1',
     },
     new JwtService({ secret: SECRET }),
   );
@@ -319,5 +324,118 @@ describe('logout и me', () => {
         expect(isAppError(error) && error.code).toBe('UNAUTHORIZED');
       },
     );
+  });
+});
+
+/**
+ * Настройки аккаунта — ТЗ 2.1, ADR-035.
+ *
+ * Здесь меняется то, чем человек входит. Спортивная анкета правится
+ * профилем игрока: это разные сущности, а не два раздела одного экрана.
+ */
+describe('настройки аккаунта', () => {
+  let prisma: ReturnType<typeof makePrisma>;
+
+  beforeEach(() => {
+    prisma = makePrisma();
+  });
+
+  it('занятый чужим логин отвергается с указанием поля', async () => {
+    prisma.user.findFirst.mockResolvedValue({ login: 'zanyat', email: null });
+    const { service } = makeService(prisma);
+
+    await service.updateAccount('user-1', { login: 'zanyat' }).then(
+      () => expect.unreachable('ожидался отказ'),
+      (error: unknown) => {
+        expect(isAppError(error) && error.code).toBe('VALIDATION_FAILED');
+        expect(isAppError(error) && error.details).toMatchObject({ field: 'login' });
+      },
+    );
+  });
+
+  it('свой собственный логин занятым не считается', async () => {
+    // Иначе сохранение формы без изменений отвечает «логин занят».
+    const { service } = makeService(prisma);
+
+    await service.updateAccount('user-1', { login: 'aslan' });
+
+    const where = (prisma.user.findFirst.mock.calls[0]?.[0] as { where: { NOT: unknown } }).where;
+
+    expect(where.NOT).toEqual({ id: 'user-1' });
+  });
+
+  it('null очищает почту, отсутствие поля её не трогает', async () => {
+    const { service } = makeService(prisma);
+
+    await service.updateAccount('user-1', { email: null });
+
+    expect(prisma.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { email: null } }),
+    );
+
+    await service.updateAccount('user-1', { locale: 'KK' });
+
+    expect(prisma.user.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({ data: { locale: 'KK' } }),
+    );
+  });
+});
+
+describe('смена пароля', () => {
+  let prisma: ReturnType<typeof makePrisma>;
+
+  beforeEach(() => {
+    prisma = makePrisma();
+  });
+
+  it('неверный текущий пароль — отказ, и пароль не меняется', async () => {
+    // Доступ к открытой вкладке не должен означать возможность отобрать
+    // аккаунт у владельца.
+    const { service } = makeService(prisma);
+
+    await service
+      .changePassword('user-1', { currentPassword: 'ne-tot', newPassword: 'novyj-parol' })
+      .then(
+        () => expect.unreachable('ожидался отказ'),
+        (error: unknown) => {
+          expect(isAppError(error) && error.code).toBe('UNAUTHORIZED');
+        },
+      );
+
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('верный пароль меняется, чужие сессии обрываются, своя выдаётся заново', async () => {
+    const { service } = makeService(prisma);
+
+    const tokens = await service.changePassword('user-1', {
+      currentPassword: PASSWORD,
+      newPassword: 'novyj-parol',
+    });
+
+    // Смену пароля затевают в том числе потому, что старый узнали чужие:
+    // оставить их сессии живыми значило бы не сделать ничего.
+    expect(prisma.session.deleteMany).toHaveBeenCalledWith({ where: { userId: 'user-1' } });
+    // Взамен — новая сессия, иначе вкладка, из которой меняли пароль,
+    // выбрасывает человека на вход.
+    expect(prisma.session.create).toHaveBeenCalledOnce();
+    expect(tokens.accessToken.length).toBeGreaterThan(0);
+    expect(tokens.refreshToken.length).toBeGreaterThan(0);
+  });
+
+  it('аккаунт без пароля сменить его не может', async () => {
+    // Заведён до перехода на пароль (ADR-034): войти им нельзя, и менять
+    // нечего.
+    prisma.user.findUnique.mockResolvedValue({ id: 'user-1', passwordHash: null });
+    const { service } = makeService(prisma);
+
+    await service
+      .changePassword('user-1', { currentPassword: 'x', newPassword: 'novyj-parol' })
+      .then(
+        () => expect.unreachable('ожидался отказ'),
+        (error: unknown) => {
+          expect(isAppError(error) && error.code).toBe('UNAUTHORIZED');
+        },
+      );
   });
 });

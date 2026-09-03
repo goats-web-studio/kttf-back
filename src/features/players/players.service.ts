@@ -6,6 +6,7 @@ import type {
   Page,
   PlayerMatchesQuery,
   PlayerMatchView,
+  PlayerProfileView,
   PlayerView,
   RatingHistoryQuery,
   RatingHistoryView,
@@ -35,6 +36,29 @@ const playerFields = {
   ratedMatches: true,
   isProvisional: true,
   createdAt: true,
+} as const;
+
+/**
+ * Полный профиль — ТЗ 2.2.
+ *
+ * Читается там, где анкету показывают: страница игрока и её правка. Списки
+ * и снимок консоли обходятся `playerFields`: анкета каждого участника
+ * раздула бы офлайн-снимок на десятки килобайт (ADR-035).
+ */
+const profileFields = {
+  ...playerFields,
+  birthDate: true,
+  playingHand: true,
+  grip: true,
+  blade: true,
+  rubberForehand: true,
+  rubberBackhand: true,
+  bio: true,
+  coachPlayerId: true,
+  coachName: true,
+  // Имя выбранного тренера подставляется в ответ: экрану нужно одно поле,
+  // а не развилка в каждом месте, где тренер выводится.
+  coach: { select: { lastName: true, firstName: true } },
 } as const;
 
 /** Сыгранная встреча этого игрока: без результата в истории показывать нечего. */
@@ -76,6 +100,10 @@ export class PlayersService {
       // (ADR-034). Без фильтра это был бы список всех игроков страны, то
       // есть приглашение занять чужую историю.
       ...(query.withoutAccount === true ? { userId: null } : {}),
+      // Тренер — тот, на кого уже сослались хотя бы раз: роли тренера в
+      // продукте ещё нет, и список берётся из самих данных, а не из
+      // выдуманной колонки.
+      ...(query.coachesOnly === true ? { students: { some: {} } } : {}),
       ...(query.search === undefined
         ? {}
         : {
@@ -173,7 +201,7 @@ export class PlayersService {
    */
   async headToHead(id: string, opponentId: string): Promise<HeadToHeadView> {
     await this.load(id);
-    const opponent = await this.findById(opponentId);
+    const opponent = await this.findCompactById(opponentId);
 
     const rows = await this.prisma.match.findMany({
       where: {
@@ -188,7 +216,19 @@ export class PlayersService {
     return { playerId: id, opponent, ...summarize(matches), matches };
   }
 
-  async findById(id: string): Promise<PlayerView> {
+  /** Страница игрока — полный профиль вместе с анкетой ТЗ 2.2. */
+  async findById(id: string): Promise<PlayerProfileView> {
+    const player = await this.prisma.player.findUnique({ where: { id }, select: profileFields });
+
+    if (player === null) {
+      throw new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { id });
+    }
+
+    return toProfileView(player);
+  }
+
+  /** Краткий вид — для встраивания в чужой ответ. */
+  private async findCompactById(id: string): Promise<PlayerView> {
     const player = await this.prisma.player.findUnique({ where: { id }, select: playerFields });
 
     if (player === null) {
@@ -216,8 +256,9 @@ export class PlayersService {
    * Рейтинг не задаётся: он проекция журнала (ТС 1.4), а вопрос о стартовом
    * значении открыт (ОВ-2). До его решения действует умолчание схемы.
    */
-  async create(input: CreatePlayerInput, actorId: string): Promise<PlayerView> {
+  async create(input: CreatePlayerInput, actorId: string): Promise<PlayerProfileView> {
     await this.assertClubExists(input.clubId);
+    await this.assertCoachExists(input.coachPlayerId);
 
     const own = await this.prisma.player.findUnique({
       where: { userId: actorId },
@@ -235,23 +276,28 @@ export class PlayersService {
       await this.assertClubStaff(input.clubId, actorId);
     }
 
-    return toPlayerView(
+    return toProfileView(
       await this.prisma.player.create({
-        data: { ...defined(input), ...(own === null ? { userId: actorId } : {}) },
-        select: playerFields,
+        data: {
+          ...defined(input),
+          ...toBirthDate(input.birthDate),
+          ...(own === null ? { userId: actorId } : {}),
+        },
+        select: profileFields,
       }),
     );
   }
 
-  async update(id: string, input: UpdatePlayerInput): Promise<PlayerView> {
+  async update(id: string, input: UpdatePlayerInput): Promise<PlayerProfileView> {
     await this.findById(id);
-    await this.assertClubExists(input.clubId);
+    await this.assertClubExists(input.clubId ?? undefined);
+    await this.assertCoachExists(input.coachPlayerId ?? undefined, id);
 
-    return toPlayerView(
+    return toProfileView(
       await this.prisma.player.update({
         where: { id },
-        data: defined(input),
-        select: playerFields,
+        data: { ...defined(input), ...toBirthDate(input.birthDate) },
+        select: profileFields,
       }),
     );
   }
@@ -298,6 +344,31 @@ export class PlayersService {
   private async assertClubStaff(clubId: string, userId: string): Promise<void> {
     if (!(await this.isClubStaff(clubId, userId))) {
       throw new AppError(ERROR_CODES.FORBIDDEN, 'Insufficient club role', { clubId });
+    }
+  }
+
+  /**
+   * Тренер обязан существовать и не быть самим игроком.
+   *
+   * Ссылка на себя — не опечатка в данных, а замкнутая ветка: список учеников
+   * такого игрока включает его самого, и всякий обход дерева по нему зациклится.
+   */
+  private async assertCoachExists(coachId: string | undefined, playerId?: string): Promise<void> {
+    if (coachId === undefined) return;
+
+    if (coachId === playerId) {
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Player cannot be their own coach', {
+        coachId,
+      });
+    }
+
+    const coach = await this.prisma.player.findUnique({
+      where: { id: coachId },
+      select: { id: true },
+    });
+
+    if (coach === null) {
+      throw new AppError(ERROR_CODES.NOT_FOUND, 'Coach not found', { coachId });
     }
   }
 
@@ -369,6 +440,51 @@ interface PlayerRecord {
   ratedMatches: number;
   isProvisional: boolean;
   createdAt: Date;
+}
+
+interface ProfileRecord extends PlayerRecord {
+  birthDate: Date | null;
+  playingHand: string | null;
+  grip: string | null;
+  blade: string | null;
+  rubberForehand: string | null;
+  rubberBackhand: string | null;
+  bio: string | null;
+  coachPlayerId: string | null;
+  coachName: string | null;
+  coach: { lastName: string; firstName: string } | null;
+}
+
+/**
+ * Дата рождения приходит строкой `YYYY-MM-DD`, а колонка — `DATE`.
+ *
+ * Полночь по UTC, а не по местному времени: `new Date('2001-04-12')` в поясе
+ * Алматы легла бы в базу одиннадцатым апреля.
+ */
+function toBirthDate(value: string | null | undefined): { birthDate?: Date | null } {
+  if (value === undefined) return {};
+
+  return { birthDate: value === null ? null : new Date(`${value}T00:00:00.000Z`) };
+}
+
+function toProfileView(player: ProfileRecord): PlayerProfileView {
+  return {
+    ...toPlayerView(player),
+    birthDate: player.birthDate === null ? null : player.birthDate.toISOString().slice(0, 10),
+    playingHand: player.playingHand,
+    grip: player.grip,
+    blade: player.blade,
+    rubberForehand: player.rubberForehand,
+    rubberBackhand: player.rubberBackhand,
+    bio: player.bio,
+    coachPlayerId: player.coachPlayerId,
+    // Выбранный из списка тренер подставляется по связи, вписанный руками
+    // отдаётся как есть: экран показывает одно поле, а не развилку.
+    coachName:
+      player.coach === null
+        ? player.coachName
+        : `${player.coach.lastName} ${player.coach.firstName}`,
+  };
 }
 
 function toPlayerView(player: PlayerRecord): PlayerView {
