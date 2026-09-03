@@ -30,6 +30,7 @@ const player = {
   coachPlayerId: null,
   coachName: null,
   coach: null,
+  birthYearOnly: true,
 };
 
 const newcomer = {
@@ -313,5 +314,74 @@ describe('анкета игрока', () => {
 
     expect(page.items[0]).not.toHaveProperty('bio');
     expect(page.items[0]).not.toHaveProperty('blade');
+  });
+});
+
+/**
+ * Приватность даты рождения — ADR-037.
+ *
+ * Прячет сервер, а не экран: спрятанное только в интерфейсе поле видно
+ * всякому, кто открыл сетевую вкладку.
+ */
+describe('дата рождения посторонним', () => {
+  const born = { ...player, birthDate: new Date('2001-04-12T00:00:00.000Z') };
+
+  it('при включённой галочке постороннему даты не видно', async () => {
+    prisma.player.findUnique.mockResolvedValue({ ...born, birthYearOnly: true, userId: 'user-1' });
+
+    const view = await service.findById('player-1', 'кто-то-другой');
+
+    expect(view.birthDate).toBeNull();
+    // Год остаётся: по нему считаются возрастные категории, и он публичен.
+    expect(view.birthYear).toBe(1998);
+  });
+
+  it('анониму тоже не видно', async () => {
+    prisma.player.findUnique.mockResolvedValue({ ...born, birthYearOnly: true, userId: 'user-1' });
+
+    await expect(service.findById('player-1')).resolves.toMatchObject({ birthDate: null });
+  });
+
+  it('сам игрок свою дату видит — иначе правка стёрла бы её', async () => {
+    prisma.player.findUnique.mockResolvedValue({ ...born, birthYearOnly: true, userId: 'user-1' });
+
+    await expect(service.findById('player-1', 'user-1')).resolves.toMatchObject({
+      birthDate: '2001-04-12',
+    });
+  });
+
+  it('организатор клуба видит: он же её и вписывал', async () => {
+    prisma.player.findUnique.mockResolvedValue({
+      ...born,
+      birthYearOnly: true,
+      userId: null,
+      clubId: 'club-1',
+    });
+    prisma.clubMember.findUnique.mockResolvedValue({ role: 'ORGANIZER' });
+
+    await expect(service.findById('player-1', 'user-2')).resolves.toMatchObject({
+      birthDate: '2001-04-12',
+    });
+  });
+
+  it('при снятой галочке дату видно всем', async () => {
+    prisma.player.findUnique.mockResolvedValue({ ...born, birthYearOnly: false, userId: 'user-1' });
+
+    await expect(service.findById('player-1')).resolves.toMatchObject({
+      birthDate: '2001-04-12',
+    });
+  });
+
+  it('скрытая и незаполненная дата выглядят одинаково', async () => {
+    // Иначе ответ сообщает постороннему, что дата есть, хотя её прячут.
+    prisma.player.findUnique.mockResolvedValue({ ...player, birthYearOnly: true });
+
+    const hidden = await service.findById('player-1');
+
+    prisma.player.findUnique.mockResolvedValue({ ...born, birthYearOnly: true });
+
+    const empty = await service.findById('player-1');
+
+    expect(hidden.birthDate).toBe(empty.birthDate);
   });
 });

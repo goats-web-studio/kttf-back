@@ -11,6 +11,7 @@ import {
   type Page,
   type PlayerMatchesQuery,
   type PlayerMatchView,
+  type PlayerProfileView,
   type PlayerView,
   type RatingHistoryQuery,
   type RatingHistoryView,
@@ -20,6 +21,7 @@ import { z } from 'zod';
 
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { CurrentUserId, JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import { OptionalJwtGuard, OptionalUserId } from '../auth/optional-jwt.guard.js';
 import { PlayersService } from './players.service.js';
 
 const uuidParam = z.uuid();
@@ -41,9 +43,20 @@ export class PlayersController {
     return this.players.list(query);
   }
 
+  /**
+   * Страница игрока — полный профиль.
+   *
+   * Токен необязателен, но меняет ответ: полную дату рождения видят сам
+   * игрок и организаторы его клуба, остальные — только год, если игрок так
+   * решил (ADR-037).
+   */
   @Get(':id')
-  async findOne(@Param('id', new ZodValidationPipe(uuidParam)) id: string): Promise<PlayerView> {
-    return this.players.findById(id);
+  @UseGuards(OptionalJwtGuard)
+  async findOne(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @OptionalUserId() viewerId?: string,
+  ): Promise<PlayerProfileView> {
+    return this.players.findById(id, viewerId);
   }
 
   /** Кривая рейтинга — ТЗ 9.3. Границы по времени необязательны. */
@@ -83,7 +96,7 @@ export class PlayersController {
   async create(
     @Body(new ZodValidationPipe(createPlayerSchema)) body: CreatePlayerInput,
     @CurrentUserId() userId: string,
-  ): Promise<PlayerView> {
+  ): Promise<PlayerProfileView> {
     return this.players.create(body, userId);
   }
 
@@ -93,7 +106,7 @@ export class PlayersController {
     @Param('id', new ZodValidationPipe(uuidParam)) id: string,
     @Body(new ZodValidationPipe(updatePlayerSchema)) body: UpdatePlayerInput,
     @CurrentUserId() userId: string,
-  ): Promise<PlayerView> {
+  ): Promise<PlayerProfileView> {
     await this.players.assertCanEdit(id, userId);
 
     return this.players.update(id, body);

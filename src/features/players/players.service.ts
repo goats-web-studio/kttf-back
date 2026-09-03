@@ -48,6 +48,7 @@ const playerFields = {
 const profileFields = {
   ...playerFields,
   birthDate: true,
+  birthYearOnly: true,
   playingHand: true,
   grip: true,
   blade: true,
@@ -216,15 +217,40 @@ export class PlayersService {
     return { playerId: id, opponent, ...summarize(matches), matches };
   }
 
-  /** Страница игрока — полный профиль вместе с анкетой ТЗ 2.2. */
-  async findById(id: string): Promise<PlayerProfileView> {
+  /**
+   * Страница игрока — полный профиль вместе с анкетой ТЗ 2.2.
+   *
+   * Дата рождения прячется от посторонних, если игрок этого просил
+   * (ADR-037). Прячется именно здесь, а не на экране: спрятанное только в
+   * интерфейсе поле видно всякому, кто открыл сетевую вкладку, — то есть
+   * не спрятано вовсе.
+   */
+  async findById(id: string, viewerId?: string): Promise<PlayerProfileView> {
     const player = await this.prisma.player.findUnique({ where: { id }, select: profileFields });
 
     if (player === null) {
       throw new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { id });
     }
 
-    return toProfileView(player);
+    return toProfileView(player, await this.maySeeBirthDate(player, viewerId));
+  }
+
+  /**
+   * Кому видна полная дата: самому игроку и организаторам его клуба.
+   *
+   * Тот же круг, что вправе править профиль: организатор заводит игрока и
+   * заполняет за него анкету, и прятать от него то, что он сам вписал,
+   * бессмысленно.
+   */
+  private async maySeeBirthDate(
+    player: { userId: string | null; clubId: string | null; birthYearOnly: boolean },
+    viewerId: string | undefined,
+  ): Promise<boolean> {
+    if (!player.birthYearOnly) return true;
+    if (viewerId === undefined) return false;
+    if (player.userId === viewerId) return true;
+
+    return player.clubId !== null && (await this.isClubStaff(player.clubId, viewerId));
   }
 
   /** Краткий вид — для встраивания в чужой ответ. */
@@ -444,6 +470,7 @@ interface PlayerRecord {
 
 interface ProfileRecord extends PlayerRecord {
   birthDate: Date | null;
+  birthYearOnly: boolean;
   playingHand: string | null;
   grip: string | null;
   blade: string | null;
@@ -467,10 +494,16 @@ function toBirthDate(value: string | null | undefined): { birthDate?: Date | nul
   return { birthDate: value === null ? null : new Date(`${value}T00:00:00.000Z`) };
 }
 
-function toProfileView(player: ProfileRecord): PlayerProfileView {
+function toProfileView(player: ProfileRecord, maySeeBirthDate = true): PlayerProfileView {
   return {
     ...toPlayerView(player),
-    birthDate: player.birthDate === null ? null : player.birthDate.toISOString().slice(0, 10),
+    // Скрытая дата и незаполненная выглядят одинаково — `null`. Постороннему
+    // они и обязаны выглядеть одинаково: иначе ответ сообщает, что дата есть.
+    birthDate:
+      player.birthDate === null || !maySeeBirthDate
+        ? null
+        : player.birthDate.toISOString().slice(0, 10),
+    birthYearOnly: player.birthYearOnly,
     playingHand: player.playingHand,
     grip: player.grip,
     blade: player.blade,

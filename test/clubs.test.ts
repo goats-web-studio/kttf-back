@@ -97,6 +97,7 @@ function makePrisma() {
         coachPlayerId: null,
         coachName: null,
         coach: null,
+        birthYearOnly: true,
       }),
       update: vi.fn().mockResolvedValue({}),
     },
