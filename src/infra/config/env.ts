@@ -20,6 +20,21 @@ const envSchema = z.object({
    * токена означает вход в любой аккаунт.
    */
   JWT_SECRET: z.string().min(32),
+
+  /**
+   * Хранилище файлов — ADR-036.
+   *
+   * Ключи необязательны намеренно: без них поднимается всё, кроме загрузки
+   * фото, и разработка идёт без MinIO под рукой. Отказ приходит на попытке
+   * загрузить, а не на старте: неработающая загрузка — это одна страница
+   * профиля, а не весь продукт.
+   */
+  S3_ENDPOINT: z.string().min(1).default('http://kttf-minio:9000'),
+  S3_ACCESS_KEY: z.string().min(1).optional(),
+  S3_SECRET_KEY: z.string().min(1).optional(),
+  S3_BUCKET: z.string().min(1).default('kttf-media'),
+  /** MinIO регион не проверяет, но подпись S3 без него не считается. */
+  S3_REGION: z.string().min(1).default('us-east-1'),
 });
 
 export type Env = Readonly<z.infer<typeof envSchema>>;
