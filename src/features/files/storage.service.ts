@@ -13,7 +13,7 @@ import { Inject, Injectable, Logger, type OnModuleInit } from '@nestjs/common';
 import { ENV, type Env } from '../../infra/config/env.js';
 
 /**
- * Хранилище файлов — ТС 7.8, ADR-036.
+ * Хранилище файлов — ТС 7.9, ADR-036.
  *
  * Файл идёт через API, а не предподписанной ссылкой прямо в MinIO. Ссылка
  * несёт в подписи имя хоста, а хост у хранилища внутри сети (`kttf-minio`) и
