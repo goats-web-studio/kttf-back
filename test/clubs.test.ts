@@ -243,6 +243,26 @@ describe('изменение клуба', () => {
 
     expect((await call('PATCH', `/clubs/${CLUB_ID}`, { body: {}, auth: true })).status).toBe(400);
   });
+
+  it('null стирает необязательное поле — ADR-043', async () => {
+    prisma.clubMember.findUnique.mockResolvedValue({ role: 'OWNER' });
+
+    const result = await call('PATCH', `/clubs/${CLUB_ID}`, {
+      body: { phone: null },
+      auth: true,
+    });
+
+    expect(result.status).toBe(200);
+    expect(prisma.club.update.mock.calls[0]?.[0]).toMatchObject({ data: { phone: null } });
+  });
+
+  it('название стереть нельзя', async () => {
+    prisma.clubMember.findUnique.mockResolvedValue({ role: 'OWNER' });
+
+    expect(
+      (await call('PATCH', `/clubs/${CLUB_ID}`, { body: { name: null }, auth: true })).status,
+    ).toBe(400);
+  });
 });
 
 describe('состав организаторов ведёт владелец — ТЗ 1', () => {
@@ -250,7 +270,7 @@ describe('состав организаторов ведёт владелец �
     prisma.clubMember.findUnique.mockResolvedValue({ role: 'ORGANIZER' });
 
     const result = await call('POST', `/clubs/${CLUB_ID}/members`, {
-      body: { userId: OTHER_ID, role: 'REFEREE' },
+      body: { identifier: 'organizer', role: 'REFEREE' },
       auth: true,
     });
 
@@ -258,14 +278,17 @@ describe('состав организаторов ведёт владелец �
     expect(prisma.clubMember.upsert).not.toHaveBeenCalled();
   });
 
-  it('владелец добавляет', async () => {
-    prisma.clubMember.findUnique.mockResolvedValue({ role: 'OWNER' });
+  it('владелец добавляет по логину', async () => {
+    // Первый запрос состава — права вызывающего, второй — нынешняя роль
+    // добавляемого: в клубе его ещё нет.
+    prisma.clubMember.findUnique.mockResolvedValueOnce({ role: 'OWNER' }).mockResolvedValueOnce(null);
+    prisma.user.findUnique.mockResolvedValue({ id: OTHER_ID });
     prisma.clubMember.findMany.mockResolvedValue([
       { userId: OTHER_ID, role: 'REFEREE', user: { player: null } },
     ]);
 
     const result = await call('POST', `/clubs/${CLUB_ID}/members`, {
-      body: { userId: OTHER_ID, role: 'REFEREE' },
+      body: { identifier: 'organizer', role: 'REFEREE' },
       auth: true,
     });
 
@@ -277,7 +300,7 @@ describe('состав организаторов ведёт владелец �
     prisma.clubMember.findUnique.mockResolvedValue({ role: 'OWNER' });
 
     const result = await call('POST', `/clubs/${CLUB_ID}/members`, {
-      body: { userId: OTHER_ID, role: 'ADMIN' },
+      body: { identifier: 'organizer', role: 'ADMIN' },
       auth: true,
     });
 

@@ -164,19 +164,57 @@ describe('состав клуба', () => {
     prisma.user.findUnique.mockResolvedValue(null);
 
     await expect(
-      service.addMember('club-1', {
-        userId: '00000000-0000-4000-8000-000000000000',
-        role: 'REFEREE',
-      }),
+      service.addMember('club-1', { identifier: 'nobody', role: 'ORGANIZER' }),
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 
-  it('повторное добавление меняет роль, а не отваливается', async () => {
+  it('человек ищется логином или телефоном — тем же правилом, что при входе', async () => {
     prisma.clubMember.findMany.mockResolvedValue([
       { userId: 'user-1', role: 'ORGANIZER', user: { player: null } },
     ]);
 
-    await service.addMember('club-1', { userId: 'user-1', role: 'ORGANIZER' });
+    await service.addMember('club-1', { identifier: 'organizer', role: 'ORGANIZER' });
+    await service.addMember('club-1', { identifier: '+77011234567', role: 'ORGANIZER' });
+
+    expect(prisma.user.findUnique.mock.calls[0]?.[0]).toMatchObject({
+      where: { login: 'organizer' },
+    });
+    expect(prisma.user.findUnique.mock.calls[1]?.[0]).toMatchObject({
+      where: { phone: '+77011234567' },
+    });
+  });
+
+  it('повторное добавление меняет роль, а не отваливается', async () => {
+    prisma.clubMember.findUnique.mockResolvedValue({ role: 'REFEREE' });
+    prisma.clubMember.findMany.mockResolvedValue([
+      { userId: 'user-1', role: 'ORGANIZER', user: { player: null } },
+    ]);
+
+    await service.addMember('club-1', { identifier: 'organizer', role: 'ORGANIZER' });
+
+    expect(prisma.clubMember.upsert).toHaveBeenCalledOnce();
+  });
+
+  it('последнего владельца повторным добавлением не понизить', async () => {
+    // Владелец, добавивший себя организатором, оставил бы клуб без
+    // владельца — то же, что исключить его (ADR-043).
+    prisma.clubMember.findUnique.mockResolvedValue({ role: 'OWNER' });
+    prisma.clubMember.count.mockResolvedValue(1);
+
+    await expect(
+      service.addMember('club-1', { identifier: 'owner', role: 'ORGANIZER' }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(prisma.clubMember.upsert).not.toHaveBeenCalled();
+  });
+
+  it('одного из двух владельцев понизить можно', async () => {
+    prisma.clubMember.findUnique.mockResolvedValue({ role: 'OWNER' });
+    prisma.clubMember.count.mockResolvedValue(2);
+    prisma.clubMember.findMany.mockResolvedValue([
+      { userId: 'user-1', role: 'ORGANIZER', user: { player: null } },
+    ]);
+
+    await service.addMember('club-1', { identifier: 'owner', role: 'ORGANIZER' });
 
     expect(prisma.clubMember.upsert).toHaveBeenCalledOnce();
   });

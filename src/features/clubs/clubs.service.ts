@@ -1,4 +1,5 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
+import { PHONE_PATTERN } from '@kttf/shared/types';
 import type {
   AddMemberInput,
   ClubMemberView,
@@ -130,25 +131,45 @@ export class ClubsService {
     }));
   }
 
+  /**
+   * Добавление в состав — ТЗ 1, ADR-043.
+   *
+   * Человек ищется тем же правилом, что и при входе: строка в формате
+   * телефона — телефон, иначе логин. Повторное добавление меняет роль, а не
+   * отваливается: для владельца это одно и то же действие — «пусть у него
+   * будет эта роль». Но понизить так последнего владельца нельзя, как нельзя
+   * и исключить его.
+   */
   async addMember(clubId: string, input: AddMemberInput): Promise<ClubMemberView> {
     await this.findById(clubId);
 
-    const user = await this.prisma.user.findUnique({ where: { id: input.userId } });
+    const identifier = input.identifier.trim();
+    const user = await this.prisma.user.findUnique({
+      where: PHONE_PATTERN.test(identifier) ? { phone: identifier } : { login: identifier },
+      select: { id: true },
+    });
 
     if (user === null) {
-      throw new AppError(ERROR_CODES.NOT_FOUND, 'User not found', { userId: input.userId });
+      throw new AppError(ERROR_CODES.NOT_FOUND, 'User not found', { identifier });
     }
 
-    // Повторное добавление меняет роль, а не отваливается: с точки зрения
-    // владельца это одно и то же действие — «пусть у него будет эта роль».
+    const current = await this.prisma.clubMember.findUnique({
+      where: { clubId_userId: { clubId, userId: user.id } },
+      select: { role: true },
+    });
+
+    if (current?.role === 'OWNER' && input.role !== 'OWNER') {
+      await this.assertNotLastOwner(clubId);
+    }
+
     await this.prisma.clubMember.upsert({
-      where: { clubId_userId: { clubId, userId: input.userId } },
-      create: { clubId, userId: input.userId, role: input.role },
+      where: { clubId_userId: { clubId, userId: user.id } },
+      create: { clubId, userId: user.id, role: input.role },
       update: { role: input.role },
     });
 
     const members = await this.listMembers(clubId);
-    const member = members.find((candidate) => candidate.userId === input.userId);
+    const member = members.find((candidate) => candidate.userId === user.id);
 
     if (member === undefined) {
       throw new AppError(ERROR_CODES.INTERNAL_ERROR, 'Member vanished right after upsert');
@@ -177,16 +198,21 @@ export class ClubsService {
     }
 
     if (member.role === 'OWNER') {
-      const owners = await this.prisma.clubMember.count({ where: { clubId, role: 'OWNER' } });
-
-      if (owners <= 1) {
-        throw new AppError(ERROR_CODES.FORBIDDEN, 'Cannot remove the last owner of a club', {
-          clubId,
-        });
-      }
+      await this.assertNotLastOwner(clubId);
     }
 
     await this.prisma.clubMember.delete({ where: { clubId_userId: { clubId, userId } } });
+  }
+
+  /** Клуб без владельца некому передать: чинить такое пришлось бы в базе. */
+  private async assertNotLastOwner(clubId: string): Promise<void> {
+    const owners = await this.prisma.clubMember.count({ where: { clubId, role: 'OWNER' } });
+
+    if (owners <= 1) {
+      throw new AppError(ERROR_CODES.FORBIDDEN, 'Cannot remove the last owner of a club', {
+        clubId,
+      });
+    }
   }
 }
 
