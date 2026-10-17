@@ -334,6 +334,7 @@ interface UserRecord {
   email: string | null;
   locale: string;
   telegramId: string | null;
+  isAdmin: boolean;
   createdAt: Date;
   player: { id: string } | null;
   clubRoles: { clubId: string; role: string }[];
@@ -350,5 +351,6 @@ function toView(user: UserRecord): AuthUserView {
     createdAt: user.createdAt.toISOString(),
     playerId: user.player?.id ?? null,
     clubRoles: user.clubRoles.map((member) => ({ clubId: member.clubId, role: member.role })),
+    isAdmin: user.isAdmin,
   };
 }

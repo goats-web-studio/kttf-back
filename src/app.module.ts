@@ -4,6 +4,7 @@ import { AuthModule } from './features/auth/auth.module.js';
 import { ClubsModule } from './features/clubs/clubs.module.js';
 import { FilesModule } from './features/files/files.module.js';
 import { HealthModule } from './features/health/health.module.js';
+import { PlacesModule } from './features/places/places.module.js';
 import { PlayersModule } from './features/players/players.module.js';
 import { ScreenModule } from './features/screen/screen.module.js';
 import { SyncModule } from './features/sync/sync.module.js';
@@ -26,6 +27,7 @@ import { PrismaModule } from './infra/prisma/prisma.module.js';
     AuthModule,
     ClubsModule,
     FilesModule,
+    PlacesModule,
     PlayersModule,
     TournamentsModule,
     MatchesModule,

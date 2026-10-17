@@ -93,7 +93,7 @@ export class TournamentsService {
         { OR: [{ status: { not: 'DRAFT' as const } }, { clubId: { in: managed } }] },
         ...(query.clubId === undefined ? [] : [{ clubId: query.clubId }]),
         ...(query.status === undefined ? [] : [{ status: query.status }]),
-        ...(query.city === undefined ? [] : [{ club: { city: query.city } }]),
+        ...(query.cityId === undefined ? [] : [{ club: { cityId: query.cityId } }]),
         ...(query.from === undefined ? [] : [{ startsAt: { gte: new Date(query.from) } }]),
         ...(query.to === undefined ? [] : [{ startsAt: { lte: new Date(query.to) } }]),
       ],

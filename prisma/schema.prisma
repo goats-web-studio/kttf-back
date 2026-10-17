@@ -34,6 +34,10 @@ model User {
   // годами, а понадобится сразу, поэтому поле заводится заранее. По @имени
   // бот писать не может, отсюда число, а не ник.
   telegramId    String?
+  // Администратор платформы — ТЗ 1, ADR-046. Ведёт справочники. Выдаётся
+  // скриптом scripts/set-admin.mjs: маршрута, который делает человека
+  // администратором, наружу нет.
+  isAdmin       Boolean  @default(false)
   createdAt     DateTime @default(now())
 
   player    Player?
@@ -84,7 +88,10 @@ model Player {
   // ничего не меняет в том, что о человеке видно.
   birthYearOnly Boolean   @default(true)
   gender        Gender
-  city          String
+  // Город из справочника — ADR-046. Была свободная строка, и «Алматы»
+  // с «алматы » расходились по фильтрам как два разных города.
+  cityId        String
+  city          City      @relation(fields: [cityId], references: [id])
   photoUrl      String?
   clubId        String?
   club          Club?     @relation(fields: [clubId], references: [id])
@@ -119,7 +126,7 @@ model Player {
   ratingEvents  RatingEvent[]
 
   @@index([rating(sort: Desc)])
-  @@index([city, rating(sort: Desc)])
+  @@index([cityId, rating(sort: Desc)])
   @@index([lastName, firstName])
   // Список тренеров — это выборка distinct по ссылке. Без индекса она
   // прочитала бы всю таблицу игроков ради выпадающего списка в форме.
@@ -144,13 +151,50 @@ enum Grip {
   PENHOLD
 }
 
+// ============ Справочник стран и городов ============
+
+// ADR-046. Ведёт администратор платформы. Записи не удаляются, а скрываются:
+// на город ссылаются клубы и игроки, и удаление оставило бы их без города.
+// Скрытый город не предлагается в формах, но остаётся у тех, у кого указан.
+//
+// Название по-русски обязательно, по-казахски — по желанию: казахский
+// интерфейс без него показывает русское.
+
+model Country {
+  id        String  @id @default(uuid())
+  code      String  @unique // ISO 3166-1 alpha-2
+  name      String
+  nameKk    String?
+  sortOrder Int     @default(100)
+  isActive  Boolean @default(true)
+
+  cities City[]
+}
+
+model City {
+  id        String  @id @default(uuid())
+  countryId String
+  country   Country @relation(fields: [countryId], references: [id])
+  name      String
+  nameKk    String?
+  // Столицы впереди, остальное по алфавиту: порядок задаёт администратор.
+  sortOrder Int     @default(100)
+  isActive  Boolean @default(true)
+
+  clubs   Club[]
+  players Player[]
+
+  @@unique([countryId, name])
+}
+
 // ============ Клубы ============
 
 model Club {
   id          String  @id @default(uuid())
   name        String
   shortName   String?
-  city        String
+  cityId      String // справочник, ADR-046
+  city        City    @relation(fields: [cityId], references: [id])
   address     String?
   lat         Float?
   lng         Float?
@@ -172,7 +216,7 @@ model Club {
   players      Player[]
   transactions Transaction[]
 
-  @@index([city])
+  @@index([cityId])
 }
 
 model ClubMember {

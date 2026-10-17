@@ -1,5 +1,6 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import type {
+  CityRef,
   CreatePlayerInput,
   HeadToHeadView,
   ListPlayersQuery,
@@ -18,6 +19,8 @@ import { defined } from '../../common/objects.js';
 import { pageOf, skipOf } from '../../common/pagination.js';
 import { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
+import { cityRefFields } from '../places/place.fields.js';
+import { PlacesService } from '../places/places.service.js';
 
 import { buildRatingPoints, summarize, toPlayerMatch } from './history.js';
 
@@ -29,7 +32,7 @@ const playerFields = {
   middleName: true,
   birthYear: true,
   gender: true,
-  city: true,
+  city: { select: cityRefFields },
   photoUrl: true,
   clubId: true,
   rating: true,
@@ -91,11 +94,14 @@ type MatchRow = Prisma.MatchGetPayload<{ select: ReturnType<typeof matchFields> 
 
 @Injectable()
 export class PlayersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly places: PlacesService,
+  ) {}
 
   async list(query: ListPlayersQuery): Promise<Page<PlayerView>> {
     const where = {
-      ...(query.city === undefined ? {} : { city: query.city }),
+      ...(query.cityId === undefined ? {} : { cityId: query.cityId }),
       ...(query.clubId === undefined ? {} : { clubId: query.clubId }),
       // Игроки без кабинета — список для выбора себя при регистрации
       // (ADR-034). Без фильтра это был бы список всех игроков страны, то
@@ -283,6 +289,7 @@ export class PlayersService {
    * значении открыт (ОВ-2). До его решения действует умолчание схемы.
    */
   async create(input: CreatePlayerInput, actorId: string): Promise<PlayerProfileView> {
+    await this.places.assertCityAvailable(input.cityId);
     await this.assertClubExists(input.clubId);
     await this.assertCoachExists(input.coachPlayerId);
 
@@ -315,7 +322,8 @@ export class PlayersService {
   }
 
   async update(id: string, input: UpdatePlayerInput): Promise<PlayerProfileView> {
-    await this.findById(id);
+    const current = await this.findById(id);
+    await this.places.assertCityAvailable(input.cityId, current.city.id);
     await this.assertClubExists(input.clubId ?? undefined);
     await this.assertCoachExists(input.coachPlayerId ?? undefined, id);
 
@@ -459,7 +467,7 @@ interface PlayerRecord {
   middleName: string | null;
   birthYear: number;
   gender: string;
-  city: string;
+  city: CityRef;
   photoUrl: string | null;
   clubId: string | null;
   rating: { toString: () => string };

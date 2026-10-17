@@ -1,13 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PrismaService } from '../../infra/prisma/prisma.service.js';
+import { PlacesService } from '../places/places.service.js';
 import { ClubsService } from './clubs.service.js';
 
 const club = {
   id: 'club-1',
   name: 'Ракетка',
   shortName: null,
-  city: 'Алматы',
+  city: { id: 'city-1', name: 'Алматы', nameKk: null },
   address: null,
   lat: null,
   lng: null,
@@ -38,6 +39,7 @@ function makePrisma() {
       delete: vi.fn().mockResolvedValue({}),
     },
     user: { findUnique: vi.fn().mockResolvedValue({ id: 'user-1' }) },
+    city: { findFirst: vi.fn().mockResolvedValue({ id: 'city-1' }) },
     $transaction: vi.fn(),
   };
 
@@ -51,7 +53,8 @@ let service: ClubsService;
 
 beforeEach(() => {
   prisma = makePrisma();
-  service = new ClubsService(prisma as unknown as PrismaService);
+  const db = prisma as unknown as PrismaService;
+  service = new ClubsService(db, new PlacesService(db));
 });
 
 describe('список клубов', () => {
@@ -97,7 +100,7 @@ describe('список клубов', () => {
 describe('создание клуба', () => {
   it('создатель сразу становится владельцем', async () => {
     // Иначе клуб появляется без человека, который может им управлять.
-    await service.create({ name: 'Ракетка', city: 'Алматы' }, 'user-1');
+    await service.create({ name: 'Ракетка', cityId: 'city-1' }, 'user-1');
 
     expect(prisma.clubMember.create).toHaveBeenCalledWith({
       data: { clubId: 'club-1', userId: 'user-1', role: 'OWNER' },
@@ -105,16 +108,25 @@ describe('создание клуба', () => {
   });
 
   it('клуб и владелец создаются одной транзакцией', async () => {
-    await service.create({ name: 'Ракетка', city: 'Алматы' }, 'user-1');
+    await service.create({ name: 'Ракетка', cityId: 'city-1' }, 'user-1');
 
     expect(prisma.$transaction).toHaveBeenCalledOnce();
   });
 
   it('незаданные поля не уезжают в базу как undefined', async () => {
-    await service.create({ name: 'Ракетка', city: 'Алматы' }, 'user-1');
+    await service.create({ name: 'Ракетка', cityId: 'city-1' }, 'user-1');
 
     const data = (prisma.club.create.mock.calls[0]?.[0] as { data: object }).data;
-    expect(Object.keys(data).sort()).toEqual(['city', 'name']);
+    expect(Object.keys(data).sort()).toEqual(['cityId', 'name']);
+  });
+
+  it('город вне справочника или скрытый — отказ до записи', async () => {
+    prisma.city.findFirst.mockResolvedValue(null);
+
+    await expect(
+      service.create({ name: 'Ракетка', cityId: 'city-9' }, 'user-1'),
+    ).rejects.toMatchObject({ code: 'CITY_UNAVAILABLE' });
+    expect(prisma.club.create).not.toHaveBeenCalled();
   });
 });
 

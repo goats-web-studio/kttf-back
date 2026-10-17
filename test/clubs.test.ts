@@ -32,12 +32,13 @@ const env: Env = {
 const CLUB_ID = '11111111-1111-4111-8111-111111111111';
 const USER_ID = '22222222-2222-4222-8222-222222222222';
 const OTHER_ID = '33333333-3333-4333-8333-333333333333';
+const CITY_ID = '55555555-5555-4555-8555-555555555555';
 
 const club = {
   id: CLUB_ID,
   name: 'Ракетка',
   shortName: null,
-  city: 'Алматы',
+  city: { id: CITY_ID, name: 'Алматы', nameKk: null },
   address: null,
   lat: null,
   lng: null,
@@ -79,7 +80,7 @@ function makePrisma() {
         middleName: null,
         birthYear: 1998,
         gender: 'MALE',
-        city: 'Алматы',
+        city: { id: CITY_ID, name: 'Алматы', nameKk: null },
         photoUrl: null,
         clubId: null,
         rating: { toString: () => '250.00' },
@@ -102,6 +103,7 @@ function makePrisma() {
       update: vi.fn().mockResolvedValue({}),
     },
     user: { findUnique: vi.fn().mockResolvedValue({ id: USER_ID }) },
+    city: { findFirst: vi.fn().mockResolvedValue({ id: CITY_ID }) },
     $transaction: vi.fn(),
   };
 
@@ -281,7 +283,9 @@ describe('состав организаторов ведёт владелец �
   it('владелец добавляет по логину', async () => {
     // Первый запрос состава — права вызывающего, второй — нынешняя роль
     // добавляемого: в клубе его ещё нет.
-    prisma.clubMember.findUnique.mockResolvedValueOnce({ role: 'OWNER' }).mockResolvedValueOnce(null);
+    prisma.clubMember.findUnique
+      .mockResolvedValueOnce({ role: 'OWNER' })
+      .mockResolvedValueOnce(null);
     prisma.user.findUnique.mockResolvedValue({ id: OTHER_ID });
     prisma.clubMember.findMany.mockResolvedValue([
       { userId: OTHER_ID, role: 'REFEREE', user: { player: null } },
@@ -319,13 +323,13 @@ describe('состав организаторов ведёт владелец �
 describe('создание клуба', () => {
   it('без токена — 401', async () => {
     expect(
-      (await call('POST', '/clubs', { body: { name: 'Ракетка', city: 'Алматы' } })).status,
+      (await call('POST', '/clubs', { body: { name: 'Ракетка', cityId: CITY_ID } })).status,
     ).toBe(401);
   });
 
   it('с токеном — создаётся, вызывающий становится владельцем', async () => {
     const result = await call('POST', '/clubs', {
-      body: { name: 'Ракетка', city: 'Алматы' },
+      body: { name: 'Ракетка', cityId: CITY_ID },
       auth: true,
     });
 
@@ -350,7 +354,7 @@ describe('создание игрока', () => {
         firstName: 'Сергей',
         birthYear: 1998,
         gender: 'MALE',
-        city: 'Алматы',
+        cityId: CITY_ID,
       },
     });
 
@@ -364,7 +368,7 @@ describe('создание игрока', () => {
         firstName: 'Сергей',
         birthYear: 1998,
         gender: 'MALE',
-        city: 'Алматы',
+        cityId: CITY_ID,
       },
       auth: true,
     });
@@ -380,7 +384,7 @@ describe('создание игрока', () => {
         firstName: 'Сергей',
         birthYear: 3000,
         gender: 'MALE',
-        city: 'Алматы',
+        cityId: CITY_ID,
       },
       auth: true,
     });
@@ -395,7 +399,7 @@ describe('создание игрока', () => {
         firstName: 'Сергей',
         birthYear: 1998,
         gender: 'MALE',
-        city: 'Алматы',
+        cityId: CITY_ID,
       },
       auth: true,
     });

@@ -66,7 +66,7 @@ function registration(playerId: string, lastName: string, status = 'PLAYING') {
       middleName: null,
       birthYear: 1995,
       gender: 'MALE',
-      city: 'Алматы',
+      city: { id: 'city-1', name: 'Алматы', nameKk: null },
       photoUrl: null,
       clubId: null,
       rating: new Prisma.Decimal('294.80'),

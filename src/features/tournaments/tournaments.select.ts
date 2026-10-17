@@ -1,6 +1,7 @@
 import type { RegistrationStatus } from '@kttf/shared/types';
 
 import type { Prisma } from '../../generated/prisma/client.js';
+import { cityRefFields } from '../places/place.fields.js';
 
 /**
  * Наборы полей для выборок.
@@ -18,7 +19,7 @@ export const playerFields = {
   middleName: true,
   birthYear: true,
   gender: true,
-  city: true,
+  city: { select: cityRefFields },
   photoUrl: true,
   clubId: true,
   rating: true,

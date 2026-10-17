@@ -46,7 +46,7 @@ const player = {
   middleName: null,
   birthYear: 1998,
   gender: 'MALE',
-  city: 'Алматы',
+  city: { id: '55555555-5555-4555-8555-555555555555', name: 'Алматы', nameKk: null },
   photoUrl: null,
   clubId: null,
   rating: { toString: () => '250.00' },

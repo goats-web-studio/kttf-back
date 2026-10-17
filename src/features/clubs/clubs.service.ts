@@ -2,6 +2,7 @@ import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import { PHONE_PATTERN } from '@kttf/shared/types';
 import type {
   AddMemberInput,
+  CityRef,
   ClubMemberView,
   ClubView,
   CreateClubInput,
@@ -14,6 +15,8 @@ import { Injectable } from '@nestjs/common';
 import { defined } from '../../common/objects.js';
 import { pageOf, skipOf } from '../../common/pagination.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
+import { cityRefFields } from '../places/place.fields.js';
+import { PlacesService } from '../places/places.service.js';
 
 /**
  * Поля клуба в ответах.
@@ -26,7 +29,7 @@ const clubFields = {
   id: true,
   name: true,
   shortName: true,
-  city: true,
+  city: { select: cityRefFields },
   address: true,
   lat: true,
   lng: true,
@@ -41,11 +44,14 @@ const clubFields = {
 
 @Injectable()
 export class ClubsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly places: PlacesService,
+  ) {}
 
   async list(query: ListClubsQuery): Promise<Page<ClubView>> {
     const where = {
-      ...(query.city === undefined ? {} : { city: query.city }),
+      ...(query.cityId === undefined ? {} : { cityId: query.cityId }),
       ...(query.search === undefined
         ? {}
         : { name: { contains: query.search, mode: 'insensitive' as const } }),
@@ -84,6 +90,8 @@ export class ClubsService {
    * с подтверждённым телефоном. Записано как ОВ-13.
    */
   async create(input: CreateClubInput, ownerId: string): Promise<ClubView> {
+    await this.places.assertCityAvailable(input.cityId);
+
     const club = await this.prisma.$transaction(async (tx) => {
       const created = await tx.club.create({ data: defined(input), select: clubFields });
 
@@ -98,7 +106,8 @@ export class ClubsService {
   }
 
   async update(id: string, input: UpdateClubInput): Promise<ClubView> {
-    await this.findById(id);
+    const current = await this.findById(id);
+    await this.places.assertCityAvailable(input.cityId, current.city.id);
 
     return toClubView(
       await this.prisma.club.update({ where: { id }, data: defined(input), select: clubFields }),
@@ -220,7 +229,7 @@ interface ClubRecord {
   id: string;
   name: string;
   shortName: string | null;
-  city: string;
+  city: CityRef;
   address: string | null;
   lat: number | null;
   lng: number | null;

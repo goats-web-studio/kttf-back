@@ -28,6 +28,7 @@
     "db:migrate": "prisma migrate deploy",
     "db:studio": "prisma studio",
     "set-password": "node --env-file=.env scripts/set-password.mjs",
+    "set-admin": "node --env-file=.env scripts/set-admin.mjs",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
     "lint": "eslint .",

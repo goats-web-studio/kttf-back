@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PrismaService } from '../../infra/prisma/prisma.service.js';
+import { PlacesService } from '../places/places.service.js';
 import { PlayersService } from './players.service.js';
 
 const player = {
@@ -11,7 +12,7 @@ const player = {
   middleName: null,
   birthYear: 1998,
   gender: 'MALE',
-  city: 'Алматы',
+  city: { id: 'city-1', name: 'Алматы', nameKk: null },
   photoUrl: null,
   clubId: 'club-1',
   // Prisma отдаёт Decimal — объект, а не число.
@@ -38,7 +39,7 @@ const newcomer = {
   firstName: 'Сергей',
   birthYear: 1998,
   gender: 'MALE' as const,
-  city: 'Алматы',
+  cityId: 'city-1',
 };
 
 function makePrisma() {
@@ -52,6 +53,7 @@ function makePrisma() {
     },
     club: { findUnique: vi.fn().mockResolvedValue({ id: 'club-1' }) },
     clubMember: { findUnique: vi.fn().mockResolvedValue(null) },
+    city: { findFirst: vi.fn().mockResolvedValue({ id: 'city-1' }) },
   };
 }
 
@@ -60,7 +62,8 @@ let service: PlayersService;
 
 beforeEach(() => {
   prisma = makePrisma();
-  service = new PlayersService(prisma as unknown as PrismaService);
+  const db = prisma as unknown as PrismaService;
+  service = new PlayersService(db, new PlacesService(db));
 });
 
 describe('представление игрока', () => {

@@ -43,6 +43,11 @@ const STATUS_BY_CODE: Readonly<Record<ErrorCode, number>> = {
   TOURNAMENT_NOT_COMPLETE: HttpStatus.CONFLICT,
   TIES_UNRESOLVED: HttpStatus.CONFLICT,
   RATING_SNAPSHOT_MISSING: HttpStatus.CONFLICT,
+
+  // Справочник — ADR-046. Недоступный город — изъян запроса: выбирать
+  // предлагалось из открытого списка. Дубликат — конфликт с тем, что уже есть.
+  CITY_UNAVAILABLE: HttpStatus.BAD_REQUEST,
+  PLACE_ALREADY_EXISTS: HttpStatus.CONFLICT,
 };
 
 const CODE_BY_STATUS: Readonly<Record<number, ErrorCode>> = {

@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 
 import { ENV, type Env } from '../../infra/config/env.js';
+import { AdminGuard } from './admin.guard.js';
 import { AuthController } from './auth.controller.js';
 import { AuthService } from './auth.service.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
@@ -16,7 +17,7 @@ import { TokenService } from './token.service.js';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, TokenService, JwtAuthGuard, OptionalJwtGuard],
-  exports: [TokenService, JwtAuthGuard, OptionalJwtGuard],
+  providers: [AuthService, TokenService, JwtAuthGuard, OptionalJwtGuard, AdminGuard],
+  exports: [TokenService, JwtAuthGuard, OptionalJwtGuard, AdminGuard],
 })
 export class AuthModule {}
