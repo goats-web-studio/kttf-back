@@ -219,6 +219,8 @@ function planKnockoutStage(
   stage: {
     order: number;
     name: string;
+    /** Сетка за места для не вышедших из групп — `CONSOLATION` (ADR-045). */
+    type?: 'KNOCKOUT' | 'CONSOLATION';
     setsToWin: number;
     /** Длины по кругам — ADR-044. Ложатся в этап рядом с размером сетки. */
     playoffSetsToWin: PlayoffSetsToWin | undefined;
@@ -234,7 +236,7 @@ function planKnockoutStage(
 
   return {
     order: stage.order,
-    type: 'KNOCKOUT',
+    type: stage.type ?? 'KNOCKOUT',
     name: stage.name,
     config: {
       setsToWin: stage.setsToWin,
@@ -365,22 +367,27 @@ function mustGet(ids: Map<string, string>, key: string): string {
 }
 
 /**
- * Этап по итогам групп — плей-офф либо финальные группы.
+ * Этапы по итогам групп — плей-офф либо финальные группы, и сетка за места
+ * для не вышедших (ADR-045).
  *
- * Его не существовало при жеребьёвке: он сеется результатами групп, а до
- * первой сыгранной встречи результатов нет. Отбор вышедших делает движок
- * (`selectAdvancing`), здесь только раскладка по моделям — та же граница,
- * что и во всей остальной жеребьёвке.
+ * Их не существовало при жеребьёвке: они сеются результатами групп, а до
+ * первой сыгранной встречи результатов нет. Отбор вышедших и не вышедших
+ * делает движок (`selectAdvancing`), здесь только раскладка по моделям — та
+ * же граница, что и во всей остальной жеребьёвке.
  *
- * @returns `null`, если схема турнира следующего этапа не предполагает.
+ * Сетка за места играется общей длиной плей-офф: длины по кругам заданы для
+ * основной сетки, и финал за девятое место до четырёх побед никто не имел в
+ * виду. Встреча за третье место в ней есть, если есть в основной.
+ *
+ * @returns Пусто, если схема турнира следующего этапа не предполагает.
  */
 export function planNextStage(
   config: FormatConfig,
   selection: AdvancingSelection,
   makeId: () => string,
-): PlannedStage | null {
+): PlannedStage[] {
   if (config.type === 'GROUPS_KNOCKOUT') {
-    return planKnockoutStage(
+    const playoff = planKnockoutStage(
       selection.seeded,
       { thirdPlace: config.thirdPlace },
       {
@@ -391,13 +398,32 @@ export function planNextStage(
       },
       makeId,
     );
+
+    // Одному не вышедшему играть не с кем: сетка за места начинается с двух.
+    if (!config.exitBracket || selection.exits.length < 2) return [playoff];
+
+    return [
+      playoff,
+      planKnockoutStage(
+        selection.exits,
+        { thirdPlace: config.thirdPlace },
+        {
+          order: 2,
+          name: 'Сетка за места',
+          type: 'CONSOLATION',
+          setsToWin: config.koSetsToWin,
+          playoffSetsToWin: undefined,
+        },
+        makeId,
+      ),
+    ];
   }
 
   if (config.type === 'GROUPS_FINAL_GROUPS') {
-    return planFinalGroups(config, selection, makeId);
+    return [planFinalGroups(config, selection, makeId)];
   }
 
-  return null;
+  return [];
 }
 
 /**

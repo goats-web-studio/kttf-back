@@ -86,15 +86,18 @@ function placementInput(
   standings: TournamentStandingsView,
 ): PlacementInput {
   const ordered = [...stages].sort((left, right) => left.order - right.order);
-  const first = ordered.find((stage) => stage.type !== 'KNOCKOUT');
+  const first = ordered.find((stage) => stage.type === 'GROUPS' || stage.type === 'ROUND_ROBIN');
   // Финальные группы — второй групповой этап: тот же тип, больший порядок.
   const final = ordered.find((stage) => stage.type === 'GROUPS' && stage !== first);
   const knockout = ordered.find((stage) => stage.type === 'KNOCKOUT');
+  // Сетка за места для не вышедших из групп — ADR-045.
+  const exit = ordered.find((stage) => stage.type === 'CONSOLATION');
 
   return {
     groups: first === undefined ? [] : tablesOf(first, standings),
     finalGroups: final === undefined ? [] : tablesOf(final, standings),
     bracket: knockout === undefined ? [] : knockout.matches.map(toBracketResult),
+    ...(exit === undefined ? {} : { exitBracket: exit.matches.map(toBracketResult) }),
   };
 }
 

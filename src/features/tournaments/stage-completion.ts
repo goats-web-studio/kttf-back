@@ -37,7 +37,8 @@ function isSettled(
   // не определились: пустые слоты означают несыгранную встречу выше по сетке,
   // и та попадёт в список тоже. Считать такую встречу сыгранной значило бы
   // завершить турнир с недоигранной сеткой.
-  if (stage.type === 'KNOCKOUT') return false;
+  // Сетка за места (ADR-045) — такая же сетка: без результата никто не едет.
+  if (stage.type === 'KNOCKOUT' || stage.type === 'CONSOLATION') return false;
 
   const { playerAId, playerBId } = match;
 

@@ -82,8 +82,14 @@ export async function advanceAfterGroups(
   if (selection.blocked.length > 0) return { stageId: null, blockedByTies: selection.blocked };
 
   const planned = planNextStage(config, selection, () => randomUUID());
-  /* v8 ignore next -- обе групповые схемы этап дают, проверка типа выше */
-  if (planned === null) return NOTHING;
+  const ids: string[] = [];
 
-  return { stageId: await writeStage(tx, tournamentId, planned), blockedByTies: [] };
+  // Плей-офф и сетка за места пишутся вместе: по отдельности второй этап
+  // не достроился бы никогда — достройка идёт, пока этап один (выше).
+  for (const stage of planned) {
+    ids.push(await writeStage(tx, tournamentId, stage));
+  }
+
+  /* v8 ignore next -- обе групповые схемы этап дают, проверка типа выше */
+  return { stageId: ids[0] ?? null, blockedByTies: [] };
 }

@@ -201,6 +201,7 @@ describe('групповой этап', () => {
     groupSetsToWin: 3,
     koSetsToWin: 3,
     thirdPlace: true,
+    exitBracket: false,
   };
 
   it('строится только он: плей-офф сеется результатами, которых ещё нет', () => {
@@ -267,6 +268,7 @@ describe('достройка этапа по итогам групп', () => {
     groupSetsToWin: 3,
     koSetsToWin: 4,
     thirdPlace: true,
+    exitBracket: false,
   };
 
   const FINAL_GROUPS: FormatConfig = {
@@ -284,11 +286,12 @@ describe('достройка этапа по итогам групп', () => {
       ['a1', 'b1'],
       ['a2', 'b2'],
     ],
+    exits: ['a3', 'b3', 'a4', 'b4'],
     blocked: [],
   };
 
   it('плей-офф — это сетка вторым этапом', () => {
-    const stage = planNextStage(GROUPS_KNOCKOUT, SELECTION, makeIdFactory());
+    const [stage] = planNextStage(GROUPS_KNOCKOUT, SELECTION, makeIdFactory());
 
     expect(stage).toMatchObject({ order: 1, type: 'KNOCKOUT', name: 'Плей-офф' });
     // Полуфиналы, финал и встреча за третье место.
@@ -296,13 +299,13 @@ describe('достройка этапа по итогам групп', () => {
   });
 
   it('плей-офф играется по своей планке сетов, а не по групповой', () => {
-    const stage = planNextStage(GROUPS_KNOCKOUT, SELECTION, makeIdFactory());
+    const [stage] = planNextStage(GROUPS_KNOCKOUT, SELECTION, makeIdFactory());
 
     expect(stage?.config).toMatchObject({ setsToWin: 4 });
   });
 
   it('участники плей-офф известны сразу: они уже вышли', () => {
-    const stage = planNextStage(GROUPS_KNOCKOUT, SELECTION, makeIdFactory());
+    const [stage] = planNextStage(GROUPS_KNOCKOUT, SELECTION, makeIdFactory());
     const first = stage?.matches.filter((match) => match.bracketRound === 1) ?? [];
 
     expect(first).toHaveLength(2);
@@ -313,7 +316,7 @@ describe('достройка этапа по итогам групп', () => {
   });
 
   it('финал ссылается на победителей полуфиналов', () => {
-    const stage = planNextStage(GROUPS_KNOCKOUT, SELECTION, makeIdFactory());
+    const [stage] = planNextStage(GROUPS_KNOCKOUT, SELECTION, makeIdFactory());
     const final = stage?.matches.find(
       (match) => match.bracketRound === 2 && match.bracketSlot === 0,
     );
@@ -325,7 +328,7 @@ describe('достройка этапа по итогам групп', () => {
 
   it('финальные группы собираются по местам', () => {
     // ТЗ 5.1, «финалы по местам»: k-я группа — те, кто занял k-е место.
-    const stage = planNextStage(FINAL_GROUPS, SELECTION, makeIdFactory());
+    const [stage] = planNextStage(FINAL_GROUPS, SELECTION, makeIdFactory());
 
     expect(stage).toMatchObject({ order: 1, type: 'GROUPS', name: 'Финальные группы' });
     expect(stage?.groups.map((group) => group.participants)).toEqual([
@@ -335,7 +338,7 @@ describe('достройка этапа по итогам групп', () => {
   });
 
   it('в финальной группе играют все со всеми', () => {
-    const stage = planNextStage(FINAL_GROUPS, SELECTION, makeIdFactory());
+    const [stage] = planNextStage(FINAL_GROUPS, SELECTION, makeIdFactory());
 
     // Две группы по двое: по одной встрече в каждой.
     expect(stage?.matches).toHaveLength(2);
@@ -345,14 +348,43 @@ describe('достройка этапа по итогам групп', () => {
   it('финальные группы играют столько же кругов, сколько групповой этап', () => {
     // У этой схемы одно поле на оба этапа — ровно как `setsToWin`.
     // Отдельного параметра для финальных групп ТЗ 5.2 не задаёт.
-    const stage = planNextStage({ ...FINAL_GROUPS, groupRounds: 2 }, SELECTION, makeIdFactory());
+    const [stage] = planNextStage({ ...FINAL_GROUPS, groupRounds: 2 }, SELECTION, makeIdFactory());
 
     expect(stage?.matches).toHaveLength(4);
     expect(stage?.config).toMatchObject({ rounds: 2 });
   });
 
+  it('без флага не вышедшие из групп своей сетки не получают', () => {
+    expect(planNextStage(GROUPS_KNOCKOUT, SELECTION, makeIdFactory())).toHaveLength(1);
+  });
+
+  it('с флагом не вышедшие играют сетку за места третьим этапом — ADR-045', () => {
+    const [, exit] = planNextStage(
+      { ...GROUPS_KNOCKOUT, exitBracket: true },
+      SELECTION,
+      makeIdFactory(),
+    );
+
+    expect(exit).toMatchObject({ order: 2, type: 'CONSOLATION', name: 'Сетка за места' });
+    // Четверо: два полуфинала, финал и встреча за третье — как в основной.
+    expect(exit?.matches).toHaveLength(4);
+    // Длина — общая плей-офф: длины по кругам относятся к основной сетке.
+    expect(exit?.config).toMatchObject({ setsToWin: 4, bracketSize: 4 });
+    expect(exit?.config).not.toHaveProperty('playoffSetsToWin');
+  });
+
+  it('одному не вышедшему сетка за места не строится', () => {
+    expect(
+      planNextStage(
+        { ...GROUPS_KNOCKOUT, exitBracket: true },
+        { ...SELECTION, exits: ['a3'] },
+        makeIdFactory(),
+      ),
+    ).toHaveLength(1);
+  });
+
   it('схемы без второго этапа его и не получают', () => {
-    expect(planNextStage(ROUND_ROBIN, SELECTION, makeIdFactory())).toBeNull();
+    expect(planNextStage(ROUND_ROBIN, SELECTION, makeIdFactory())).toEqual([]);
   });
 });
 
@@ -368,6 +400,7 @@ describe('жеребьёвка отвергает конфигурацию, из
       groupSetsToWin: 3,
       koSetsToWin: 3,
       thirdPlace: false,
+      exitBracket: false,
     };
 
     expect(() => planDraw(config, participants(4), null, makeIdFactory())).toThrow(AppError);

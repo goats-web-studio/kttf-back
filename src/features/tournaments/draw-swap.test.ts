@@ -48,10 +48,7 @@ describe('обмен двумя игроками', () => {
   it('свободный проход достаётся тому, кого поставили на это место', () => {
     // Проход не материализован: участник просто начинает со второго круга
     // (ADR-019). Обмен именами переносит проход без отдельного случая.
-    const bracket: DrawMatch[] = [
-      match('r1', 'p3', 'p4'),
-      match('final', 'p1', null),
-    ];
+    const bracket: DrawMatch[] = [match('r1', 'p3', 'p4'), match('final', 'p1', null)];
 
     const updates = planDrawSwap(bracket, 'p1', 'p3');
 
