@@ -12,8 +12,8 @@ importers:
         specifier: ^3.1124.0
         version: 3.1124.0
       '@kttf/shared':
-        specifier: github:goats-web-studio/kttf-shared#4d57e448815c6d7b338ba5966e9454a39da1b2e5
-        version: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/4d57e448815c6d7b338ba5966e9454a39da1b2e5(zod@4.5.1)
+        specifier: github:goats-web-studio/kttf-shared#fe9974323b38034b553ea8a223c4e85ece21fe95
+        version: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/fe9974323b38034b553ea8a223c4e85ece21fe95(zod@4.5.1)
       '@nestjs/common':
         specifier: ^11.2.3
         version: 11.2.3(reflect-metadata@0.2.2)(rxjs@7.8.2)
@@ -430,8 +430,8 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/4d57e448815c6d7b338ba5966e9454a39da1b2e5':
-    resolution: {gitHosted: true, integrity: sha512-aOBdYmfjka0F41mV3z+z5MWdNjXDFNowvmZd6dzCtBSv0xdXcqAe+8qotA3hmK+kOBL0GcU20b712WDu8HqEFw==, tarball: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/4d57e448815c6d7b338ba5966e9454a39da1b2e5}
+  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/fe9974323b38034b553ea8a223c4e85ece21fe95':
+    resolution: {gitHosted: true, integrity: sha512-Ut9zOzBP7W2AhMHWczr0HyW2wKALhVYRvHjwXjGRopPG0K+lm26Hz+p+V8LGoCZCv0NpuVar3N8GOQIQ8i2lTA==, tarball: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/fe9974323b38034b553ea8a223c4e85ece21fe95}
     version: 0.1.0
     engines: {node: '>=24'}
     peerDependencies:
@@ -759,6 +759,7 @@ packages:
   '@smithy/node-http-handler@4.12.0':
     resolution: {integrity: sha512-0mq1pHadfyXCYCqm2cNpbjNIT+fbaUpNxewZb/YNr2L0IrEVMOb8gM/Fl4K6XvHCW3uSNDFwPl/+iKm0bx9jYg==}
     engines: {node: '>=18.0.0'}
+    deprecated: Depreacted due to a memory leak issue https://github.com/smithy-lang/smithy-typescript/issues/2258
 
   '@smithy/signature-v4@5.7.3':
     resolution: {integrity: sha512-7ImGm+FkHRLcBaRttIAMZ6bzJZWb2cJGoYjq46F2UjycujWzrL9GEN9h4w7eQyXJYnltrUhxbbieBAIRrdqpow==}
@@ -2762,7 +2763,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.6.0
 
-  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/4d57e448815c6d7b338ba5966e9454a39da1b2e5(zod@4.5.1)':
+  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/fe9974323b38034b553ea8a223c4e85ece21fe95(zod@4.5.1)':
     dependencies:
       zod: 4.5.1
 
