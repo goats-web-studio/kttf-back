@@ -57,6 +57,7 @@ export function toTournamentView(tournament: TournamentRecord): TournamentView {
     maxParticipants: tournament.maxParticipants,
     ratingCapMax: decimalOrNull(tournament.ratingCapMax),
     ratingCapMin: decimalOrNull(tournament.ratingCapMin),
+    reviewOutOfRating: tournament.reviewOutOfRating,
     birthYearFrom: tournament.birthYearFrom,
     birthYearTo: tournament.birthYearTo,
     genderLimit: tournament.genderLimit,

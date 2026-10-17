@@ -17,7 +17,7 @@ import { ScreenEventsService } from '../screen/screen-events.service.js';
 import { advanceAfterGroups } from '../tournaments/advance.js';
 import { assertConsoleAccess } from '../tournaments/console-access.js';
 import { bumpVersion } from '../tournaments/tournament-state.js';
-import { setsToWinOf } from '../tournaments/stage-config.js';
+import { matchSetsToWin } from '../tournaments/stage-config.js';
 import { toMatchView, toStageView } from '../tournaments/tournaments.mapper.js';
 import { matchFields, stageFields, type MatchRecord } from '../tournaments/tournaments.select.js';
 
@@ -179,6 +179,7 @@ export class MatchesService {
       });
     }
 
+    const setsToWin = matchSetsToWin(match.stage.config, match);
     const problem = validateMatchResult(
       {
         setsA: input.setsA,
@@ -186,13 +187,13 @@ export class MatchesService {
         setScores: input.setScores,
         resultType: input.resultType,
       },
-      setsToWinOf(match.stage.config),
+      setsToWin,
     );
 
     if (problem !== null) {
       throw new AppError(ERROR_CODES.INVALID_SCORE, 'Score does not fit the format', {
         problem,
-        setsToWin: setsToWinOf(match.stage.config),
+        setsToWin,
       });
     }
 

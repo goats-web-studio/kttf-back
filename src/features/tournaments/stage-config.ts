@@ -1,3 +1,6 @@
+import { playoffSetsToWin } from '@kttf/shared/brackets';
+import { playoffSetsToWinSchema } from '@kttf/shared/types';
+
 /**
  * Разбор колонок `Json` этапа и встречи.
  *
@@ -17,6 +20,39 @@ export function setsToWinOf(config: unknown): number {
   // Умолчание на случай этапа, созданного до появления поля: три сета —
   // самая частая схема, и таблица без него не считалась бы вовсе.
   return 3;
+}
+
+/**
+ * До скольких побед идёт эта встреча — с учётом длин по кругам плей-офф
+ * (ADR-044).
+ *
+ * Круг и позиция лежат у самой встречи, размер сетки и длины — в `config`
+ * её этапа. Встреча группы или круговой позиции в сетке не имеет и играется
+ * длиной этапа. Тот же расчёт делает офлайн-консоль — общим правилом
+ * `playoffSetsToWin`, а не своей копией.
+ */
+export function matchSetsToWin(
+  config: unknown,
+  match: { readonly bracketRound: number | null; readonly bracketSlot: number | null },
+): number {
+  const base = setsToWinOf(config);
+
+  if (match.bracketRound === null || match.bracketSlot === null) return base;
+  if (typeof config !== 'object' || config === null || Array.isArray(config)) return base;
+
+  const record = config as Record<string, unknown>;
+  const bracketSize = record.bracketSize;
+
+  if (typeof bracketSize !== 'number' || bracketSize < 2) return base;
+
+  const lengths = playoffSetsToWinSchema.safeParse(record.playoffSetsToWin);
+
+  return playoffSetsToWin(
+    base,
+    lengths.success ? lengths.data : undefined,
+    { round: match.bracketRound, slot: match.bracketSlot },
+    Math.log2(bracketSize),
+  );
 }
 
 /** Счёт по сетам нужен правилам 3 и 5 разрешения равенства — ТЗ 6.6. */

@@ -4,6 +4,7 @@ import type { FormatConfig } from '@kttf/shared/types';
 import { describe, expect, it } from 'vitest';
 
 import { type DrawParticipant, planDraw, planNextStage, seedParticipants } from './draw.js';
+import { matchSetsToWin } from './stage-config.js';
 
 function makeIdFactory(): () => string {
   let counter = 0;
@@ -127,6 +128,29 @@ describe('олимпийская сетка', () => {
     const plan = planDraw(KNOCKOUT, participants(8), null, makeIdFactory());
 
     expect(plan.stages[0]?.matches).toHaveLength(7);
+  });
+
+  it('длины по кругам ложатся в этап рядом с размером сетки — ADR-044', () => {
+    // По ним проверяется счёт: финал до четырёх побед, остальное до трёх.
+    const plan = planDraw(
+      { ...KNOCKOUT, playoffSetsToWin: { final: 4 } },
+      participants(8),
+      null,
+      makeIdFactory(),
+    );
+    const stage = plan.stages[0];
+    const final = stage?.matches.find((match) => match.bracketRound === 3);
+    const semifinal = stage?.matches.find((match) => match.bracketRound === 2);
+
+    expect(stage?.config).toMatchObject({ bracketSize: 8, playoffSetsToWin: { final: 4 } });
+    expect(final && matchSetsToWin(stage?.config, final)).toBe(4);
+    expect(semifinal && matchSetsToWin(stage?.config, semifinal)).toBe(3);
+  });
+
+  it('без длин по кругам этап их не несёт', () => {
+    const plan = planDraw(KNOCKOUT, participants(8), null, makeIdFactory());
+
+    expect(plan.stages[0]?.config).not.toHaveProperty('playoffSetsToWin');
   });
 
   it('поздние круги ссылаются на победителей, а не на игроков', () => {

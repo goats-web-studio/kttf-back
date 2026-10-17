@@ -171,12 +171,15 @@ export class TournamentsService {
       });
     }
 
-    const { startsAt, registrationEndsAt, ...rest } = input;
+    const { startsAt, registrationEndsAt, seedingConfig, ...rest } = input;
     const nextStartsAt = startsAt === undefined ? tournament.startsAt : new Date(startsAt);
+    // `null` — дедлайн стёрт (ADR-044): запись идёт до начала турнира.
     const nextDeadline =
       registrationEndsAt === undefined
         ? tournament.registrationEndsAt
-        : new Date(registrationEndsAt);
+        : registrationEndsAt === null
+          ? null
+          : new Date(registrationEndsAt);
 
     // Вторая половина пары могла прийти не в этом запросе, а лежать в базе:
     // схема сверяет только заданное, здесь сверяется итог.
@@ -190,21 +193,37 @@ export class TournamentsService {
       );
     }
 
+    // Не пришедшее в запросе берётся из базы, а `null` — стёртая граница,
+    // и подставлять вместо неё прежнее значение нельзя.
     await this.assertConsistentBounds(id, {
-      ratingCapMin: rest.ratingCapMin ?? numberOrNull(tournament.ratingCapMin),
-      ratingCapMax: rest.ratingCapMax ?? numberOrNull(tournament.ratingCapMax),
-      birthYearFrom: rest.birthYearFrom ?? tournament.birthYearFrom,
-      birthYearTo: rest.birthYearTo ?? tournament.birthYearTo,
+      ratingCapMin: orStored(rest.ratingCapMin, numberOrNull(tournament.ratingCapMin)),
+      ratingCapMax: orStored(rest.ratingCapMax, numberOrNull(tournament.ratingCapMax)),
+      birthYearFrom: orStored(rest.birthYearFrom, tournament.birthYearFrom),
+      birthYearTo: orStored(rest.birthYearTo, tournament.birthYearTo),
     });
 
-    const updated = await this.prisma.tournament.update({
-      where: { id },
-      data: {
-        ...defined(rest),
-        ...(startsAt === undefined ? {} : { startsAt: nextStartsAt }),
-        ...(registrationEndsAt === undefined ? {} : { registrationEndsAt: nextDeadline }),
-      },
-      select: tournamentFields,
+    // Жеребьёвка разложена по прежней схеме: после её смены сетка и группы
+    // перестали бы соответствовать настройкам турнира. До старта результатов
+    // нет, и проще всего жеребить заново — ровно так ТЗ 5.3 и велит при
+    // любом изменении состава.
+    const resetsDraw = rest.formatConfig !== undefined || seedingConfig !== undefined;
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      if (resetsDraw) {
+        await tx.stage.deleteMany({ where: { tournamentId: id } });
+      }
+
+      return tx.tournament.update({
+        where: { id },
+        data: {
+          ...defined(rest),
+          ...(startsAt === undefined ? {} : { startsAt: nextStartsAt }),
+          ...(registrationEndsAt === undefined ? {} : { registrationEndsAt: nextDeadline }),
+          ...(seedingConfig === undefined ? {} : { seedingConfig: seedingConfig ?? Prisma.DbNull }),
+          ...(resetsDraw ? { version: { increment: 1 } } : {}),
+        },
+        select: tournamentFields,
+      });
     });
 
     return toTournamentView(updated);
@@ -373,7 +392,14 @@ export class TournamentsService {
       },
     );
 
-    if (problems.length > 0) {
+    // Планку рейтинга организатор может разрешить переступать по заявке
+    // (ADR-044). Возраст и пол — нет: это условия самого турнира, а не
+    // уровня игры.
+    const reviewable =
+      tournament.reviewOutOfRating &&
+      problems.every((problem) => problem === 'RATING_TOO_HIGH' || problem === 'RATING_TOO_LOW');
+
+    if (problems.length > 0 && !reviewable) {
       // Все причины сразу: узнавать о следующей после устранения предыдущей
       // человек не должен.
       throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Player is not eligible', {
@@ -381,6 +407,12 @@ export class TournamentsService {
         problems,
       });
     }
+
+    // Игрок вне планки ждёт решения. Организатор, записывающий его сам, это
+    // решение уже принял — ждать ему некого.
+    const byOrganizer =
+      input.playerId !== undefined && !(await this.isOwnPlayer(input.playerId, userId));
+    const pending = problems.length > 0 && !byOrganizer;
 
     const existing = await this.prisma.registration.findUnique({
       where: { tournamentId_playerId: { tournamentId: id, playerId } },
@@ -406,7 +438,7 @@ export class TournamentsService {
         data: {
           tournamentId: id,
           playerId,
-          status: full ? 'WAITLIST' : 'CONFIRMED',
+          status: pending ? 'PENDING' : full ? 'WAITLIST' : 'CONFIRMED',
         },
         select: registrationFields,
       });
@@ -427,19 +459,49 @@ export class TournamentsService {
     await this.assertClubStaff(tournament.clubId, userId);
 
     const registration = await this.loadRegistration(id, registrationId);
+    const reviewing = registration.status === 'PENDING';
 
-    if (
-      input.status !== undefined &&
-      !isOccupying(registration.status) &&
-      isOccupying(input.status)
-    ) {
-      await this.assertHasRoom(id, tournament.maxParticipants);
+    // Отказ — решение по заявке, а не способ снять участника: для этого есть
+    // снятие, при котором сыгранное остаётся (ТЗ 4.4).
+    if (input.status === 'REJECTED' && !reviewing) {
+      throw new AppError(
+        ERROR_CODES.VALIDATION_FAILED,
+        'Only a pending application can be rejected',
+        {
+          registrationId,
+          status: registration.status,
+        },
+      );
+    }
+
+    // После старта сетка уже разложена, и принятому в ней места нет.
+    if (reviewing && tournament.startedAt !== null) {
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Tournament has already started', {
+        id,
+        registrationId,
+      });
+    }
+
+    let status = input.status;
+
+    if (status !== undefined && !isOccupying(registration.status) && isOccupying(status)) {
+      // Принятая заявка при полном составе встаёт в лист ожидания, а не
+      // отвергается: организатор сказал «да», место освободится при отмене.
+      if (
+        reviewing &&
+        status === 'CONFIRMED' &&
+        !(await this.hasRoom(id, tournament.maxParticipants))
+      ) {
+        status = 'WAITLIST';
+      } else {
+        await this.assertHasRoom(id, tournament.maxParticipants);
+      }
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const result = await tx.registration.update({
         where: { id: registrationId },
-        data: defined(input),
+        data: defined({ ...input, status }),
         select: registrationFields,
       });
 
@@ -1138,14 +1200,18 @@ export class TournamentsService {
     return input.playerId;
   }
 
-  private async assertHasRoom(tournamentId: string, maxParticipants: number | null): Promise<void> {
-    if (maxParticipants === null) return;
+  private async hasRoom(tournamentId: string, maxParticipants: number | null): Promise<boolean> {
+    if (maxParticipants === null) return true;
 
     const taken = await this.prisma.registration.count({
       where: { tournamentId, status: { in: OCCUPYING_STATUSES } },
     });
 
-    if (taken >= maxParticipants) {
+    return taken < maxParticipants;
+  }
+
+  private async assertHasRoom(tournamentId: string, maxParticipants: number | null): Promise<void> {
+    if (!(await this.hasRoom(tournamentId, maxParticipants))) {
       throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Tournament is full', { tournamentId });
     }
   }
@@ -1258,4 +1324,9 @@ function assertResolvesTie(standings: TournamentStandingsView, input: TieDecisio
       { groupId: input.groupId, orderedIds: input.orderedIds },
     );
   }
+}
+
+/** Значение из запроса, а если поля в нём не было — из базы. `null` — стёрто. */
+function orStored<T>(sent: T | null | undefined, stored: T | null): T | null {
+  return sent === undefined ? stored : sent;
 }

@@ -19,11 +19,11 @@ datasource db {
 // ============ Пользователи ============
 
 model User {
-  id    String  @id @default(uuid())
-  phone String  @unique // E.164, +7XXXXXXXXXX
+  id            String   @id @default(uuid())
+  phone         String   @unique // E.164, +7XXXXXXXXXX
   // Логин — второй способ войти (ADR-034). Необязателен: аккаунты, заведённые
   // до перехода на пароль, живут без него.
-  login String? @unique
+  login         String?  @unique
   // scrypt с солью на пользователя, средствами node:crypto. Пустой означает,
   // что войти этим аккаунтом пока нельзя.
   passwordHash  String?
@@ -68,26 +68,26 @@ model Player {
   userId String? @unique // null = заведён организатором, аккаунта нет
   user   User?   @relation(fields: [userId], references: [id])
 
-  lastName   String
-  firstName  String
-  middleName String? // необязательно — бриф, запрет №6
-  birthYear  Int
+  lastName      String
+  firstName     String
+  middleName    String? // необязательно — бриф, запрет №6
+  birthYear     Int
   // Полная дата рождения — необязательна (ADR-035). Источник истины для
   // допуска остаётся birthYear: возрастные категории считаются по году,
   // и сравнение с birthYearFrom/birthYearTo идёт с ним. Год и дата обязаны
   // говорить одно и то же — правило в общем коде, createPlayerSchema.
-  birthDate  DateTime? @db.Date
+  birthDate     DateTime? @db.Date
   // Показывать посторонним только год — ADR-037. Хранится ровно так, как
   // звучит галочка в форме: поле с отрицанием рано или поздно прочитают
   // наоборот, и дата уедет наружу у того, кто её прятал. Умолчание true:
   // до появления даты профиль показывал только год, и включённая галочка
   // ничего не меняет в том, что о человеке видно.
-  birthYearOnly Boolean @default(true)
-  gender     Gender
-  city       String
-  photoUrl   String?
-  clubId     String?
-  club       Club?   @relation(fields: [clubId], references: [id])
+  birthYearOnly Boolean   @default(true)
+  gender        Gender
+  city          String
+  photoUrl      String?
+  clubId        String?
+  club          Club?     @relation(fields: [clubId], references: [id])
 
   // Анкета ТЗ 2.2. Инвентарь строкой, а не справочником: свой справочник
   // моделей нужно наполнять и чистить, это отдельный продукт (ADR-035).
@@ -205,13 +205,16 @@ model Tournament {
   registrationEndsAt DateTime?
   status             TournamentStatus @default(DRAFT)
 
-  entryFee        Int      @default(0) // тенге
-  maxParticipants Int?
-  ratingCapMax    Decimal? @db.Decimal(8, 2)
-  ratingCapMin    Decimal? @db.Decimal(8, 2)
-  birthYearFrom   Int?
-  birthYearTo     Int?
-  genderLimit     Gender?
+  entryFee          Int      @default(0) // тенге
+  maxParticipants   Int?
+  ratingCapMax      Decimal? @db.Decimal(8, 2)
+  ratingCapMin      Decimal? @db.Decimal(8, 2)
+  // Заявки вне рейтинговой планки — на рассмотрение организатора, а не
+  // отказ (ADR-044). Возраст и пол остаются жёсткими условиями.
+  reviewOutOfRating Boolean  @default(false)
+  birthYearFrom     Int?
+  birthYearTo       Int?
+  genderLimit       Gender?
 
   level      TournamentLevel @default(CLUB) // коэффициент T в формуле рейтинга
   tableCount Int
@@ -290,11 +293,15 @@ model Registration {
 
 enum RegistrationStatus {
   REGISTERED
+  // Заявка вне рейтинговой планки ждёт решения организатора, отказ по ней —
+  // REJECTED (ADR-044). Ни та, ни другая места в турнире не занимает.
+  PENDING
   WAITLIST
   CONFIRMED
   PLAYING
   WITHDRAWN
   NO_SHOW
+  REJECTED
 }
 
 // ============ Этапы и встречи ============

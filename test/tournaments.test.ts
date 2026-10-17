@@ -67,6 +67,7 @@ function makeTournament(overrides: Record<string, unknown> = {}) {
     maxParticipants: null,
     ratingCapMax: null,
     ratingCapMin: null,
+    reviewOutOfRating: false,
     birthYearFrom: null,
     birthYearTo: null,
     genderLimit: null,
@@ -412,6 +413,163 @@ describe('регистрация — ТЗ 4.3', () => {
     });
 
     expect(result.status).toBe(403);
+  });
+});
+
+describe('заявки вне рейтинга — ADR-044', () => {
+  /** Статус, с которым запись правится. Читается из аргумента вместо матчера. */
+  function updatedStatus(): unknown {
+    const call = prisma.registration.update.mock.calls[0]?.[0] as
+      { data?: { status?: unknown } } | undefined;
+
+    return call?.data?.status;
+  }
+
+  function pendingApplication(status = 'PENDING') {
+    prisma.registration.findUnique.mockResolvedValue({
+      id: REGISTRATION_ID,
+      status,
+      playerId: PLAYER_ID,
+      tournamentId: TOURNAMENT_ID,
+    });
+  }
+
+  it('с галочкой игрок вне планки подаёт заявку, а не получает отказ', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(
+      makeTournament({ ratingCapMax: 200, reviewOutOfRating: true }),
+    );
+
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/registrations`, {
+      auth: true,
+      body: {},
+    });
+
+    expect(result.status).toBe(201);
+    expect(createdStatus()).toBe('PENDING');
+  });
+
+  it('возраст и пол галочкой не переступить', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(
+      makeTournament({ ratingCapMax: 200, genderLimit: 'FEMALE', reviewOutOfRating: true }),
+    );
+
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/registrations`, {
+      auth: true,
+      body: {},
+    });
+
+    expect(result.status).toBe(400);
+    expect(prisma.registration.create).not.toHaveBeenCalled();
+  });
+
+  it('организатор, записывающий игрока вне планки, решение уже принял', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(
+      makeTournament({ ratingCapMax: 200, reviewOutOfRating: true }),
+    );
+    prisma.player.findUnique.mockResolvedValue({ ...player, userId: null });
+
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/registrations`, {
+      auth: true,
+      body: { playerId: PLAYER_ID },
+    });
+
+    expect(result.status).toBe(201);
+    expect(createdStatus()).toBe('CONFIRMED');
+  });
+
+  it('принятая заявка становится участником', async () => {
+    pendingApplication();
+
+    const result = await call(
+      'PATCH',
+      `/tournaments/${TOURNAMENT_ID}/registrations/${REGISTRATION_ID}`,
+      { auth: true, body: { status: 'CONFIRMED' } },
+    );
+
+    expect(result.status).toBe(200);
+    expect(updatedStatus()).toBe('CONFIRMED');
+  });
+
+  it('принятая при полном составе встаёт в лист ожидания, а не отвергается', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(makeTournament({ maxParticipants: 8 }));
+    prisma.registration.count.mockResolvedValue(8);
+    pendingApplication();
+
+    await call('PATCH', `/tournaments/${TOURNAMENT_ID}/registrations/${REGISTRATION_ID}`, {
+      auth: true,
+      body: { status: 'CONFIRMED' },
+    });
+
+    expect(updatedStatus()).toBe('WAITLIST');
+  });
+
+  it('отклоняют только заявку: участника снимают, а не отклоняют', async () => {
+    pendingApplication('CONFIRMED');
+
+    const result = await call(
+      'PATCH',
+      `/tournaments/${TOURNAMENT_ID}/registrations/${REGISTRATION_ID}`,
+      { auth: true, body: { status: 'REJECTED' } },
+    );
+
+    expect(result.status).toBe(400);
+    expect(prisma.registration.update).not.toHaveBeenCalled();
+  });
+
+  it('после старта заявку не принять: в сетке ей места нет', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(
+      makeTournament({ status: 'RUNNING', startedAt: new Date('2026-08-30T10:00:00.000Z') }),
+    );
+    pendingApplication();
+
+    const result = await call(
+      'PATCH',
+      `/tournaments/${TOURNAMENT_ID}/registrations/${REGISTRATION_ID}`,
+      { auth: true, body: { status: 'CONFIRMED' } },
+    );
+
+    expect(result.status).toBe(400);
+  });
+});
+
+describe('правка турнира до старта — ADR-044', () => {
+  function updateData(): Record<string, unknown> | undefined {
+    const call = prisma.tournament.update.mock.calls[0]?.[0] as
+      { data?: Record<string, unknown> } | undefined;
+
+    return call?.data;
+  }
+
+  it('стёртая планка уходит в базу пустой', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(makeTournament({ ratingCapMax: 400 }));
+
+    const result = await call('PATCH', `/tournaments/${TOURNAMENT_ID}`, {
+      auth: true,
+      body: { ratingCapMax: null, registrationEndsAt: null },
+    });
+
+    expect(result.status).toBe(200);
+    expect(updateData()).toMatchObject({ ratingCapMax: null, registrationEndsAt: null });
+  });
+
+  it('смена схемы сбрасывает жеребьёвку: сетка по старой схеме не годится', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(makeTournament({ status: 'REG_CLOSED' }));
+
+    await call('PATCH', `/tournaments/${TOURNAMENT_ID}`, {
+      auth: true,
+      body: { formatConfig: { type: 'ROUND_ROBIN', rounds: 2, setsToWin: 3 } },
+    });
+
+    expect(prisma.stage.deleteMany).toHaveBeenCalledOnce();
+  });
+
+  it('правка названия жеребьёвку не трогает', async () => {
+    await call('PATCH', `/tournaments/${TOURNAMENT_ID}`, {
+      auth: true,
+      body: { name: 'Кубок осени' },
+    });
+
+    expect(prisma.stage.deleteMany).not.toHaveBeenCalled();
   });
 });
 

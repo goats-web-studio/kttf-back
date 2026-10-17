@@ -11,6 +11,7 @@ import type {
   BracketSourceView,
   ClubCollisionView,
   FormatConfig,
+  PlayoffSetsToWin,
   SeedingConfig,
   StageType,
 } from '@kttf/shared/types';
@@ -193,7 +194,12 @@ function planKnockout(
       planKnockoutStage(
         seeded.map((participant) => participant.playerId),
         { thirdPlace: config.thirdPlace },
-        { order: 0, name: 'Олимпийская сетка', setsToWin: config.setsToWin },
+        {
+          order: 0,
+          name: 'Олимпийская сетка',
+          setsToWin: config.setsToWin,
+          playoffSetsToWin: config.playoffSetsToWin,
+        },
         makeId,
       ),
     ],
@@ -210,7 +216,13 @@ function planKnockout(
 function planKnockoutStage(
   participants: readonly ParticipantId[],
   options: KnockoutOptions,
-  stage: { order: number; name: string; setsToWin: number },
+  stage: {
+    order: number;
+    name: string;
+    setsToWin: number;
+    /** Длины по кругам — ADR-044. Ложатся в этап рядом с размером сетки. */
+    playoffSetsToWin: PlayoffSetsToWin | undefined;
+  },
   makeId: () => string,
 ): PlannedStage {
   const bracket = buildKnockout(participants, options);
@@ -226,6 +238,7 @@ function planKnockoutStage(
     name: stage.name,
     config: {
       setsToWin: stage.setsToWin,
+      ...(stage.playoffSetsToWin === undefined ? {} : { playoffSetsToWin: stage.playoffSetsToWin }),
       thirdPlace: options.thirdPlace ?? false,
       bracketSize: bracket.bracketSize,
       byes: bracket.byes,
@@ -370,7 +383,12 @@ export function planNextStage(
     return planKnockoutStage(
       selection.seeded,
       { thirdPlace: config.thirdPlace },
-      { order: 1, name: 'Плей-офф', setsToWin: config.koSetsToWin },
+      {
+        order: 1,
+        name: 'Плей-офф',
+        setsToWin: config.koSetsToWin,
+        playoffSetsToWin: config.playoffSetsToWin,
+      },
       makeId,
     );
   }
