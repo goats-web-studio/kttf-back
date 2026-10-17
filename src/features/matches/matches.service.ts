@@ -35,7 +35,7 @@ import { matchFields, stageFields, type MatchRecord } from '../tournaments/tourn
 const matchWithContext = {
   ...matchFields,
   tournamentId: true,
-  stage: { select: { id: true, order: true, config: true } },
+  stage: { select: { id: true, order: true, type: true, config: true } },
   tournament: { select: { id: true, clubId: true, status: true } },
 } as const;
 
@@ -339,6 +339,12 @@ export class MatchesService {
     tx: Prisma.TransactionClient,
     match: MatchWithContext,
   ): Promise<void> {
+    // Сетка ничего не сеет: её итог — места, а не состав следующего этапа.
+    // После плей-офф может стоять сетка за места (ADR-045), но посеяна она
+    // группами, и результат плей-офф её не касается. Без этой проверки
+    // первый же счёт в плей-офф сносил её как «устаревшую».
+    if (match.stage.type === 'KNOCKOUT' || match.stage.type === 'CONSOLATION') return;
+
     const later = await tx.stage.findMany({
       where: { tournamentId: match.tournamentId, order: { gt: match.stage.order } },
       select: { id: true, matches: { where: { NOT: { setsA: null } }, select: { id: true } } },

@@ -606,6 +606,30 @@ describe('правка результата — ТЗ 6.3', () => {
     // Сыгранный финал остался нетронутым.
     expect(matchById(FINAL).setsA).toBe(3);
   });
+
+  it('счёт в плей-офф не сносит сетку за места после него — ADR-045', async () => {
+    // Сетка за места посеяна группами, а не плей-офф: стоит она позже по
+    // порядку, но перестраивать её по результату плей-офф нечего.
+    db.stages.push({
+      id: OTHER_STAGE_ID,
+      order: 1,
+      type: 'CONSOLATION',
+      name: 'Сетка за места',
+      config: { setsToWin: 3 },
+    });
+    db.matches.push(
+      makeMatch({ id: 'exit-1', stageId: OTHER_STAGE_ID, playerAId: P3, playerBId: P4 }),
+    );
+
+    const result = await call('POST', `/matches/${M1}/result`, {
+      body: { setsA: 3, setsB: 1 },
+      auth: true,
+    });
+
+    expect(result.status).toBe(201);
+    expect(db.stages.map((stage) => stage.id)).toContain(OTHER_STAGE_ID);
+    expect(db.matches.some((match) => match.id === 'exit-1')).toBe(true);
+  });
 });
 
 describe('отмена встречи с возвратом в очередь — ТЗ 6.3', () => {
