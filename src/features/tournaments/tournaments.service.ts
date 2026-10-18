@@ -105,7 +105,9 @@ export class TournamentsService {
                 },
               },
             ]),
-        ...(query.status === undefined ? [] : [{ status: query.status }]),
+        // Несколько статусов — любой из них (ADR-051): «Завершён» в календаре —
+        // это и доигранные, и обсчитанные.
+        ...(query.status === undefined ? [] : [{ status: { in: query.status } }]),
         ...(query.cityId === undefined ? [] : [{ club: { cityId: query.cityId } }]),
         ...(query.from === undefined ? [] : [{ startsAt: { gte: new Date(query.from) } }]),
         ...(query.to === undefined ? [] : [{ startsAt: { lte: new Date(query.to) } }]),
