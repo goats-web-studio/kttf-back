@@ -15,6 +15,7 @@ import {
   type RegistrationView,
   type TieDecisionInput,
   type TieDecisionResult,
+  type TournamentListItemView,
   type TournamentView,
   type DrawResult,
   type DrawSwapInput,
@@ -63,7 +64,7 @@ export class TournamentsController {
   async list(
     @Query(new ZodValidationPipe(listTournamentsSchema)) query: ListTournamentsQuery,
     @OptionalUserId() userId?: string,
-  ): Promise<Page<TournamentView>> {
+  ): Promise<Page<TournamentListItemView>> {
     return this.tournaments.list(query, userId);
   }
 

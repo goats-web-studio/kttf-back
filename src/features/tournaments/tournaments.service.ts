@@ -23,6 +23,7 @@ import type {
   Page,
   RegisterInput,
   RegistrationView,
+  TournamentListItemView,
   TournamentView,
   UpdateRegistrationInput,
   UpdateTournamentInput,
@@ -88,7 +89,7 @@ export class TournamentsService {
    * Черновики видны только тем, кто управляет клубом: иначе замысел
    * организатора становится публичным до того, как он готов его показать.
    */
-  async list(query: ListTournamentsQuery, userId?: string): Promise<Page<TournamentView>> {
+  async list(query: ListTournamentsQuery, userId?: string): Promise<Page<TournamentListItemView>> {
     const managed = await this.managedClubIds(userId);
 
     const where = {
@@ -117,15 +118,74 @@ export class TournamentsService {
     const [rows, total] = await Promise.all([
       this.prisma.tournament.findMany({
         where,
-        select: tournamentFields,
-        orderBy: { startsAt: 'asc' },
+        select: {
+          ...tournamentFields,
+          // Сыгранные встречи считает база — как и участников (ADR-052).
+          _count: {
+            select: {
+              ...tournamentFields._count.select,
+              matches: { where: { setsA: { not: null } } },
+            },
+          },
+        },
+        // Ровный порядок при равной дате: иначе турниры одного часа
+        // переставлялись бы между страницами.
+        orderBy: [{ startsAt: query.order }, { id: query.order }],
         skip: skipOf(query),
         take: query.limit,
       }),
       this.prisma.tournament.count({ where }),
     ]);
 
-    return pageOf(rows.map(toTournamentView), total, query);
+    const averages = await this.averageRatings(rows.map((row) => row.id));
+
+    return pageOf(
+      rows.map((row) => ({
+        ...toTournamentView(row),
+        averageRating: averages.get(row.id) ?? null,
+        matchesPlayed: row._count.matches,
+      })),
+      total,
+      query,
+    );
+  }
+
+  /**
+   * Средний рейтинг участников страницы одним запросом — ADR-052.
+   *
+   * У начатого турнира — рейтинг на старте: он и шёл в расчёт. У будущего
+   * снимка ещё нет, берётся нынешний рейтинг записанного. Снятые и
+   * отклонённые заявки в поле не входят. Округление до целого: это мера
+   * силы поля, а не чей-то рейтинг.
+   */
+  private async averageRatings(ids: readonly string[]): Promise<Map<string, number>> {
+    if (ids.length === 0) {
+      return new Map();
+    }
+
+    const entries = await this.prisma.registration.findMany({
+      where: { tournamentId: { in: [...ids] }, status: { in: OCCUPYING_STATUSES } },
+      select: { tournamentId: true, ratingAtStart: true, player: { select: { rating: true } } },
+    });
+    const sums = new Map<string, { sum: Prisma.Decimal; count: number }>();
+
+    for (const entry of entries) {
+      const rating = entry.ratingAtStart ?? entry.player.rating;
+      const current = sums.get(entry.tournamentId) ?? { sum: new Prisma.Decimal(0), count: 0 };
+      // Через строку: Decimal из базы складывается точно, а значение другого
+      // вида (заглушка, число из соседнего кода) не роняет календарь.
+      sums.set(entry.tournamentId, {
+        sum: current.sum.plus(rating.toString()),
+        count: current.count + 1,
+      });
+    }
+
+    return new Map(
+      [...sums].map(([id, { sum, count }]) => [
+        id,
+        sum.dividedBy(count).toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP).toNumber(),
+      ]),
+    );
   }
 
   async findById(id: string, userId?: string): Promise<TournamentView> {
