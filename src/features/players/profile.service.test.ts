@@ -265,6 +265,22 @@ describe('лучшие победы', () => {
   });
 });
 
+/** Журнал турнира T1: 400 → 405.25 → 403.25. */
+const JOURNAL = [
+  {
+    tournamentId: T1,
+    ratingBefore: decimal('400.00'),
+    delta: decimal('5.25'),
+    ratingAfter: decimal('405.25'),
+  },
+  {
+    tournamentId: T1,
+    ratingBefore: decimal('405.25'),
+    delta: decimal('-2.00'),
+    ratingAfter: decimal('403.25'),
+  },
+];
+
 describe('результаты по турнирам', () => {
   beforeEach(() => {
     prisma.match.groupBy
@@ -314,20 +330,7 @@ describe('результаты по турнирам', () => {
   });
 
   it('место диапазоном, участники, рейтинг до и после, сумма изменений', async () => {
-    prisma.ratingEvent.findMany.mockResolvedValue([
-      {
-        tournamentId: T1,
-        delta: decimal('5.25'),
-        ratingAfter: decimal('405.25'),
-        createdAt: new Date(1),
-      },
-      {
-        tournamentId: T1,
-        delta: decimal('-2.00'),
-        ratingAfter: decimal('403.25'),
-        createdAt: new Date(2),
-      },
-    ]);
+    prisma.ratingEvent.findMany.mockResolvedValue(JOURNAL);
 
     const page = await service.tournamentsOf(ME, { page: 1, limit: 10 });
 
@@ -341,6 +344,16 @@ describe('результаты по турнирам', () => {
       delta: '3.25',
       ratingAfter: '403.25',
     });
+  });
+
+  it('рейтинг после — конец цепочки, а не последняя запись по времени', async () => {
+    // Журнал турнира пишется одной пачкой с одинаковым createdAt: база
+    // вправе отдать записи в любом порядке.
+    prisma.ratingEvent.findMany.mockResolvedValue([...JOURNAL].reverse());
+
+    const page = await service.tournamentsOf(ME, { page: 1, limit: 10 });
+
+    expect(page.items[0]).toMatchObject({ delta: '3.25', ratingAfter: '403.25' });
   });
 
   it('без журнала изменение пустое, а не ноль', async () => {

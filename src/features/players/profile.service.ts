@@ -21,6 +21,7 @@ import { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { TournamentsService } from '../tournaments/tournaments.service.js';
 
+import { chainBounds } from './history.js';
 import { playerFields, toPlayerView } from './players.service.js';
 
 /** Лучших побед в профиле — как у RTTF, пять строк. */
@@ -245,7 +246,7 @@ export class PlayerProfileService {
       }),
       this.prisma.ratingEvent.findMany({
         where: { playerId: id, tournamentId: { in: pageIds } },
-        select: { tournamentId: true, delta: true, ratingAfter: true, createdAt: true },
+        select: { tournamentId: true, ratingBefore: true, delta: true, ratingAfter: true },
         orderBy: { createdAt: 'asc' },
       }),
       // Последний круг каждой сетки — от него круг встречи считается до финала.
@@ -300,7 +301,10 @@ export class PlayerProfileService {
         ratingBefore: registration?.ratingAtStart?.toString() ?? null,
         // Дельты нет, пока турнир не обсчитан (ТЗ 7.3): ноль бы врал.
         delta: own.length === 0 ? null : delta.toFixed(2),
-        ratingAfter: own.at(-1)?.ratingAfter.toString() ?? null,
+        // Конец цепочки, а не последняя по времени запись: журнал турнира
+        // пишется одной пачкой с одинаковым `createdAt`, и «последняя» по нему
+        // — случайная (та же причина, что в истории рейтинга).
+        ratingAfter: own.length === 0 ? null : chainBounds(own).after.toString(),
         matches: matches
           .filter((match) => match.tournamentId === tournament.id)
           .map((match): PlayerTournamentMatchView => {

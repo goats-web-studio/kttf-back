@@ -34,7 +34,10 @@ export interface RatingEventRow {
  * могут только на отсечке `MIN_RATING`, а она сама по себе исключительное
  * событие и помечена флагом `clamped`.
  */
-export function chainBounds(events: readonly RatingEventRow[]): {
+/** Звено цепочки: для границ турнира нужны только значения, не время. */
+export type ChainLink = Pick<RatingEventRow, 'ratingBefore' | 'delta' | 'ratingAfter'>;
+
+export function chainBounds(events: readonly ChainLink[]): {
   before: Prisma.Decimal;
   after: Prisma.Decimal;
 } {
@@ -71,7 +74,7 @@ function sameValue(left: Prisma.Decimal, right: Prisma.Decimal): boolean {
   return left.equals(right);
 }
 
-function sumOf(events: readonly RatingEventRow[]): Prisma.Decimal {
+function sumOf(events: readonly ChainLink[]): Prisma.Decimal {
   return events.reduce((sum, event) => sum.plus(event.delta), new Prisma.Decimal(0));
 }
 
