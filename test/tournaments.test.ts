@@ -124,7 +124,10 @@ function makePrisma() {
       findUnique: vi.fn().mockResolvedValue(player),
       update: vi.fn().mockResolvedValue(player),
     },
-    ratingEvent: { createMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    ratingEvent: {
+      createMany: vi.fn().mockResolvedValue({ count: 0 }),
+      findMany: vi.fn().mockResolvedValue([]),
+    },
     auditLog: { create: vi.fn().mockResolvedValue({}) },
     stage: {
       deleteMany: vi.fn().mockResolvedValue({}),
@@ -148,7 +151,10 @@ function makePrisma() {
     $transaction: vi.fn(),
   };
 
-  prisma.$transaction.mockImplementation((run: (tx: typeof prisma) => unknown) => run(prisma));
+  // Обе формы транзакции: функцией (рейтинг) и списком запросов (места).
+  prisma.$transaction.mockImplementation((run: unknown) =>
+    Array.isArray(run) ? Promise.all(run) : (run as (tx: typeof prisma) => unknown)(prisma),
+  );
 
   return prisma;
 }
@@ -218,6 +224,22 @@ describe('календарь — ТЗ 9.2', () => {
 
     expect(result.status).toBe(200);
     expect(result.body).toMatchObject({ total: 1, page: 1, limit: 20 });
+  });
+
+  it('«Мои турниры» — только где заявка игрока жива (ADR-048)', async () => {
+    const result = await call('GET', `/tournaments?playerId=${PLAYER_ID}`);
+
+    expect(result.status).toBe(200);
+    expect(JSON.stringify(prisma.tournament.findMany.mock.calls[0]?.[0])).toContain(
+      JSON.stringify({
+        registrations: {
+          some: {
+            playerId: PLAYER_ID,
+            status: { in: ['REGISTERED', 'PENDING', 'WAITLIST', 'CONFIRMED', 'PLAYING'] },
+          },
+        },
+      }),
+    );
   });
 
   it('карточка открыта без токена', async () => {
@@ -850,6 +872,15 @@ describe('завершение и рейтинг — ТЗ 4.1, ТЗ 7.3', () => 
       { where?: Record<string, unknown>; data?: Record<string, unknown> } | undefined;
     expect(rated?.where).toMatchObject({ id: TOURNAMENT_ID, status: 'FINISHED' });
     expect(rated?.data).toMatchObject({ status: 'RATED' });
+
+    // Места записаны в заявки и турнир отмечен — профиль игрока читает их
+    // оттуда, не пересчитывая турнир (ADR-048).
+    expect(
+      prisma.tournament.update.mock.calls.some(
+        ([args]) => (args as { data?: { placesAt?: unknown } }).data?.placesAt instanceof Date,
+      ),
+    ).toBe(true);
+    expect(prisma.registration.update).toHaveBeenCalled();
   });
 
   it('из «Завершён» доводит до обсчёта, не закрывая турнир заново', async () => {
@@ -860,7 +891,11 @@ describe('завершение и рейтинг — ТЗ 4.1, ТЗ 7.3', () => 
     const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/finish`, { auth: true });
 
     expect(result.status).toBe(201);
-    expect(prisma.tournament.update).not.toHaveBeenCalled();
+    expect(
+      prisma.tournament.update.mock.calls.some(
+        ([args]) => (args as { data?: { status?: string } }).data?.status === 'FINISHED',
+      ),
+    ).toBe(false);
     expect(prisma.ratingEvent.createMany).toHaveBeenCalled();
   });
 

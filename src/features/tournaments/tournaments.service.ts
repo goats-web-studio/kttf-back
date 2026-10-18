@@ -72,6 +72,9 @@ function publicToken(): string {
   return randomBytes(24).toString('base64url').slice(0, 32);
 }
 
+/** Живая заявка: игрок в составе или ждёт решения. */
+const ACTIVE_ENTRY = ['REGISTERED', 'PENDING', 'WAITLIST', 'CONFIRMED', 'PLAYING'] as const;
+
 @Injectable()
 export class TournamentsService {
   constructor(
@@ -92,6 +95,16 @@ export class TournamentsService {
       AND: [
         { OR: [{ status: { not: 'DRAFT' as const } }, { clubId: { in: managed } }] },
         ...(query.clubId === undefined ? [] : [{ clubId: query.clubId }]),
+        // «Мои турниры» (ADR-048): заявка жива — не снята и не отклонена.
+        ...(query.playerId === undefined
+          ? []
+          : [
+              {
+                registrations: {
+                  some: { playerId: query.playerId, status: { in: [...ACTIVE_ENTRY] } },
+                },
+              },
+            ]),
         ...(query.status === undefined ? [] : [{ status: query.status }]),
         ...(query.cityId === undefined ? [] : [{ club: { cityId: query.cityId } }]),
         ...(query.from === undefined ? [] : [{ startsAt: { gte: new Date(query.from) } }]),
@@ -814,6 +827,10 @@ export class TournamentsService {
       });
     }
 
+    // Места — до рейтинга: они от него не зависят, а профиль игрока
+    // показывает их сразу после завершения (ADR-048).
+    await this.recordPlaces(id);
+
     const rated = await this.applyRating(id, tournament.level, userId);
 
     this.screen.changed(id);
@@ -978,6 +995,76 @@ export class TournamentsService {
       throw new AppError(ERROR_CODES.NOT_FOUND, 'Tournament not found', { id });
     }
 
+    return this.computeResults(tournament);
+  }
+
+  /**
+   * Итоговые места — в заявки, ADR-048.
+   *
+   * Места считаются из сетки и таблиц, и считать их на каждый показ профиля
+   * игрока значило бы поднимать весь турнир ради одного числа. Записываются
+   * один раз при завершении: после него сетка и таблицы уже не меняются.
+   * Делённое место — диапазоном: «5–8» у проигравших в 1/4.
+   */
+  async recordPlaces(id: string): Promise<void> {
+    const tournament = await this.load(id);
+    const results = await this.computeResults(tournament);
+    const range = new Map<string, { place: number | null; placeTo: number | null }>();
+
+    for (const participant of results.participants) {
+      if (participant.place !== null) {
+        range.set(participant.player.id, { place: participant.place, placeTo: null });
+      }
+    }
+
+    for (const tie of results.shared) {
+      const place = Math.min(...tie.places);
+      const placeTo = Math.max(...tie.places);
+
+      for (const playerId of tie.participants) {
+        range.set(playerId, { place, placeTo: placeTo === place ? null : placeTo });
+      }
+    }
+
+    const registrations = await this.prisma.registration.findMany({
+      where: { tournamentId: id },
+      select: { id: true, playerId: true },
+    });
+
+    await this.prisma.$transaction([
+      ...registrations.map((registration) =>
+        this.prisma.registration.update({
+          where: { id: registration.id },
+          data: range.get(registration.playerId) ?? { place: null, placeTo: null },
+          select: { id: true },
+        }),
+      ),
+      this.prisma.tournament.update({
+        where: { id },
+        data: { placesAt: new Date() },
+        select: { id: true },
+      }),
+    ]);
+  }
+
+  /**
+   * Места турниров, завершённых до ADR-048: досчитываются при первом
+   * обращении и записываются. Повторно не считаются — отметка `placesAt`
+   * стоит, даже если у кого-то места нет (снялся, не доиграл).
+   */
+  async ensurePlaces(ids: readonly string[]): Promise<void> {
+    const missing = await this.prisma.tournament.findMany({
+      where: { id: { in: [...ids] }, status: { in: ['FINISHED', 'RATED'] }, placesAt: null },
+      select: { id: true },
+    });
+
+    for (const tournament of missing) {
+      await this.recordPlaces(tournament.id);
+    }
+  }
+
+  private async computeResults(tournament: TournamentRecord): Promise<TournamentResultsView> {
+    const id = tournament.id;
     const [stages, registrations, events] = await Promise.all([
       this.loadStages(id),
       this.prisma.registration.findMany({

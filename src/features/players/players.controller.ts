@@ -3,6 +3,8 @@ import {
   createPlayerSchema,
   listPlayersSchema,
   playerMatchesQuerySchema,
+  playerSummaryQuerySchema,
+  playerTournamentsQuerySchema,
   ratingHistoryQuerySchema,
   updatePlayerSchema,
   type CreatePlayerInput,
@@ -12,6 +14,10 @@ import {
   type PlayerMatchesQuery,
   type PlayerMatchView,
   type PlayerProfileView,
+  type PlayerSummaryQuery,
+  type PlayerSummaryView,
+  type PlayerTournamentsQuery,
+  type PlayerTournamentView,
   type PlayerView,
   type RatingHistoryQuery,
   type RatingHistoryView,
@@ -23,6 +29,7 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { CurrentUserId, JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { OptionalJwtGuard, OptionalUserId } from '../auth/optional-jwt.guard.js';
 import { PlayersService } from './players.service.js';
+import { PlayerProfileService } from './profile.service.js';
 
 const uuidParam = z.uuid();
 
@@ -34,7 +41,10 @@ const uuidParam = z.uuid();
  */
 @Controller('players')
 export class PlayersController {
-  constructor(private readonly players: PlayersService) {}
+  constructor(
+    private readonly players: PlayersService,
+    private readonly profile: PlayerProfileService,
+  ) {}
 
   @Get()
   async list(
@@ -74,6 +84,24 @@ export class PlayersController {
     @Query(new ZodValidationPipe(playerMatchesQuerySchema)) query: PlayerMatchesQuery,
   ): Promise<Page<PlayerMatchView>> {
     return this.players.matches(id, query);
+  }
+
+  /** Общая статистика, лучшие победы и награды — профиль в структуре RTTF, ADR-048. */
+  @Get(':id/summary')
+  async summary(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @Query(new ZodValidationPipe(playerSummaryQuerySchema)) query: PlayerSummaryQuery,
+  ): Promise<PlayerSummaryView> {
+    return this.profile.summary(id, query);
+  }
+
+  /** «Результаты»: турниры с местом, изменением рейтинга и встречами — ADR-048. */
+  @Get(':id/tournaments')
+  async tournaments(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @Query(new ZodValidationPipe(playerTournamentsQuerySchema)) query: PlayerTournamentsQuery,
+  ): Promise<Page<PlayerTournamentView>> {
+    return this.profile.tournamentsOf(id, query);
   }
 
   @Get(':id/head-to-head/:opponentId')

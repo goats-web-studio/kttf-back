@@ -317,6 +317,9 @@ model Tournament {
   startedAt  DateTime?
   finishedAt DateTime?
   ratedAt    DateTime?
+  // Места записаны в заявки (ADR-048). Пусто у завершённого турнира — он
+  // завершён до ADR-048, места досчитываются при первом обращении.
+  placesAt   DateTime?
 
   registrations  Registration[]
   stages         Stage[]
@@ -362,6 +365,12 @@ model Registration {
   // с серверным. Заполняются при переходе турнира в RUNNING.
   ratingAtStart  Decimal? @db.Decimal(8, 2)
   matchesAtStart Int?
+
+  // Итоговое место — ADR-048. Записывается при завершении турнира, чтобы
+  // профиль игрока не пересчитывал весь турнир ради одного числа. Делённое
+  // место — диапазоном place–placeTo («5–8»); точное — placeTo пуст.
+  place   Int?
+  placeTo Int?
 
   createdAt DateTime @default(now())
 

@@ -24,7 +24,7 @@ import { PlacesService } from '../places/places.service.js';
 
 import { buildRatingPoints, summarize, toPlayerMatch } from './history.js';
 
-const playerFields = {
+export const playerFields = {
   id: true,
   userId: true,
   lastName: true,
@@ -459,7 +459,7 @@ export class PlayersService {
   }
 }
 
-interface PlayerRecord {
+export interface PlayerRecord {
   id: string;
   userId: string | null;
   lastName: string;
@@ -528,7 +528,7 @@ function toProfileView(player: ProfileRecord, maySeeBirthDate = true): PlayerPro
   };
 }
 
-function toPlayerView(player: PlayerRecord): PlayerView {
+export function toPlayerView(player: PlayerRecord): PlayerView {
   return {
     id: player.id,
     userId: player.userId,
