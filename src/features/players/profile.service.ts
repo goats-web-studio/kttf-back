@@ -2,6 +2,8 @@ import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import type {
   Page,
   PlayerAwardView,
+  PlayerBestWinsQuery,
+  PlayerBestWinsView,
   PlayerBestWinView,
   PlayerStatsPeriod,
   PlayerSummaryQuery,
@@ -32,6 +34,8 @@ const PLAYED = ['REGISTERED', 'CONFIRMED', 'PLAYING'] as const;
 
 const refFields = { id: true, name: true, startsAt: true } as const;
 
+const clubFields = { club: { select: { id: true, name: true } } } as const;
+
 /**
  * Этапы-сетки: только у их встреч круг считается от финала. У групповых
  * встреч `bracketRound` тоже заполнен — это номер тура, а не круг сетки.
@@ -60,31 +64,24 @@ export class PlayerProfileService {
 
   async summary(id: string, query: PlayerSummaryQuery): Promise<PlayerSummaryView> {
     const player = await this.load(id);
-    const since = periodStart(query.period, new Date());
-
     const [above, rankedPlayers, peak, matches, first, awards] = await Promise.all([
       // Место — как в списке рейтинга: равный рейтинг делит место.
       this.prisma.player.count({ where: { rating: { gt: player.rating } } }),
       this.prisma.player.count(),
-      this.prisma.ratingEvent.aggregate({ where: { playerId: id }, _max: { ratingAfter: true } }),
+      // Первое достижение максимума: повторить рекорд — не то же, что его поставить.
+      this.prisma.ratingEvent.findFirst({
+        where: { playerId: id },
+        select: { ratingAfter: true, createdAt: true, tournament: { select: { startsAt: true } } },
+        orderBy: [{ ratingAfter: 'desc' }, { createdAt: 'asc' }],
+      }),
       this.prisma.match.findMany({
-        where: {
-          ...playedBy(id),
-          ...(since === null ? {} : { tournament: { startsAt: { gte: since } } }),
-        },
+        where: { ...playedBy(id), ...periodFilter(query.period) },
         select: {
-          id: true,
           tournamentId: true,
           playerAId: true,
-          playerBId: true,
           setsA: true,
           setsB: true,
-          finishedAt: true,
-          tournament: { select: { ...refFields, club: { select: { id: true, name: true } } } },
-          ratingEvents: {
-            where: { playerId: id },
-            select: { delta: true, opponentRating: true },
-          },
+          tournament: { select: { ...refFields, ...clubFields } },
         },
       }),
       this.prisma.tournament.findFirst({
@@ -95,43 +92,98 @@ export class PlayerProfileService {
       this.awards(id),
     ]);
 
-    const peakRating = peak._max.ratingAfter;
-    const maxRating = peakRating?.greaterThan(player.rating) === true ? peakRating : player.rating;
-
-    const wonBy = (match: (typeof matches)[number]): boolean => {
-      const isA = match.playerAId === id;
-      return ((isA ? match.setsA : match.setsB) ?? 0) > ((isA ? match.setsB : match.setsA) ?? 0);
-    };
-    const wins = matches.filter(wonBy).length;
+    // Рейтинг выше журнала бывает только без журнала: стартовый у новичка.
+    const record = peak !== null && !player.rating.greaterThan(peak.ratingAfter) ? peak : null;
+    const wins = matches.filter((match) => wonBy(match, id)).length;
 
     return {
       playerId: id,
       rank: above + 1,
       rankedPlayers,
-      maxRating: maxRating.toString(),
+      maxRating: (record?.ratingAfter ?? player.rating).toString(),
+      // Дата — как у точки графика: старт турнира, у корректировки — запись.
+      maxRatingAt:
+        record === null ? null : (record.tournament?.startsAt ?? record.createdAt).toISOString(),
       period: query.period,
       tournaments: new Set(matches.map((match) => match.tournamentId)).size,
       wins,
       losses: matches.length - wins,
       firstTournament: first === null ? null : toRef(first),
       favoriteClub: favoriteClub(matches.map((match) => match.tournament)),
-      bestWins: await this.bestWins(
-        matches
-          .filter(wonBy)
-          .flatMap((match) => {
-            const event = match.ratingEvents[0];
-            const opponentId = match.playerAId === id ? match.playerBId : match.playerAId;
-
-            // Победа без рейтинга соперника — вне зачёта: сравнивать её не с чем.
-            return event?.opponentRating == null || opponentId === null
-              ? []
-              : [{ match, event: { ...event, opponentRating: event.opponentRating }, opponentId }];
-          })
-          .sort((left, right) => right.event.opponentRating.comparedTo(left.event.opponentRating))
-          .slice(0, BEST_WINS),
-        id,
-      ),
       awards,
+    };
+  }
+
+  /**
+   * Лучшие победы за период — ADR-050. Свой запрос, а не поле сводки: у
+   * блока свои вкладки периода, и сводка ради них пересчитывалась бы целиком.
+   */
+  async bestWins(id: string, query: PlayerBestWinsQuery): Promise<PlayerBestWinsView> {
+    await this.load(id);
+
+    const matches = await this.prisma.match.findMany({
+      where: { ...playedBy(id), ...periodFilter(query.period) },
+      select: {
+        id: true,
+        playerAId: true,
+        playerBId: true,
+        setsA: true,
+        setsB: true,
+        startedAt: true,
+        finishedAt: true,
+        tournament: { select: refFields },
+        ratingEvents: {
+          where: { playerId: id },
+          select: { delta: true, ratingBefore: true, opponentRating: true },
+        },
+      },
+    });
+
+    const wins = matches
+      .filter((match) => wonBy(match, id))
+      .flatMap((match) => {
+        const event = match.ratingEvents[0];
+        const opponentId = match.playerAId === id ? match.playerBId : match.playerAId;
+
+        // Победа без рейтинга соперника — вне зачёта: сравнивать её не с чем.
+        return event?.opponentRating == null || opponentId === null
+          ? []
+          : [{ match, event, opponentRating: event.opponentRating, opponentId }];
+      })
+      .sort(
+        (left, right) =>
+          right.opponentRating.comparedTo(left.opponentRating) ||
+          // Равные по силе — свежая выше: порядок не прыгает от запроса к запросу.
+          (right.match.finishedAt?.getTime() ?? 0) - (left.match.finishedAt?.getTime() ?? 0),
+      )
+      .slice(0, BEST_WINS);
+
+    const opponents = await this.opponents(wins.map((win) => win.opponentId));
+
+    return {
+      period: query.period,
+      items: wins.flatMap(({ match, event, opponentRating, opponentId }): PlayerBestWinView[] => {
+        const opponent = opponents.get(opponentId);
+        const isA = match.playerAId === id;
+
+        return opponent === undefined
+          ? []
+          : [
+              {
+                matchId: match.id,
+                tournament: toRef(match.tournament),
+                startedAt: match.startedAt?.toISOString() ?? null,
+                playedAt: match.finishedAt?.toISOString() ?? null,
+                ratingBefore: event.ratingBefore.toString(),
+                opponent,
+                opponentRating: opponentRating.toString(),
+                setsFor: (isA ? match.setsA : match.setsB) ?? 0,
+                setsAgainst: (isA ? match.setsB : match.setsA) ?? 0,
+                delta: event.delta.toString(),
+                durationMinutes: durationMinutes(match.startedAt, match.finishedAt),
+              },
+            ];
+      }),
     };
   }
 
@@ -147,7 +199,7 @@ export class PlayerProfileService {
 
     const page = await this.prisma.tournament.findMany({
       where: { id: { in: ids } },
-      select: { ...refFields, status: true, club: { select: { id: true, name: true } } },
+      select: { ...refFields, status: true, level: true, ...clubFields },
       orderBy: { startsAt: 'desc' },
       skip: skipOf(query),
       take: query.limit,
@@ -177,13 +229,17 @@ export class PlayerProfileService {
           setsA: true,
           setsB: true,
           resultType: true,
+          startedAt: true,
           finishedAt: true,
           bracketRound: true,
           sourceA: true,
           sourceB: true,
           stage: { select: { name: true, type: true } },
           group: { select: { label: true } },
-          ratingEvents: { where: { playerId: id }, select: { delta: true } },
+          ratingEvents: {
+            where: { playerId: id },
+            select: { delta: true, ratingBefore: true, opponentRating: true },
+          },
         },
         orderBy: [{ finishedAt: { sort: 'asc', nulls: 'last' } }],
       }),
@@ -204,8 +260,23 @@ export class PlayerProfileService {
       }),
     ]);
 
-    const opponents = await this.opponents(
-      matches.map((match) => (match.playerAId === id ? match.playerBId : match.playerAId)),
+    const opponentIds = matches.map((match) =>
+      match.playerAId === id ? match.playerBId : match.playerAId,
+    );
+    const [opponents, opponentStarts] = await Promise.all([
+      this.opponents(opponentIds),
+      // Рейтинг соперника на старте — пока турнир не обсчитан, журнала нет,
+      // а колонка «рейтинг соперника» пустой быть не должна.
+      this.prisma.registration.findMany({
+        where: {
+          tournamentId: { in: pageIds },
+          playerId: { in: [...new Set(opponentIds.filter((other) => other !== null))] },
+        },
+        select: { tournamentId: true, playerId: true, ratingAtStart: true },
+      }),
+    ]);
+    const startOf = new Map(
+      opponentStarts.map((row) => [`${row.tournamentId}:${row.playerId}`, row.ratingAtStart]),
     );
     const finalOf = new Map(finals.map((row) => [row.stageId, row._max.bracketRound ?? 1]));
     const sizeOf = new Map(sizes.map((row) => [row.tournamentId, row._count._all]));
@@ -217,7 +288,12 @@ export class PlayerProfileService {
       const delta = own.reduce((sum, event) => sum.plus(event.delta), new Prisma.Decimal(0));
 
       return {
-        tournament: { ...toRef(tournament), status: tournament.status, club: tournament.club },
+        tournament: {
+          ...toRef(tournament),
+          status: tournament.status,
+          level: tournament.level,
+          club: tournament.club,
+        },
         place: registration?.place ?? null,
         placeTo: registration?.placeTo ?? null,
         participants: sizeOf.get(tournament.id) ?? 0,
@@ -234,6 +310,11 @@ export class PlayerProfileService {
             const opponentId = isA ? match.playerBId : match.playerAId;
             const bracket = (BRACKETS as readonly string[]).includes(match.stage.type);
             const placement = bracket && (takesLosers(match.sourceA) || takesLosers(match.sourceB));
+            const event = match.ratingEvents[0];
+            const opponentRating =
+              event?.opponentRating ??
+              (opponentId === null ? null : startOf.get(`${tournament.id}:${opponentId}`)) ??
+              null;
 
             return {
               matchId: match.id,
@@ -244,13 +325,17 @@ export class PlayerProfileService {
                   ? null
                   : Math.max(0, (finalOf.get(match.stageId) ?? 1) - match.bracketRound),
               placement,
+              startedAt: match.startedAt?.toISOString() ?? null,
               playedAt: match.finishedAt?.toISOString() ?? null,
               opponent: opponentId === null ? null : (opponents.get(opponentId) ?? null),
+              opponentRating: opponentRating?.toString() ?? null,
+              ratingBefore: event?.ratingBefore.toString() ?? null,
               setsFor,
               setsAgainst,
               won: setsFor > setsAgainst,
               resultType: match.resultType,
-              delta: match.ratingEvents[0]?.delta.toString() ?? null,
+              delta: event?.delta.toString() ?? null,
+              durationMinutes: durationMinutes(match.startedAt, match.finishedAt),
             };
           }),
       };
@@ -270,55 +355,15 @@ export class PlayerProfileService {
 
     const prized = await this.prisma.registration.findMany({
       where: { playerId: id, place: { lte: 3 }, tournament: { status: { in: [...CLOSED] } } },
-      select: { place: true, tournament: { select: refFields } },
+      select: { place: true, tournament: { select: { ...refFields, ...clubFields } } },
       orderBy: { tournament: { startsAt: 'desc' } },
     });
 
     return prized.flatMap((row) =>
-      row.place === null ? [] : [{ tournament: toRef(row.tournament), place: row.place }],
-    );
-  }
-
-  private async bestWins(
-    wins: readonly {
-      readonly match: {
-        readonly id: string;
-        readonly playerAId: string | null;
-        readonly setsA: number | null;
-        readonly setsB: number | null;
-        readonly finishedAt: Date | null;
-        readonly tournament: {
-          readonly id: string;
-          readonly name: string;
-          readonly startsAt: Date;
-        };
-      };
-      readonly event: { readonly delta: Prisma.Decimal; readonly opponentRating: Prisma.Decimal };
-      readonly opponentId: string;
-    }[],
-    id: string,
-  ): Promise<PlayerBestWinView[]> {
-    const opponents = await this.opponents(wins.map((win) => win.opponentId));
-
-    return wins.flatMap(({ match, event, opponentId }) => {
-      const opponent = opponents.get(opponentId);
-      const isA = match.playerAId === id;
-
-      return opponent === undefined
+      row.place === null
         ? []
-        : [
-            {
-              matchId: match.id,
-              tournament: toRef(match.tournament),
-              playedAt: match.finishedAt?.toISOString() ?? null,
-              opponent,
-              opponentRating: event.opponentRating.toString(),
-              setsFor: (isA ? match.setsA : match.setsB) ?? 0,
-              setsAgainst: (isA ? match.setsB : match.setsA) ?? 0,
-              delta: event.delta.toString(),
-            },
-          ];
-    });
+        : [{ tournament: toRef(row.tournament), club: row.tournament.club, place: row.place }],
+    );
   }
 
   /** Соперники одним запросом: иначе на каждую встречу уходил бы свой. */
@@ -363,6 +408,39 @@ export function periodStart(period: PlayerStatsPeriod, now: Date): Date | null {
   start.setUTCMonth(start.getUTCMonth() - months);
 
   return start;
+}
+
+/** Условие периода на встречи — по дате турнира, как в статистике. */
+function periodFilter(period: PlayerStatsPeriod): { tournament?: { startsAt: { gte: Date } } } {
+  const since = periodStart(period, new Date());
+
+  return since === null ? {} : { tournament: { startsAt: { gte: since } } };
+}
+
+function wonBy(
+  match: { playerAId: string | null; setsA: number | null; setsB: number | null },
+  id: string,
+): boolean {
+  const isA = match.playerAId === id;
+
+  return ((isA ? match.setsA : match.setsB) ?? 0) > ((isA ? match.setsB : match.setsA) ?? 0);
+}
+
+/**
+ * Длительность встречи в минутах — от вызова к столу до счёта (ADR-050).
+ *
+ * `null`, если встречу внесли без вызова к столу или конец раньше начала:
+ * счёт, введённый офлайн задним числом, мог лечь раньше вызова. Ноль в таком
+ * случае врал бы — встреча не длилась ноль минут.
+ */
+export function durationMinutes(startedAt: Date | null, finishedAt: Date | null): number | null {
+  if (startedAt === null || finishedAt === null) {
+    return null;
+  }
+
+  const ms = finishedAt.getTime() - startedAt.getTime();
+
+  return ms < 0 ? null : Math.round(ms / 60_000);
 }
 
 /**

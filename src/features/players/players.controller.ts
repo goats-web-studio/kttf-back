@@ -2,6 +2,7 @@ import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@ne
 import {
   createPlayerSchema,
   listPlayersSchema,
+  playerBestWinsQuerySchema,
   playerMatchesQuerySchema,
   playerSummaryQuerySchema,
   playerTournamentsQuerySchema,
@@ -11,6 +12,8 @@ import {
   type HeadToHeadView,
   type ListPlayersQuery,
   type Page,
+  type PlayerBestWinsQuery,
+  type PlayerBestWinsView,
   type PlayerMatchesQuery,
   type PlayerMatchView,
   type PlayerProfileView,
@@ -86,13 +89,22 @@ export class PlayersController {
     return this.players.matches(id, query);
   }
 
-  /** Общая статистика, лучшие победы и награды — профиль в структуре RTTF, ADR-048. */
+  /** Общая статистика и награды — профиль в структуре RTTF, ADR-048. */
   @Get(':id/summary')
   async summary(
     @Param('id', new ZodValidationPipe(uuidParam)) id: string,
     @Query(new ZodValidationPipe(playerSummaryQuerySchema)) query: PlayerSummaryQuery,
   ): Promise<PlayerSummaryView> {
     return this.profile.summary(id, query);
+  }
+
+  /** Лучшие победы за период — свой запрос, у блока свои вкладки (ADR-050). */
+  @Get(':id/best-wins')
+  async bestWins(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @Query(new ZodValidationPipe(playerBestWinsQuerySchema)) query: PlayerBestWinsQuery,
+  ): Promise<PlayerBestWinsView> {
+    return this.profile.bestWins(id, query);
   }
 
   /** «Результаты»: турниры с местом, изменением рейтинга и встречами — ADR-048. */

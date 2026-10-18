@@ -3,7 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Prisma } from '../../generated/prisma/client.js';
 import type { PrismaService } from '../../infra/prisma/prisma.service.js';
 import type { TournamentsService } from '../tournaments/tournaments.service.js';
-import { favoriteClub, periodStart, PlayerProfileService } from './profile.service.js';
+import {
+  durationMinutes,
+  favoriteClub,
+  periodStart,
+  PlayerProfileService,
+} from './profile.service.js';
 
 const ME = '00000000-0000-4000-8000-000000000001';
 const STRONG = '00000000-0000-4000-8000-000000000002';
@@ -56,6 +61,7 @@ function match(
     playerBId: opponentId,
     setsA: setsFor,
     setsB: setsAgainst,
+    startedAt: new Date('2026-09-01T11:41:00.000Z'),
     finishedAt: new Date('2026-09-01T12:00:00.000Z'),
     tournament: at,
     ratingEvents:
@@ -64,6 +70,7 @@ function match(
         : [
             {
               delta: decimal(event.delta),
+              ratingBefore: decimal('418.00'),
               opponentRating: event.opponentRating === null ? null : decimal(event.opponentRating),
             },
           ],
@@ -78,7 +85,11 @@ function makePrisma() {
       findMany: vi.fn().mockResolvedValue([opponent(STRONG, 'Сильный'), opponent(WEAK, 'Слабый')]),
     },
     ratingEvent: {
-      aggregate: vi.fn().mockResolvedValue({ _max: { ratingAfter: decimal('455.10') } }),
+      findFirst: vi.fn().mockResolvedValue({
+        ratingAfter: decimal('455.10'),
+        createdAt: new Date('2026-09-02T08:00:00.000Z'),
+        tournament: { startsAt: new Date('2026-09-01T10:00:00.000Z') },
+      }),
       findMany: vi.fn().mockResolvedValue([]),
     },
     match: {
@@ -119,10 +130,34 @@ describe('общая статистика', () => {
     expect(summary.firstTournament?.id).toBe(T2);
   });
 
-  it('максимум не ниже нынешнего рейтинга, даже без журнала', async () => {
-    prisma.ratingEvent.aggregate.mockResolvedValue({ _max: { ratingAfter: null } });
+  it('дата максимума — старт турнира, как у точки графика, и первое его достижение', async () => {
+    const summary = await service.summary(ME, { period: 'ALL' });
 
-    expect((await service.summary(ME, { period: 'ALL' })).maxRating).toBe('420.5');
+    expect(summary.maxRatingAt).toBe('2026-09-01T10:00:00.000Z');
+    expect(prisma.ratingEvent.findFirst.mock.calls[0]?.[0]).toMatchObject({
+      orderBy: [{ ratingAfter: 'desc' }, { createdAt: 'asc' }],
+    });
+  });
+
+  it('у корректировки вне турнира дата максимума — момент записи', async () => {
+    prisma.ratingEvent.findFirst.mockResolvedValue({
+      ratingAfter: decimal('455.10'),
+      createdAt: new Date('2026-09-02T08:00:00.000Z'),
+      tournament: null,
+    });
+
+    expect((await service.summary(ME, { period: 'ALL' })).maxRatingAt).toBe(
+      '2026-09-02T08:00:00.000Z',
+    );
+  });
+
+  it('максимум не ниже нынешнего рейтинга, даже без журнала', async () => {
+    prisma.ratingEvent.findFirst.mockResolvedValue(null);
+
+    const summary = await service.summary(ME, { period: 'ALL' });
+
+    expect(summary.maxRating).toBe('420.5');
+    expect(summary.maxRatingAt).toBeNull();
   });
 
   it('игры, победы и поражения, турниры — по сыгранным встречам', async () => {
@@ -136,25 +171,6 @@ describe('общая статистика', () => {
 
     expect(summary).toMatchObject({ wins: 2, losses: 1, tournaments: 2 });
     expect(summary.favoriteClub).toEqual({ ...CLUB, tournaments: 2 });
-  });
-
-  it('лучшие победы — по рейтингу соперника на момент встречи, вне зачёта не входят', async () => {
-    prisma.match.findMany.mockResolvedValue([
-      match('weak', WEAK, 3, 0, { delta: '2.00', opponentRating: '300' }),
-      match('strong', STRONG, 3, 2, { delta: '9.50', opponentRating: '610' }),
-      match('unrated', STRONG, 3, 0, null),
-      match('lost', STRONG, 0, 3, { delta: '-1.00', opponentRating: '700' }),
-    ]);
-
-    const { bestWins } = await service.summary(ME, { period: 'ALL' });
-
-    expect(bestWins.map((win) => win.matchId)).toEqual(['strong', 'weak']);
-    expect(bestWins[0]).toMatchObject({
-      opponentRating: '610',
-      setsFor: 3,
-      setsAgainst: 2,
-      delta: '9.5',
-    });
   });
 
   it('период ограничивает встречи по дате турнира', async () => {
@@ -178,9 +194,74 @@ describe('общая статистика', () => {
     expect(awards).toEqual([
       {
         tournament: { id: T1, name: 'Турнир a1', startsAt: '2026-09-01T10:00:00.000Z' },
+        club: CLUB,
         place: 1,
       },
     ]);
+  });
+});
+
+describe('лучшие победы', () => {
+  it('по рейтингу соперника на момент встречи, вне зачёта и поражения не входят', async () => {
+    prisma.match.findMany.mockResolvedValue([
+      match('weak', WEAK, 3, 0, { delta: '2.00', opponentRating: '300' }),
+      match('strong', STRONG, 3, 2, { delta: '9.50', opponentRating: '610' }),
+      match('unrated', STRONG, 3, 0, null),
+      match('lost', STRONG, 0, 3, { delta: '-1.00', opponentRating: '700' }),
+    ]);
+
+    const wins = await service.bestWins(ME, { period: 'ALL' });
+
+    expect(wins.period).toBe('ALL');
+    expect(wins.items.map((win) => win.matchId)).toEqual(['strong', 'weak']);
+    expect(wins.items[0]).toMatchObject({
+      opponentRating: '610',
+      setsFor: 3,
+      setsAgainst: 2,
+      delta: '9.5',
+    });
+  });
+
+  it('свой рейтинг — до встречи из журнала, время и длительность — из встречи', async () => {
+    prisma.match.findMany.mockResolvedValue([
+      match('strong', STRONG, 3, 2, { delta: '9.50', opponentRating: '610' }),
+    ]);
+
+    const [win] = (await service.bestWins(ME, { period: 'ALL' })).items;
+
+    expect(win).toMatchObject({
+      ratingBefore: '418',
+      startedAt: '2026-09-01T11:41:00.000Z',
+      playedAt: '2026-09-01T12:00:00.000Z',
+      durationMinutes: 19,
+    });
+  });
+
+  it('пять сильнейших, равные по силе — свежая выше', async () => {
+    const at = (iso: string) => ({
+      ...match(iso, STRONG, 3, 0, { delta: '1.00', opponentRating: '500' }),
+      finishedAt: new Date(iso),
+    });
+    prisma.match.findMany.mockResolvedValue([
+      at('2026-01-01T00:00:00.000Z'),
+      at('2026-03-01T00:00:00.000Z'),
+      at('2026-02-01T00:00:00.000Z'),
+      at('2026-05-01T00:00:00.000Z'),
+      at('2026-04-01T00:00:00.000Z'),
+      at('2026-06-01T00:00:00.000Z'),
+    ]);
+
+    const { items } = await service.bestWins(ME, { period: 'ALL' });
+
+    expect(items.map((win) => win.matchId.slice(5, 7))).toEqual(['06', '05', '04', '03', '02']);
+  });
+
+  it('период — свой, по дате турнира', async () => {
+    await service.bestWins(ME, { period: 'QUARTER' });
+
+    expect(prisma.match.findMany.mock.calls[0]?.[0]).toMatchObject({
+      where: { tournament: { startsAt: { gte: expect.any(Date) as Date } } },
+    });
   });
 });
 
@@ -190,11 +271,16 @@ describe('результаты по турнирам', () => {
       .mockResolvedValueOnce([{ tournamentId: T1 }])
       .mockResolvedValueOnce([{ stageId: 'ko', _max: { bracketRound: 3 } }]);
     prisma.tournament.findMany.mockResolvedValue([
-      { ...tournament(T1, '2026-09-01T10:00:00.000Z'), status: 'RATED' },
+      { ...tournament(T1, '2026-09-01T10:00:00.000Z'), status: 'RATED', level: 'REGIONAL' },
     ]);
-    prisma.registration.findMany.mockResolvedValue([
-      { tournamentId: T1, place: 5, placeTo: 8, ratingAtStart: decimal('400.00') },
-    ]);
+    // Первый запрос — своя заявка, второй — рейтинги соперников на старте.
+    prisma.registration.findMany
+      .mockResolvedValueOnce([
+        { tournamentId: T1, place: 5, placeTo: 8, ratingAtStart: decimal('400.00') },
+      ])
+      .mockResolvedValueOnce([
+        { tournamentId: T1, playerId: STRONG, ratingAtStart: decimal('512.40') },
+      ]);
     prisma.registration.groupBy.mockResolvedValue([{ tournamentId: T1, _count: { _all: 16 } }]);
   });
 
@@ -211,13 +297,20 @@ describe('результаты по турнирам', () => {
     setsA: 3,
     setsB: 1,
     resultType: 'NORMAL',
+    startedAt: new Date('2026-09-01T11:35:30.000Z'),
     finishedAt: new Date('2026-09-01T12:00:00.000Z'),
     bracketRound: round,
     sourceA: source,
     sourceB: source,
     stage: { name: 'Плей-офф', type: 'KNOCKOUT' },
     group: null,
-    ratingEvents: [{ delta: decimal('5.25') }],
+    ratingEvents: [
+      {
+        delta: decimal('5.25'),
+        ratingBefore: decimal('400.00'),
+        opponentRating: decimal('505.00'),
+      },
+    ],
   });
 
   it('место диапазоном, участники, рейтинг до и после, сумма изменений', async () => {
@@ -273,6 +366,35 @@ describe('результаты по турнирам', () => {
     expect(item?.matches[0]?.opponent?.lastName).toBe('Сильный');
   });
 
+  it('уровень турнира, время, длительность и оба рейтинга на момент встречи', async () => {
+    prisma.match.findMany.mockResolvedValue([bracketMatch('final', 3)]);
+
+    const [item] = (await service.tournamentsOf(ME, { page: 1, limit: 10 })).items;
+
+    expect(item?.tournament.level).toBe('REGIONAL');
+    expect(item?.matches[0]).toMatchObject({
+      startedAt: '2026-09-01T11:35:30.000Z',
+      durationMinutes: 25,
+      ratingBefore: '400',
+      opponentRating: '505',
+    });
+  });
+
+  it('пока турнир не обсчитан, рейтинг соперника — его рейтинг на старте', async () => {
+    prisma.match.findMany.mockResolvedValue([{ ...bracketMatch('final', 3), ratingEvents: [] }]);
+
+    const [item] = (await service.tournamentsOf(ME, { page: 1, limit: 10 })).items;
+
+    expect(item?.matches[0]).toMatchObject({
+      opponentRating: '512.4',
+      ratingBefore: null,
+      delta: null,
+    });
+    expect(prisma.registration.findMany.mock.calls[1]?.[0]).toMatchObject({
+      where: { tournamentId: { in: [T1] }, playerId: { in: [STRONG] } },
+    });
+  });
+
   it('у групповой встречи круга нет: её bracketRound — номер тура', async () => {
     prisma.match.findMany.mockResolvedValue([
       { ...bracketMatch('group', 2), stage: { name: 'Групповой этап', type: 'GROUPS' } },
@@ -291,6 +413,18 @@ describe('вспомогательное', () => {
     expect(periodStart('ALL', now)).toBeNull();
     expect(periodStart('QUARTER', now)?.toISOString()).toBe('2026-07-18T00:00:00.000Z');
     expect(periodStart('YEAR', now)?.toISOString()).toBe('2025-10-18T00:00:00.000Z');
+  });
+
+  it('длительность — минуты от вызова к столу до счёта', () => {
+    const at = (time: string) => new Date(`2026-09-01T${time}.000Z`);
+
+    expect(durationMinutes(at('10:00:00'), at('10:23:40'))).toBe(24);
+    expect(durationMinutes(at('10:00:00'), at('10:00:00'))).toBe(0);
+    // Без вызова к столу или без счёта — неизвестно, а не ноль.
+    expect(durationMinutes(null, at('10:23:40'))).toBeNull();
+    expect(durationMinutes(at('10:00:00'), null)).toBeNull();
+    // Счёт, внесённый офлайн задним числом, лёг раньше вызова.
+    expect(durationMinutes(at('10:30:00'), at('10:00:00'))).toBeNull();
   });
 
   it('частый клуб при равенстве — по названию, без прыжков', () => {
