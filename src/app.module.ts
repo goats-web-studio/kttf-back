@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 
 import { AuthModule } from './features/auth/auth.module.js';
+import { ClubApplicationsModule } from './features/club-applications/club-applications.module.js';
 import { ClubsModule } from './features/clubs/clubs.module.js';
 import { FilesModule } from './features/files/files.module.js';
 import { HealthModule } from './features/health/health.module.js';
@@ -26,6 +27,7 @@ import { PrismaModule } from './infra/prisma/prisma.module.js';
     PrismaModule,
     AuthModule,
     ClubsModule,
+    ClubApplicationsModule,
     FilesModule,
     PlacesModule,
     PlayersModule,

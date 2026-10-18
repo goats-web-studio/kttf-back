@@ -40,9 +40,10 @@ model User {
   isAdmin       Boolean  @default(false)
   createdAt     DateTime @default(now())
 
-  player    Player?
-  clubRoles ClubMember[]
-  sessions  Session[]
+  player           Player?
+  clubRoles        ClubMember[]
+  sessions         Session[]
+  clubApplications ClubApplication[]
 }
 
 enum Locale {
@@ -235,6 +236,43 @@ enum ClubRole {
   OWNER
   ORGANIZER
   REFEREE
+}
+
+// ============ Заявки клубов ============
+
+// ADR-047. Зал, который хочет проводить турниры в KTTF, оставляет заявку на
+// сайте; администратор платформы видит её в кабинете и связывается сам.
+// Отправить может и аноним: представитель зала ещё не пользователь.
+model ClubApplication {
+  id          String                @id @default(uuid())
+  name        String
+  // Телефон или email как написал человек: формат не навязывается.
+  contact     String
+  clubName    String
+  // Строкой, не ссылкой на справочник: заявки приходят и из городов,
+  // которых в справочнике ещё нет.
+  city        String
+  address     String?
+  tableCount  Int?
+  tournaments String?
+  message     String?
+  status      ClubApplicationStatus @default(NEW)
+  // Заявку оставил вошедший пользователь. Удалён аккаунт — заявка остаётся.
+  userId      String?
+  user        User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
+  // HMAC адреса отправителя — для лимита заявок с одного адреса. Сам адрес
+  // не хранится: для лимита достаточно сравнить, а адрес — персональные данные.
+  ipHash      String
+  createdAt   DateTime              @default(now())
+  handledAt   DateTime?
+
+  @@index([status, createdAt(sort: Desc)])
+  @@index([ipHash, createdAt])
+}
+
+enum ClubApplicationStatus {
+  NEW
+  DONE
 }
 
 // ============ Турниры ============
