@@ -327,7 +327,19 @@ describe('создание клуба', () => {
     ).toBe(401);
   });
 
-  it('с токеном — создаётся, вызывающий становится владельцем', async () => {
+  it('не администратору — 403: клуб заводится по заявке (ADR-049)', async () => {
+    const result = await call('POST', '/clubs', {
+      body: { name: 'Ракетка', cityId: CITY_ID },
+      auth: true,
+    });
+
+    expect(result.status).toBe(403);
+    expect(prisma.clubMember.create).not.toHaveBeenCalled();
+  });
+
+  it('администратору — создаётся, он становится владельцем', async () => {
+    prisma.user.findUnique.mockResolvedValue({ id: USER_ID, isAdmin: true });
+
     const result = await call('POST', '/clubs', {
       body: { name: 'Ракетка', cityId: CITY_ID },
       auth: true,
@@ -340,6 +352,8 @@ describe('создание клуба', () => {
   });
 
   it('без обязательных полей — 400', async () => {
+    prisma.user.findUnique.mockResolvedValue({ id: USER_ID, isAdmin: true });
+
     expect((await call('POST', '/clubs', { body: { name: 'Ракетка' }, auth: true })).status).toBe(
       400,
     );

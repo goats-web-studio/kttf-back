@@ -9,7 +9,6 @@ import {
   Patch,
   Post,
   Query,
-  UseGuards,
 } from '@nestjs/common';
 import {
   addMemberSchema,
@@ -27,7 +26,8 @@ import {
 import { z } from 'zod';
 
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
-import { CurrentUserId, JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import { RequireAdmin } from '../auth/admin.guard.js';
+import { CurrentUserId } from '../auth/jwt-auth.guard.js';
 import { RequireClubRole } from './club-role.guard.js';
 import { ClubsService } from './clubs.service.js';
 
@@ -56,8 +56,13 @@ export class ClubsController {
     return this.clubs.findById(id);
   }
 
+  /**
+   * Клуб заводит администратор платформы по заявке «Напишите нам» — ADR-049.
+   * Заведший становится владельцем и передаёт клуб представителю зала
+   * через состав (`POST /clubs/:id/members`).
+   */
   @Post()
-  @UseGuards(JwtAuthGuard)
+  @RequireAdmin()
   async create(
     @Body(new ZodValidationPipe(createClubSchema)) body: CreateClubInput,
     @CurrentUserId() userId: string,
