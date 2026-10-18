@@ -19,17 +19,17 @@ datasource db {
 // ============ Пользователи ============
 
 model User {
-  id            String   @id @default(uuid())
-  phone         String   @unique // E.164, +7XXXXXXXXXX
+  id            String    @id @default(uuid())
+  phone         String    @unique // E.164, +7XXXXXXXXXX
   // Логин — второй способ войти (ADR-034). Необязателен: аккаунты, заведённые
   // до перехода на пароль, живут без него.
-  login         String?  @unique
+  login         String?   @unique
   // scrypt с солью на пользователя, средствами node:crypto. Пустой означает,
   // что войти этим аккаунтом пока нельзя.
   passwordHash  String?
-  phoneVerified Boolean  @default(false)
-  email         String?  @unique
-  locale        Locale   @default(RU)
+  phoneVerified Boolean   @default(false)
+  email         String?   @unique
+  locale        Locale    @default(RU)
   // Числовой chat_id Telegram. Уведомления — V2 (ТЗ 10), но собирается такое
   // годами, а понадобится сразу, поэтому поле заводится заранее. По @имени
   // бот писать не может, отсюда число, а не ник.
@@ -37,8 +37,12 @@ model User {
   // Администратор платформы — ТЗ 1, ADR-046. Ведёт справочники. Выдаётся
   // скриптом scripts/set-admin.mjs: маршрута, который делает человека
   // администратором, наружу нет.
-  isAdmin       Boolean  @default(false)
-  createdAt     DateTime @default(now())
+  isAdmin       Boolean   @default(false)
+  // Последнее посещение — ADR-050. Пишется на запросах с токеном не чаще
+  // раза в пять минут: точнее «в сети» не нужно, а запись на каждый запрос
+  // превратила бы чтение сайта в поток UPDATE.
+  lastSeenAt    DateTime?
+  createdAt     DateTime  @default(now())
 
   player           Player?
   clubRoles        ClubMember[]

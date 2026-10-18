@@ -1,17 +1,18 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
-import type {
-  CityRef,
-  CreatePlayerInput,
-  HeadToHeadView,
-  ListPlayersQuery,
-  Page,
-  PlayerMatchesQuery,
-  PlayerMatchView,
-  PlayerProfileView,
-  PlayerView,
-  RatingHistoryQuery,
-  RatingHistoryView,
-  UpdatePlayerInput,
+import {
+  ONLINE_WINDOW_MS,
+  type CityRef,
+  type CreatePlayerInput,
+  type HeadToHeadView,
+  type ListPlayersQuery,
+  type Page,
+  type PlayerMatchesQuery,
+  type PlayerMatchView,
+  type PlayerProfileView,
+  type PlayerView,
+  type RatingHistoryQuery,
+  type RatingHistoryView,
+  type UpdatePlayerInput,
 } from '@kttf/shared/types';
 import { Injectable } from '@nestjs/common';
 
@@ -63,6 +64,8 @@ const profileFields = {
   // Имя выбранного тренера подставляется в ответ: экрану нужно одно поле,
   // а не развилка в каждом месте, где тренер выводится.
   coach: { select: { lastName: true, firstName: true } },
+  // «В сети» и последнее посещение — с аккаунта, а не с игрока (ADR-050).
+  user: { select: { lastSeenAt: true } },
 } as const;
 
 /** Сыгранная встреча этого игрока: без результата в истории показывать нечего. */
@@ -488,6 +491,7 @@ interface ProfileRecord extends PlayerRecord {
   coachPlayerId: string | null;
   coachName: string | null;
   coach: { lastName: string; firstName: string } | null;
+  user: { lastSeenAt: Date | null } | null;
 }
 
 /**
@@ -502,7 +506,13 @@ function toBirthDate(value: string | null | undefined): { birthDate?: Date | nul
   return { birthDate: value === null ? null : new Date(`${value}T00:00:00.000Z`) };
 }
 
-function toProfileView(player: ProfileRecord, maySeeBirthDate = true): PlayerProfileView {
+function toProfileView(
+  player: ProfileRecord,
+  maySeeBirthDate = true,
+  now: Date = new Date(),
+): PlayerProfileView {
+  const lastSeenAt = player.user?.lastSeenAt ?? null;
+
   return {
     ...toPlayerView(player),
     // Скрытая дата и незаполненная выглядят одинаково — `null`. Постороннему
@@ -525,7 +535,17 @@ function toProfileView(player: ProfileRecord, maySeeBirthDate = true): PlayerPro
       player.coach === null
         ? player.coachName
         : `${player.coach.lastName} ${player.coach.firstName}`,
+    lastSeenAt: lastSeenAt?.toISOString() ?? null,
+    online: isOnline(lastSeenAt, now),
   };
+}
+
+/**
+ * «В сети» — посещение в окне пяти минут. Отметка из будущего (часы базы
+ * и API разошлись) тоже считается присутствием: человек точно только что был.
+ */
+export function isOnline(lastSeenAt: Date | null, now: Date): boolean {
+  return lastSeenAt !== null && now.getTime() - lastSeenAt.getTime() < ONLINE_WINDOW_MS;
 }
 
 export function toPlayerView(player: PlayerRecord): PlayerView {

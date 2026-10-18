@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { PlacesService } from '../places/places.service.js';
-import { PlayersService } from './players.service.js';
+import { isOnline, PlayersService } from './players.service.js';
 
 const player = {
   id: 'player-1',
@@ -32,6 +32,8 @@ const player = {
   coachName: null,
   coach: null,
   birthYearOnly: true,
+  // Игрок без аккаунта: посещения нет.
+  user: null,
 };
 
 const newcomer = {
@@ -86,6 +88,56 @@ describe('представление игрока', () => {
     prisma.player.findUnique.mockResolvedValue(null);
 
     await expect(service.findById('нет')).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+});
+
+describe('в сети и последнее посещение', () => {
+  const MINUTE = 60_000;
+
+  it('у игрока без аккаунта статуса нет', async () => {
+    await expect(service.findById('player-1')).resolves.toMatchObject({
+      lastSeenAt: null,
+      online: false,
+    });
+  });
+
+  it('заходил минуту назад — в сети, отметка отдаётся как есть', async () => {
+    const seen = new Date(Date.now() - MINUTE);
+    prisma.player.findUnique.mockResolvedValue({
+      ...player,
+      userId: 'user-1',
+      user: { lastSeenAt: seen },
+    });
+
+    await expect(service.findById('player-1')).resolves.toMatchObject({
+      lastSeenAt: seen.toISOString(),
+      online: true,
+    });
+  });
+
+  it('заходил десять минут назад — не в сети, но дата видна', async () => {
+    const seen = new Date(Date.now() - 10 * MINUTE);
+    prisma.player.findUnique.mockResolvedValue({
+      ...player,
+      userId: 'user-1',
+      user: { lastSeenAt: seen },
+    });
+
+    await expect(service.findById('player-1')).resolves.toMatchObject({
+      lastSeenAt: seen.toISOString(),
+      online: false,
+    });
+  });
+
+  it('окно — пять минут, граница уже не в сети', () => {
+    const now = new Date('2026-10-19T12:00:00.000Z');
+    const ago = (ms: number) => new Date(now.getTime() - ms);
+
+    expect(isOnline(ago(5 * MINUTE - 1), now)).toBe(true);
+    expect(isOnline(ago(5 * MINUTE), now)).toBe(false);
+    expect(isOnline(null, now)).toBe(false);
+    // Часы базы убежали вперёд — человек всё равно только что был.
+    expect(isOnline(ago(-MINUTE), now)).toBe(true);
   });
 });
 
