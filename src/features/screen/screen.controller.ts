@@ -4,6 +4,7 @@ import { concatMap, from, interval, map, merge, Observable, of, switchMap } from
 import { z } from 'zod';
 
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
+import { SkipRateLimit } from '../auth/rate-limit.interceptor.js';
 
 import { ScreenEventsService } from './screen-events.service.js';
 import { ScreenService } from './screen.service.js';
@@ -27,6 +28,8 @@ const tokenParam = z.string().regex(/^[A-Za-z0-9_-]{32}$/);
  */
 const PING_INTERVAL_MS = 25_000;
 
+// Экран зала переподключается сам и не должен гаснуть из-за предела (ADR-056).
+@SkipRateLimit()
 @Controller('public/screen')
 export class ScreenController {
   constructor(

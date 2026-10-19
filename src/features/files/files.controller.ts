@@ -23,6 +23,7 @@ import { z } from 'zod';
 
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import { SkipRateLimit } from '../auth/rate-limit.interceptor.js';
 import { RequireClubRole } from '../clubs/club-role.guard.js';
 import { storeClubImage } from './club-image.js';
 import { ImageService } from './image.service.js';
@@ -143,6 +144,8 @@ export class FilesController {
    * закрывать и наблюдать.
    */
   @Get(':folder/:name')
+  // Картинки неизменяемы, а страница клуба тянет их десятками (ADR-056).
+  @SkipRateLimit()
   @Header('Cache-Control', 'public, max-age=31536000, immutable')
   async download(
     @Param('folder') folder: string,

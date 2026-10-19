@@ -2,9 +2,11 @@ import { isAppError } from '@kttf/shared/errors';
 import { JwtService } from '@nestjs/jwt';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { Env } from '../../infra/config/env.js';
 import type { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { SESSION_TTL_MS } from './auth.constants.js';
 import { AuthService } from './auth.service.js';
+import { LOGIN_FAILURES_PER_ACCOUNT, LoginThrottle } from './login-throttle.js';
 import { hashPassword } from './password.js';
 import { TokenService } from './token.service.js';
 
@@ -72,10 +74,16 @@ function makeService(prisma: ReturnType<typeof makePrisma>) {
     new JwtService({ secret: SECRET }),
   );
 
-  const service = new AuthService(prisma as unknown as PrismaService, tokens);
+  const service = new AuthService(
+    prisma as unknown as PrismaService,
+    tokens,
+    new LoginThrottle({ JWT_SECRET: SECRET } as Env),
+  );
 
   return { service, tokens };
 }
+
+const IP = '10.0.0.1';
 
 describe('вход', () => {
   let prisma: ReturnType<typeof makePrisma>;
@@ -87,7 +95,7 @@ describe('вход', () => {
   it('пускает по логину и заводит сессию', async () => {
     const { service } = makeService(prisma);
 
-    const session = await service.login({ identifier: 'aslan', password: PASSWORD });
+    const session = await service.login({ identifier: 'aslan', password: PASSWORD }, IP);
 
     expect(prisma.user.findUnique).toHaveBeenCalledWith(
       expect.objectContaining({ where: { login: 'aslan' } }),
@@ -99,7 +107,7 @@ describe('вход', () => {
   it('телефон узнаётся по формату, а не по отдельному полю', async () => {
     const { service } = makeService(prisma);
 
-    await service.login({ identifier: '+70000000000', password: PASSWORD });
+    await service.login({ identifier: '+70000000000', password: PASSWORD }, IP);
 
     expect(prisma.user.findUnique).toHaveBeenCalledWith(
       expect.objectContaining({ where: { phone: '+70000000000' } }),
@@ -110,12 +118,12 @@ describe('вход', () => {
     const { service } = makeService(prisma);
 
     const wrongPassword = await service
-      .login({ identifier: 'aslan', password: 'ne-parol' })
+      .login({ identifier: 'aslan', password: 'ne-parol' }, IP)
       .catch((error: unknown) => error);
 
     prisma.user.findUnique.mockResolvedValue(null);
     const unknownLogin = await service
-      .login({ identifier: 'kto-to', password: PASSWORD })
+      .login({ identifier: 'kto-to', password: PASSWORD }, IP)
       .catch((error: unknown) => error);
 
     if (!isAppError(wrongPassword) || !isAppError(unknownLogin)) {
@@ -132,7 +140,9 @@ describe('вход', () => {
     prisma.user.findUnique.mockResolvedValue({ ...account, passwordHash: null });
     const { service } = makeService(prisma);
 
-    await expect(service.login({ identifier: 'aslan', password: PASSWORD })).rejects.toMatchObject({
+    await expect(
+      service.login({ identifier: 'aslan', password: PASSWORD }, IP),
+    ).rejects.toMatchObject({
       code: 'UNAUTHORIZED',
     });
     expect(prisma.session.create).not.toHaveBeenCalled();
@@ -141,7 +151,7 @@ describe('вход', () => {
   it('сессия живёт 90 дней — ТЗ 2.1', async () => {
     const { service } = makeService(prisma);
 
-    await service.login({ identifier: 'aslan', password: PASSWORD });
+    await service.login({ identifier: 'aslan', password: PASSWORD }, IP);
 
     const created = prisma.session.create.mock.calls[0]?.[0] as { data: { expiresAt: Date } };
     const days = (created.data.expiresAt.getTime() - Date.now()) / (24 * 60 * 60 * 1000);
@@ -438,4 +448,22 @@ describe('смена пароля', () => {
         },
       );
   });
+});
+
+describe('перебор пароля — ADR-056', () => {
+  it('сверх предела вход отвергается до сверки пароля', async () => {
+    const prisma = makePrisma();
+    const { service } = makeService(prisma);
+
+    for (let attempt = 0; attempt < LOGIN_FAILURES_PER_ACCOUNT; attempt += 1) {
+      await service.login({ identifier: 'aslan', password: 'ne-parol' }, IP).catch(() => null);
+    }
+    prisma.user.findUnique.mockClear();
+
+    await expect(
+      service.login({ identifier: ' Aslan ', password: PASSWORD }, IP),
+    ).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+    // Пароль не сверялся и аккаунт не искался: отказ одинаков для любого пароля.
+    expect(prisma.user.findUnique).not.toHaveBeenCalled();
+  }, 60_000);
 });

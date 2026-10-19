@@ -1,7 +1,10 @@
 import { Controller, Get } from '@nestjs/common';
 
+import { SkipRateLimit } from '../auth/rate-limit.interceptor.js';
 import { HealthService, type HealthReport } from './health.service.js';
 
+// Оркестратор спрашивает часто, и отказ ему означал бы «контейнер мёртв» (ADR-056).
+@SkipRateLimit()
 @Controller('health')
 export class HealthController {
   constructor(private readonly health: HealthService) {}

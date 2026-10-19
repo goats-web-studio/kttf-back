@@ -28,7 +28,7 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { RequireAdmin } from '../auth/admin.guard.js';
 import { OptionalJwtGuard, OptionalUserId } from '../auth/optional-jwt.guard.js';
 import { ClubApplicationsService } from './club-applications.service.js';
-import { clientIp } from './client-ip.js';
+import { clientIp } from '../../common/client-ip.js';
 
 /**
  * Заявка клуба с сайта — ADR-047. Открыта всем: представитель зала ещё

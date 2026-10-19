@@ -7,6 +7,7 @@ import {
   HttpStatus,
   Patch,
   Post,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 
@@ -25,7 +26,9 @@ import {
   type TokenPair,
   type UpdateAccountInput,
 } from '@kttf/shared/types';
+import type { Request } from 'express';
 
+import { clientIp } from '../../common/client-ip.js';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { AuthService } from './auth.service.js';
 import { CurrentUserId, JwtAuthGuard } from './jwt-auth.guard.js';
@@ -35,14 +38,15 @@ import { CurrentUserId, JwtAuthGuard } from './jwt-auth.guard.js';
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
-  /** Вход логином или телефоном — ADR-034. */
+  /** Вход логином или телефоном — ADR-034; предел неудачных попыток — ADR-056. */
   @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(
     @Body(new ZodValidationPipe(loginSchema)) body: LoginInput,
+    @Req() request: Request,
     @Headers('user-agent') userAgent?: string,
   ): Promise<AuthSession> {
-    return this.auth.login(body, userAgent);
+    return this.auth.login(body, clientIp(request), userAgent);
   }
 
   /** Регистрация: аккаунт и, если человек себя назвал, привязка к игроку. */

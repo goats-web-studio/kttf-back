@@ -16,6 +16,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { SESSION_TTL_MS } from './auth.constants.js';
 import { hashPassword, verifyPassword } from './password.js';
+import { LoginThrottle } from './login-throttle.js';
 import { TokenService } from './token.service.js';
 
 /**
@@ -38,6 +39,7 @@ export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tokens: TokenService,
+    private readonly throttle: LoginThrottle,
   ) {}
 
   /**
@@ -48,8 +50,12 @@ export class AuthService {
    * логин» и «неверный пароль» обязаны выглядеть одинаково, иначе форма
    * входа превращается в проверку, есть ли такой человек на платформе.
    */
-  async login(input: LoginInput, userAgent?: string): Promise<AuthSession> {
+  async login(input: LoginInput, ip: string, userAgent?: string): Promise<AuthSession> {
     const identifier = input.identifier.trim();
+
+    // До поиска и сверки: сверх предела отказ одинаков для любого пароля.
+    this.throttle.assertAllowed(identifier, ip);
+
     const where = PHONE_PATTERN.test(identifier) ? { phone: identifier } : { login: identifier };
 
     const account = await this.prisma.user.findUnique({ where, include: userView });
@@ -61,8 +67,11 @@ export class AuthService {
     const matches = verifyPassword(input.password, stored);
 
     if (account?.passwordHash == null || !matches) {
+      this.throttle.recordFailure(identifier, ip);
       throw new AppError(ERROR_CODES.UNAUTHORIZED, 'Login or password is wrong');
     }
+
+    this.throttle.recordSuccess(identifier);
 
     return this.startSession(account, userAgent);
   }

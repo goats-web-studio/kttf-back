@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Env } from '../../infra/config/env.js';
 import type { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { APPLICATIONS_PER_HOUR, ClubApplicationsService } from './club-applications.service.js';
-import { clientIp } from './client-ip.js';
+import { clientIp } from '../../common/client-ip.js';
 
 const INPUT = {
   name: 'Арман',

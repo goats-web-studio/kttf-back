@@ -44,7 +44,7 @@ import { z } from 'zod';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { RequireAdmin } from '../auth/admin.guard.js';
 import { CurrentUserId } from '../auth/jwt-auth.guard.js';
-import { clientIp } from '../club-applications/client-ip.js';
+import { clientIp } from '../../common/client-ip.js';
 import { ClubPageService } from './club-page.service.js';
 import { RequireClubRole } from './club-role.guard.js';
 import { ClubStatsService } from './club-stats.service.js';
