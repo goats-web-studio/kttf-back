@@ -2,17 +2,24 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   Patch,
   Post,
   Put,
   Query,
+  Req,
   Res,
   UseGuards,
 } from '@nestjs/common';
 import {
   SLUG_PATTERN,
+  coachEventSchema,
+  coachStatsQuerySchema,
   listCoachApplicationsSchema,
+  listCoachesSchema,
+  listTrainingsSchema,
   rejectCoachSchema,
   setCoachAchievementsSchema,
   setCoachCredentialsSchema,
@@ -21,27 +28,37 @@ import {
   updateCoachSchema,
   verifyCoachCredentialSchema,
   type CoachApplicationView,
+  type CoachEventInput,
+  type CoachListItemView,
+  type CoachStatsQuery,
+  type CoachStatsView,
   type CoachView,
   type ListCoachApplicationsQuery,
+  type ListCoachesQuery,
+  type ListTrainingsQuery,
   type Page,
   type RejectCoachInput,
   type SetCoachAchievementsInput,
   type SetCoachCredentialsInput,
   type SetCoachHiddenInput,
   type SetCoachServicesInput,
+  type TrainingListItemView,
   type UpdateCoachInput,
   type VerifyCoachCredentialInput,
 } from '@kttf/shared/types';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import { z } from 'zod';
 
+import { clientIp } from '../../common/client-ip.js';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { RequireAdmin } from '../auth/admin.guard.js';
 import { CurrentUserId, JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { OptionalJwtGuard, OptionalUserId } from '../auth/optional-jwt.guard.js';
 import { StorageService } from '../files/storage.service.js';
 import { CoachAdminService } from './coach-admin.service.js';
+import { CoachCatalogService } from './coach-catalog.service.js';
 import { RequireCoachOwner } from './coach-owner.guard.js';
+import { CoachStatsService } from './coach-stats.service.js';
 import { CoachesService } from './coaches.service.js';
 
 const uuidParam = new ZodValidationPipe(z.uuid());
@@ -57,8 +74,17 @@ const slugParam = new ZodValidationPipe(z.string().max(100).regex(SLUG_PATTERN))
 export class CoachesController {
   constructor(
     private readonly coaches: CoachesService,
+    private readonly catalog: CoachCatalogService,
+    private readonly stats: CoachStatsService,
     private readonly storage: StorageService,
   ) {}
+
+  @Get()
+  async list(
+    @Query(new ZodValidationPipe(listCoachesSchema)) query: ListCoachesQuery,
+  ): Promise<Page<CoachListItemView>> {
+    return this.catalog.list(query);
+  }
 
   /** Публичная страница; неопубликованную видят только владелец и администратор. */
   @Get('by-slug/:slug')
@@ -135,6 +161,29 @@ export class CoachesController {
   }
 
   /**
+   * Просмотр и нажатие на способ связи. Открыт всем; ответ пустой и
+   * одинаковый всегда — и для повтора, и для чужой страницы.
+   */
+  @Post(':id/events')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async recordEvent(
+    @Param('id', uuidParam) id: string,
+    @Body(new ZodValidationPipe(coachEventSchema)) body: CoachEventInput,
+    @Req() request: Request,
+  ): Promise<void> {
+    await this.stats.record(id, body, clientIp(request));
+  }
+
+  @Get(':id/stats')
+  @RequireCoachOwner()
+  async coachStats(
+    @Param('id', uuidParam) id: string,
+    @Query(new ZodValidationPipe(coachStatsQuerySchema)) query: CoachStatsQuery,
+  ): Promise<CoachStatsView> {
+    return this.stats.stats(id, query.days);
+  }
+
+  /**
    * Скан документа — персональные данные (ADR-059, риски). Общая выдача
    * файлов папку сканов не отдаёт; здесь права сверяются на каждый запрос.
    * Непубличный скан не оседает ни в каком кэше.
@@ -155,6 +204,19 @@ export class CoachesController {
       .setHeader('Cache-Control', isPublic ? 'public, max-age=300' : 'private, no-store')
       .type(file.contentType)
       .send(file.body);
+  }
+}
+
+/** Раздел «Тренировки» — карточки тренировок опубликованных страниц. */
+@Controller('trainings')
+export class TrainingsController {
+  constructor(private readonly catalog: CoachCatalogService) {}
+
+  @Get()
+  async list(
+    @Query(new ZodValidationPipe(listTrainingsSchema)) query: ListTrainingsQuery,
+  ): Promise<Page<TrainingListItemView>> {
+    return this.catalog.trainings(query);
   }
 }
 
