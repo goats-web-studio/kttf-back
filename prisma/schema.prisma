@@ -50,6 +50,7 @@ model User {
   clubMedia        ClubMedia[]
   sessions         Session[]
   clubApplications ClubApplication[]
+  products         Product[]
 }
 
 enum Locale {
@@ -448,6 +449,92 @@ model ClubApplication {
 enum ClubApplicationStatus {
   NEW
   DONE
+}
+
+// ============ Каталог маркета ============
+
+// ADR-058, docs/10 4.1. Общий справочник инвентаря: товары и производители.
+// Ведёт администратор платформы, наполняется импортом выгрузки RTTF.
+// Поиск — pg_trgm: индексы по lower(name) заведены в миграции SQL, схема
+// Prisma выражений в индексах не описывает.
+model Brand {
+  id        String    @id @default(uuid())
+  name      String    @unique
+  slug      String    @unique
+  country   String?
+  website   String?
+  logoUrl   String?
+  // Производитель RTTF — ключ повторного импорта
+  rttfId    Int?      @unique
+  createdAt DateTime  @default(now())
+  products  Product[]
+}
+
+model Product {
+  id          String          @id @default(uuid())
+  category    ProductCategory
+  brandId     String
+  brand       Brand           @relation(fields: [brandId], references: [id])
+  // «E. Lebesson» — без слова категории и производителя
+  name        String
+  slug        String          @unique
+  // Русские написания для поиска: «Лебессон»
+  aliases     String[]        @default([])
+  description String? // простой текст
+  // Характеристики и оси вариантов. Схема — по категории, PRODUCT_ATTRIBUTES
+  // в kttf-shared: база её не знает, проверяет сервер
+  attrs       Json            @default("{}")
+  options     Json            @default("{}")
+  status      ProductStatus   @default(PUBLISHED)
+  // Порядок «популярные»: просмотры, при импорте — начальное значение RTTF
+  popularity  Int             @default(0)
+  // Товар RTTF — ключ повторного импорта
+  rttfId      Int?            @unique
+  createdById String?
+  createdBy   User?           @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  hiddenAt    DateTime?
+  images      ProductImage[]
+
+  @@index([category, status, hiddenAt])
+  @@index([brandId])
+  @@index([attrs], type: Gin)
+  @@index([options], type: Gin)
+}
+
+enum ProductCategory {
+  BLADE
+  RUBBER
+  BALL
+  CASE
+  TOP
+  BOTTOM
+  SOCKS
+  SHOES
+  TABLE
+  OTHER
+}
+
+// PENDING — карточку предложил магазин (M1.3), в общем каталоге её нет
+enum ProductStatus {
+  PENDING
+  PUBLISHED
+}
+
+model ProductImage {
+  id        String   @id @default(uuid())
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  imageUrl  String
+  width     Int
+  height    Int
+  sortOrder Int
+  // Откуда фото: rttf.ru, магазин, производитель — чтобы найти и заменить чужое
+  credit    String?
+  createdAt DateTime @default(now())
+
+  @@index([productId, sortOrder])
 }
 
 // ============ Турниры ============

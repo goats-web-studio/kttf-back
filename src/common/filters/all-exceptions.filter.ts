@@ -53,6 +53,9 @@ const STATUS_BY_CODE: Readonly<Record<ErrorCode, number>> = {
   // верный, в галерее больше нет места. Чужая ссылка вместо ролика — ошибка тела.
   CLUB_PLAN_LIMIT: HttpStatus.CONFLICT,
   VIDEO_NOT_FOUND: HttpStatus.BAD_REQUEST,
+
+  // Маркет — ADR-058. Второй производитель с тем же названием — конфликт с тем, что уже есть.
+  BRAND_ALREADY_EXISTS: HttpStatus.CONFLICT,
 };
 
 const CODE_BY_STATUS: Readonly<Record<number, ErrorCode>> = {

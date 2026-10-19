@@ -83,6 +83,7 @@ describe('AllExceptionsFilter', () => {
       PLACE_ALREADY_EXISTS: 409,
       CLUB_PLAN_LIMIT: 409,
       VIDEO_NOT_FOUND: 400,
+      BRAND_ALREADY_EXISTS: 409,
     };
 
     for (const code of Object.values(ERROR_CODES)) {

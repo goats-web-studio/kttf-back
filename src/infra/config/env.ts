@@ -35,6 +35,16 @@ const envSchema = z.object({
   S3_BUCKET: z.string().min(1).default('kttf-media'),
   /** MinIO регион не проверяет, но подпись S3 без него не считается. */
   S3_REGION: z.string().min(1).default('us-east-1'),
+
+  /**
+   * Откуда импорт каталога вправе скачивать фото — ADR-058, `docs/10` 6.
+   * Хосты через запятую, поддомены разрешены вместе с хостом. Не задано —
+   * только `rttf.ru`: сервер не ходит по ссылкам из файла куда угодно.
+   */
+  CATALOG_IMPORT_HOSTS: z
+    .string()
+    .regex(/^[a-z0-9.-]+(?:,[a-z0-9.-]+)*$/)
+    .optional(),
 });
 
 export type Env = Readonly<z.infer<typeof envSchema>>;
