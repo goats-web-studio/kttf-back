@@ -5,6 +5,7 @@ import { CatalogModule } from './features/catalog/catalog.module.js';
 import { ClubApplicationsModule } from './features/club-applications/club-applications.module.js';
 import { ClubContentModule } from './features/club-content/club-content.module.js';
 import { ClubsModule } from './features/clubs/clubs.module.js';
+import { CoachesModule } from './features/coaches/coaches.module.js';
 import { FilesModule } from './features/files/files.module.js';
 import { HealthModule } from './features/health/health.module.js';
 import { PlacesModule } from './features/places/places.module.js';
@@ -32,6 +33,7 @@ import { PrismaModule } from './infra/prisma/prisma.module.js';
     ClubApplicationsModule,
     ClubContentModule,
     CatalogModule,
+    CoachesModule,
     FilesModule,
     PlacesModule,
     PlayersModule,

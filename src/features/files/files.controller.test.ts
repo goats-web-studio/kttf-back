@@ -142,3 +142,65 @@ describe('картинка клуба', () => {
     });
   });
 });
+
+describe('картинки и сканы тренера (ADR-059)', () => {
+  const COACH = '33333333-3333-4333-8333-333333333333';
+  const image = { buffer: Buffer.from('x'), mimetype: 'image/jpeg', size: 100 };
+  const response = { type: vi.fn().mockReturnThis(), send: vi.fn() };
+
+  it('фото тренера кладётся тремя ширинами в свою папку', async () => {
+    const result = await controller.uploadCoachImage(COACH, image);
+
+    expect(result.url).toMatch(/^\/api\/v1\/files\/coaches\/[0-9a-f-]{36}\.webp$/);
+    expect(storage.putAt).toHaveBeenCalledTimes(3);
+  });
+
+  it('скан — один WebP шириной до 1600, ответ — только путь', async () => {
+    images.process.mockResolvedValueOnce({
+      width: 1200,
+      height: 1600,
+      variants: new Map([[1600, Buffer.from('doc')]]),
+    });
+
+    const result = await controller.uploadCoachDoc(COACH, image);
+
+    expect(images.process).toHaveBeenCalledWith(image.buffer, [1600]);
+    expect(result).toEqual({
+      url: expect.stringMatching(/^\/api\/v1\/files\/coach-docs\/[0-9a-f-]{36}\.webp$/) as unknown,
+    });
+    expect(storage.putAt).toHaveBeenCalledOnce();
+    expect(storage.putAt.mock.calls[0]?.[0]).toMatch(/^coach-docs\/[0-9a-f-]{36}\.webp$/);
+  });
+
+  it('скан чужого типа отвергается до обработки', async () => {
+    await expect(
+      controller.uploadCoachDoc(COACH, { ...image, mimetype: 'application/pdf' }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_FAILED', details: { reason: 'TYPE' } });
+    expect(images.process).not.toHaveBeenCalled();
+  });
+
+  it('общая выдача сканы не отдаёт — как будто файла нет', async () => {
+    // Иначе непубличный скан открывался бы всем, кто знает путь.
+    await expect(
+      controller.download(
+        'coach-docs',
+        '11111111-1111-4111-8111-111111111111.webp',
+        response as never,
+      ),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+
+    expect(storage.get).not.toHaveBeenCalled();
+  });
+
+  it('фото тренера общая выдача отдаёт', async () => {
+    await controller.download(
+      'coaches',
+      '11111111-1111-4111-8111-111111111111-480.webp',
+      response as never,
+    );
+
+    expect(storage.get).toHaveBeenCalledWith(
+      'coaches/11111111-1111-4111-8111-111111111111-480.webp',
+    );
+  });
+});

@@ -39,6 +39,7 @@ const account = {
   createdAt: new Date('2026-08-29T00:00:00.000Z'),
   player: null,
   clubRoles: [],
+  coaches: [],
 };
 
 function makePrisma() {

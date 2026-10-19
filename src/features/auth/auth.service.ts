@@ -6,6 +6,7 @@ import type {
   AuthSession,
   AuthUserView,
   ChangePasswordInput,
+  CoachRef,
   LoginInput,
   SignUpInput,
   TokenPair,
@@ -32,6 +33,13 @@ const DUMMY_HASH = hashPassword(randomBytes(32).toString('hex'));
 const userView = {
   player: { select: { id: true } },
   clubRoles: { select: { clubId: true, role: true } },
+  // Своя страница тренера — ADR-059. Одна на профиль игрока, а профиль один
+  // на аккаунт; порядок — на случай, если ссылок окажется больше.
+  coaches: {
+    select: { id: true, slug: true, status: true },
+    orderBy: { createdAt: 'asc' },
+    take: 1,
+  },
 } as const;
 
 @Injectable()
@@ -347,6 +355,7 @@ interface UserRecord {
   createdAt: Date;
   player: { id: string } | null;
   clubRoles: { clubId: string; role: string }[];
+  coaches: CoachRef[];
 }
 
 function toView(user: UserRecord): AuthUserView {
@@ -361,5 +370,6 @@ function toView(user: UserRecord): AuthUserView {
     playerId: user.player?.id ?? null,
     clubRoles: user.clubRoles.map((member) => ({ clubId: member.clubId, role: member.role })),
     isAdmin: user.isAdmin,
+    coach: user.coaches[0] ?? null,
   };
 }

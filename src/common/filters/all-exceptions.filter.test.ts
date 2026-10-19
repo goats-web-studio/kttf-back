@@ -84,6 +84,9 @@ describe('AllExceptionsFilter', () => {
       CLUB_PLAN_LIMIT: 409,
       VIDEO_NOT_FOUND: 400,
       BRAND_ALREADY_EXISTS: 409,
+      COACH_ALREADY_EXISTS: 409,
+      COACH_INCOMPLETE: 409,
+      COACH_STATUS_INVALID: 409,
     };
 
     for (const code of Object.values(ERROR_CODES)) {

@@ -1,7 +1,9 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import {
   ONLINE_WINDOW_MS,
+  isCoachPublic,
   type CityRef,
+  type CoachStatus,
   type CreatePlayerInput,
   type EquipmentLabel,
   type HeadToHeadView,
@@ -80,7 +82,14 @@ const profileFields = {
   coachName: true,
   // Имя выбранного тренера подставляется в ответ: экрану нужно одно поле,
   // а не развилка в каждом месте, где тренер выводится.
-  coach: { select: { lastName: true, firstName: true } },
+  // Опубликованная страница тренера — ссылкой на профиле (ADR-059).
+  coach: {
+    select: {
+      lastName: true,
+      firstName: true,
+      coachPage: { select: { slug: true, status: true, hiddenAt: true } },
+    },
+  },
   // «В сети» и последнее посещение — с аккаунта, а не с игрока (ADR-050).
   user: { select: { lastSeenAt: true } },
 } as const;
@@ -631,7 +640,11 @@ interface ProfileRecord extends PlayerRecord {
   bio: string | null;
   coachPlayerId: string | null;
   coachName: string | null;
-  coach: { lastName: string; firstName: string } | null;
+  coach: {
+    lastName: string;
+    firstName: string;
+    coachPage: { slug: string; status: CoachStatus; hiddenAt: Date | null } | null;
+  } | null;
   user: { lastSeenAt: Date | null } | null;
 }
 
@@ -704,9 +717,19 @@ function toProfileView(
       player.coach === null
         ? player.coachName
         : `${player.coach.lastName} ${player.coach.firstName}`,
+    coachSlug: publicCoachSlug(player.coach?.coachPage ?? null),
     lastSeenAt: lastSeenAt?.toISOString() ?? null,
     online: isOnline(lastSeenAt, now),
   };
+}
+
+/** Адрес страницы тренера — только опубликованной: черновик по ссылке не откроется. */
+function publicCoachSlug(
+  page: { slug: string; status: CoachStatus; hiddenAt: Date | null } | null,
+): string | null {
+  return page !== null && isCoachPublic({ status: page.status, hidden: page.hiddenAt !== null })
+    ? page.slug
+    : null;
 }
 
 /**
@@ -733,7 +756,7 @@ function ratingRange(from: number | undefined, to: number | undefined) {
  * найтись в фамилии, имени или отчестве, порядок не важен. Составное поле в
  * базе не хранится.
  */
-function nameWords(search: string) {
+export function nameWords(search: string) {
   return search
     .split(/\s+/)
     .filter((word) => word.length > 0)

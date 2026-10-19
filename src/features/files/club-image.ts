@@ -6,13 +6,14 @@ import type { ProcessedImage } from './image.service.js';
 import type { StorageService } from './storage.service.js';
 
 /** Папки картинок, пережатых сервером: у каждой свой набор ширин. */
-export type ImageFolder = 'clubs' | 'products' | 'brands';
+export type ImageFolder = 'clubs' | 'products' | 'brands' | 'coaches' | 'coach-docs';
 
 /**
  * Кладёт обработанную картинку: основной файл — самая широкая, рядом
  * варианты с суффиксом ширины (`clubs/<uuid>-480.webp`). Логотип, обложка,
  * фото галереи и обложка видео клуба лежат одинаково — ADR-055; фото товара
- * и логотип производителя — так же, своими ширинами (ADR-058).
+ * и логотип производителя — так же, своими ширинами (ADR-058); фото и обложка
+ * тренера — как у клуба, скан документа тренера — одним файлом (ADR-059).
  */
 export async function storeImage(
   storage: StorageService,

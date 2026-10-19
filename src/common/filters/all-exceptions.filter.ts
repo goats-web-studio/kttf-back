@@ -56,6 +56,14 @@ const STATUS_BY_CODE: Readonly<Record<ErrorCode, number>> = {
 
   // Маркет — ADR-058. Второй производитель с тем же названием — конфликт с тем, что уже есть.
   BRAND_ALREADY_EXISTS: HttpStatus.CONFLICT,
+
+  // Страница тренера — ADR-059. Вторая страница и действие не по статусу
+  // заявки — конфликт с тем, что уже есть. Неполная страница — тоже
+  // конфликт состояния, как незавершённый турнир: запрос верный, страница
+  // к отправке не готова.
+  COACH_ALREADY_EXISTS: HttpStatus.CONFLICT,
+  COACH_INCOMPLETE: HttpStatus.CONFLICT,
+  COACH_STATUS_INVALID: HttpStatus.CONFLICT,
 };
 
 const CODE_BY_STATUS: Readonly<Record<number, ErrorCode>> = {

@@ -25,7 +25,8 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { SkipRateLimit } from '../auth/rate-limit.interceptor.js';
 import { RequireClubRole } from '../clubs/club-role.guard.js';
-import { storeClubImage } from './club-image.js';
+import { RequireCoachOwner } from '../coaches/coach-owner.guard.js';
+import { storeClubImage, storeImage } from './club-image.js';
 import { ImageService } from './image.service.js';
 import { StorageService } from './storage.service.js';
 
@@ -52,6 +53,16 @@ const EXTENSIONS: Readonly<Record<string, string>> = {
 const fileKeyParam = z.string().regex(/^[a-z-]+\/[0-9a-f-]{36}(?:-\d{3,4})?\.[a-z]{3,4}$/);
 
 const uuidParam = z.uuid();
+
+/**
+ * Сканы документов тренеров — персональные данные (ADR-059, риски). Общей
+ * выдачей они не отдаются: только маршрутом документа, который сверяет,
+ * кто смотрит, — `GET /coaches/:id/credentials/:credentialId/file`.
+ */
+export const COACH_DOCS_FOLDER = 'coach-docs';
+
+/** Скан документа — один WebP: шире 1600 на нём ничего не прочитать лучше. */
+const COACH_DOC_WIDTHS = [1600] as const;
 
 /**
  * Файлы — ТС 7.9, ADR-036.
@@ -120,20 +131,45 @@ export class FilesController {
     @Param('id', new ZodValidationPipe(uuidParam)) _clubId: string,
     @UploadedFileParam() file?: IncomingFile,
   ): Promise<UploadedImage> {
-    if (file === undefined) {
-      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'File is missing', { field: 'file' });
-    }
+    const accepted = acceptImage(file);
 
-    const rejection = rejectPhoto({ type: file.mimetype, size: file.size }, CLUB_IMAGE_MAX_BYTES);
+    return storeClubImage(this.storage, await this.images.process(accepted.buffer));
+  }
 
-    if (rejection !== null) {
-      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'File is not accepted', {
-        field: 'file',
-        reason: rejection,
-      });
-    }
+  /**
+   * Фото или обложка тренера — ADR-059, как картинка клуба: WebP трёх ширин,
+   * метаданные сняты. Загружает владелец страницы или администратор;
+   * сохранить путь на странице — отдельный `PATCH /coaches/:id`.
+   */
+  @Post('coaches/:id')
+  @RequireCoachOwner()
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: CLUB_IMAGE_MAX_BYTES } }))
+  async uploadCoachImage(
+    @Param('id', new ZodValidationPipe(uuidParam)) _coachId: string,
+    @UploadedFileParam() file?: IncomingFile,
+  ): Promise<UploadedImage> {
+    const accepted = acceptImage(file);
 
-    return storeClubImage(this.storage, await this.images.process(file.buffer));
+    return storeImage(this.storage, 'coaches', await this.images.process(accepted.buffer));
+  }
+
+  /**
+   * Скан документа тренера — ADR-059. Только фото: сервер пережимает его в
+   * один WebP и снимает EXIF (в снимке с телефона — координаты). Путь
+   * записывается в документ через `PUT /coaches/:id/credentials`.
+   */
+  @Post('coach-docs/:id')
+  @RequireCoachOwner()
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: CLUB_IMAGE_MAX_BYTES } }))
+  async uploadCoachDoc(
+    @Param('id', new ZodValidationPipe(uuidParam)) _coachId: string,
+    @UploadedFileParam() file?: IncomingFile,
+  ): Promise<UploadedFile> {
+    const accepted = acceptImage(file);
+    const image = await this.images.process(accepted.buffer, COACH_DOC_WIDTHS);
+    const { url } = await storeImage(this.storage, COACH_DOCS_FOLDER, image);
+
+    return { url };
   }
 
   /**
@@ -153,10 +189,38 @@ export class FilesController {
     @Res() response: Response,
   ): Promise<void> {
     const key = new ZodValidationPipe(fileKeyParam).transform(`${folder}/${name}`);
+
+    // Отказ тот же, что для несуществующего файла: наличие скана не
+    // подсказывается никому.
+    if (key.startsWith(`${COACH_DOCS_FOLDER}/`)) {
+      throw new AppError(ERROR_CODES.NOT_FOUND, 'File not found', { key });
+    }
+
     const file = await this.storage.get(key);
 
     // Имя в ключе — случайный UUID, поэтому содержимое неизменно: год
     // хранения в кэше безопасен и снимает повторные запросы за аватаром.
     response.type(file.contentType).send(file.body);
   }
+}
+
+/**
+ * Картинка, которую сервер пережмёт: клуба, тренера, скан документа. Правило
+ * приёма — общая `rejectPhoto` с потолком картинок клуба.
+ */
+function acceptImage(file: IncomingFile | undefined): IncomingFile {
+  if (file === undefined) {
+    throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'File is missing', { field: 'file' });
+  }
+
+  const rejection = rejectPhoto({ type: file.mimetype, size: file.size }, CLUB_IMAGE_MAX_BYTES);
+
+  if (rejection !== null) {
+    throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'File is not accepted', {
+      field: 'file',
+      reason: rejection,
+    });
+  }
+
+  return file;
 }

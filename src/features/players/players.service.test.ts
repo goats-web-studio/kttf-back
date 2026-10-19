@@ -421,6 +421,34 @@ describe('анкета игрока', () => {
     expect(view.coachPlayerId).toBe('player-9');
   });
 
+  it('у тренера с опубликованной страницей — её адрес (ADR-059)', async () => {
+    const coachPage = { slug: 'serikov-timur', status: 'APPROVED', hiddenAt: null };
+    prisma.player.findUnique.mockResolvedValue({
+      ...player,
+      coachPlayerId: 'player-9',
+      coach: { lastName: 'Сериков', firstName: 'Тимур', coachPage },
+    });
+
+    expect((await service.findById('player-1')).coachSlug).toBe('serikov-timur');
+  });
+
+  it('черновик, заявка и скрытая страница тренера ссылкой не становятся', async () => {
+    for (const coachPage of [
+      { slug: 'serikov-timur', status: 'DRAFT', hiddenAt: null },
+      { slug: 'serikov-timur', status: 'PENDING', hiddenAt: null },
+      { slug: 'serikov-timur', status: 'APPROVED', hiddenAt: new Date() },
+      null,
+    ]) {
+      prisma.player.findUnique.mockResolvedValue({
+        ...player,
+        coachPlayerId: 'player-9',
+        coach: { lastName: 'Сериков', firstName: 'Тимур', coachPage },
+      });
+
+      expect((await service.findById('player-1')).coachSlug).toBeNull();
+    }
+  });
+
   it('вписанный руками тренер отдаётся как есть', async () => {
     prisma.player.findUnique.mockResolvedValue({
       ...player,

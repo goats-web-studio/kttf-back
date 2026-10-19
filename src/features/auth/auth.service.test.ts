@@ -32,6 +32,7 @@ const account = {
   createdAt: new Date('2026-08-29T00:00:00.000Z'),
   player: null,
   clubRoles: [],
+  coaches: [],
 };
 
 function makePrisma() {
@@ -320,7 +321,18 @@ describe('logout и me', () => {
   it('me отдаёт профиль', async () => {
     const { service } = makeService(prisma);
 
-    await expect(service.findUser('user-1')).resolves.toMatchObject({ id: 'user-1' });
+    await expect(service.findUser('user-1')).resolves.toMatchObject({
+      id: 'user-1',
+      coach: null,
+    });
+  });
+
+  it('me отдаёт свою страницу тренера и статус заявки (ADR-059)', async () => {
+    const coach = { id: 'coach-1', slug: 'kim-sergey', status: 'PENDING' };
+    prisma.user.findUnique.mockResolvedValue({ ...account, coaches: [coach] });
+    const { service } = makeService(prisma);
+
+    await expect(service.findUser('user-1')).resolves.toMatchObject({ coach });
   });
 
   it('me отказывает, если пользователя больше нет', async () => {
