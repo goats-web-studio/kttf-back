@@ -22,6 +22,7 @@ function makeStorage() {
 }
 
 const images = {
+  processVideoCover: vi.fn(),
   process: vi.fn().mockResolvedValue({
     width: 1600,
     height: 900,
@@ -39,10 +40,7 @@ let controller: FilesController;
 beforeEach(() => {
   images.process.mockClear();
   storage = makeStorage();
-  controller = new FilesController(
-    storage as unknown as StorageService,
-    images,
-  );
+  controller = new FilesController(storage as unknown as StorageService, images);
 });
 
 describe('загрузка фото', () => {

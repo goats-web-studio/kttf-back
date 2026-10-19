@@ -81,6 +81,8 @@ describe('AllExceptionsFilter', () => {
       RATING_SNAPSHOT_MISSING: 409,
       CITY_UNAVAILABLE: 400,
       PLACE_ALREADY_EXISTS: 409,
+      CLUB_PLAN_LIMIT: 409,
+      VIDEO_NOT_FOUND: 400,
     };
 
     for (const code of Object.values(ERROR_CODES)) {

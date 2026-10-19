@@ -11,6 +11,6 @@ import { StorageService } from './storage.service.js';
   imports: [AuthModule, ClubsModule],
   controllers: [FilesController],
   providers: [StorageService, ImageService],
-  exports: [StorageService],
+  exports: [StorageService, ImageService],
 })
 export class FilesModule {}

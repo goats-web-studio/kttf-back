@@ -1,6 +1,4 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
-import { randomUUID } from 'node:crypto';
-
 import {
   CLUB_IMAGE_MAX_BYTES,
   PHOTO_MAX_BYTES,
@@ -26,6 +24,7 @@ import { z } from 'zod';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { RequireClubRole } from '../clubs/club-role.guard.js';
+import { storeClubImage } from './club-image.js';
 import { ImageService } from './image.service.js';
 import { StorageService } from './storage.service.js';
 
@@ -133,20 +132,7 @@ export class FilesController {
       });
     }
 
-    const image = await this.images.process(file.buffer);
-    const id = randomUUID();
-
-    await Promise.all(
-      [...image.variants].map(([width, body]) =>
-        this.storage.putAt(
-          width === 1600 ? `clubs/${id}.webp` : `clubs/${id}-${String(width)}.webp`,
-          body,
-          'image/webp',
-        ),
-      ),
-    );
-
-    return { url: `/api/v1/files/clubs/${id}.webp`, width: image.width, height: image.height };
+    return storeClubImage(this.storage, await this.images.process(file.buffer));
   }
 
   /**

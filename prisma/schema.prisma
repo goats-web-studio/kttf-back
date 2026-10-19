@@ -46,6 +46,8 @@ model User {
 
   player           Player?
   clubRoles        ClubMember[]
+  clubPosts        ClubPost[]
+  clubMedia        ClubMedia[]
   sessions         Session[]
   clubApplications ClubApplication[]
 }
@@ -241,6 +243,8 @@ model Club {
   hours        ClubHours[]
   prices       ClubPrice[]
   stats        ClubStatDaily[]
+  posts        ClubPost[]
+  media        ClubMedia[]
 
   @@index([cityId])
 }
@@ -335,6 +339,60 @@ model ClubStatDaily {
 enum TrafficSource {
   ORGANIC
   CAMPAIGN
+}
+
+// Новости и акции клуба — ADR-055, docs/09 3.2. Публикуются сразу, администратор скрывает
+model ClubPost {
+  id           String    @id @default(uuid())
+  clubId       String
+  kind         PostKind
+  title        String
+  body         String // простой текст, без HTML
+  imageUrl     String?
+  validUntil   DateTime? @db.Date // последний день акции
+  pinnedAt     DateTime?
+  publishedAt  DateTime  @default(now())
+  editedAt     DateTime?
+  authorId     String?
+  hiddenAt     DateTime?
+  hiddenReason String?
+  club         Club      @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  author       User?     @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([clubId, publishedAt(sort: Desc)])
+  @@index([publishedAt(sort: Desc)])
+}
+
+enum PostKind {
+  NEWS
+  PROMO
+}
+
+// Фото и видео клуба. У видео imageUrl — его обложка, скачанная к нам
+model ClubMedia {
+  id           String    @id @default(uuid())
+  clubId       String
+  kind         MediaKind
+  imageUrl     String
+  youtubeId    String?
+  width        Int
+  height       Int
+  caption      String?
+  sortOrder    Int
+  createdById  String?
+  createdAt    DateTime  @default(now())
+  hiddenAt     DateTime?
+  hiddenReason String?
+  club         Club      @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  createdBy    User?     @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([clubId, sortOrder])
+  @@index([createdAt(sort: Desc)])
+}
+
+enum MediaKind {
+  PHOTO
+  VIDEO
 }
 
 model ClubMember {

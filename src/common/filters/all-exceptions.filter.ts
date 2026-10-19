@@ -48,6 +48,11 @@ const STATUS_BY_CODE: Readonly<Record<ErrorCode, number>> = {
   // предлагалось из открытого списка. Дубликат — конфликт с тем, что уже есть.
   CITY_UNAVAILABLE: HttpStatus.BAD_REQUEST,
   PLACE_ALREADY_EXISTS: HttpStatus.CONFLICT,
+
+  // Страница клуба — ADR-055. Предел тарифа — конфликт состояния: запрос
+  // верный, в галерее больше нет места. Чужая ссылка вместо ролика — ошибка тела.
+  CLUB_PLAN_LIMIT: HttpStatus.CONFLICT,
+  VIDEO_NOT_FOUND: HttpStatus.BAD_REQUEST,
 };
 
 const CODE_BY_STATUS: Readonly<Record<number, ErrorCode>> = {

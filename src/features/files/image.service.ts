@@ -29,6 +29,26 @@ export interface ProcessedImage {
  */
 @Injectable()
 export class ImageService {
+  /**
+   * Обложка ролика YouTube. Мелкая обложка `hqdefault` — 4:3 с чёрными
+   * полосами сверху и снизу у обычного широкого ролика: полосы срезаются
+   * до 16:9, иначе в галерее у видео рамка, которой нет у фото.
+   */
+  async processVideoCover(input: Buffer, letterboxed: boolean): Promise<ProcessedImage> {
+    if (!letterboxed) return this.process(input);
+
+    const { width, height } = await sharp(input).metadata();
+    const height16x9 = Math.round((width * 9) / 16);
+
+    if (height16x9 >= height) return this.process(input);
+
+    const cropped = await sharp(input)
+      .extract({ left: 0, top: Math.round((height - height16x9) / 2), width, height: height16x9 })
+      .toBuffer();
+
+    return this.process(cropped);
+  }
+
   async process(input: Buffer): Promise<ProcessedImage> {
     const source = sharp(input, { limitInputPixels: IMAGE_MAX_INPUT_PIXELS, failOn: 'error' });
 
