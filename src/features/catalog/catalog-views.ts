@@ -1,26 +1,14 @@
 import type {
+  AdminProductListItemView,
+  AdminProductView,
   BrandView,
   ProductCategory,
   ProductImageView,
   ProductListItemView,
-  ProductStatus,
   ProductView,
 } from '@kttf/shared/types';
 
 import type { Prisma } from '../../generated/prisma/client.js';
-
-/**
- * Строка списка товаров для администрирования: видно скрытые и
- * непроверенные. Поля `hidden` и `status` живут здесь, пока не переедут в
- * общий код схемой `adminProductListItemViewSchema`.
- */
-export type AdminProductListItemView = ProductListItemView & {
-  readonly hidden: boolean;
-  readonly status: ProductStatus;
-};
-
-/** Карточка товара для администрирования — со скрытием. Тоже до переезда в общий код. */
-export type AdminProductView = ProductView & { readonly hidden: boolean };
 
 /** Товар в общем каталоге: опубликован и не скрыт. */
 export const VISIBLE = {

@@ -1,4 +1,4 @@
-import { CLUB_IMAGE_MAX_BYTES } from '@kttf/shared/types';
+import { CATALOG_IMAGE_MAX_BYTES } from '@kttf/shared/types';
 import { Inject, Injectable } from '@nestjs/common';
 
 import { ENV, type Env } from '../../infra/config/env.js';
@@ -9,8 +9,8 @@ export const DEFAULT_IMPORT_HOSTS = ['rttf.ru'] as const;
 /** Сколько ждать одно фото: пачка импорта — до пятидесяти строк с фото у каждой. */
 const FETCH_TIMEOUT_MS = 15_000;
 
-/** Тот же потолок, что у загрузки картинки клуба вручную. */
-export const IMPORT_IMAGE_MAX_BYTES = CLUB_IMAGE_MAX_BYTES;
+/** Тот же потолок, что у загрузки фото товара вручную. */
+export const IMPORT_IMAGE_MAX_BYTES = CATALOG_IMAGE_MAX_BYTES;
 
 /** Переадресаций больше не бывает у честного сервера картинок. */
 const REDIRECTS_MAX = 3;

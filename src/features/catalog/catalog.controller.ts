@@ -1,6 +1,6 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import {
-  CLUB_IMAGE_MAX_BYTES,
+  CATALOG_IMAGE_MAX_BYTES,
   createBrandSchema,
   createProductSchema,
   importProductsSchema,
@@ -11,15 +11,20 @@ import {
   suggestProductsSchema,
   updateBrandSchema,
   updateProductSchema,
+  type AdminProductListItemView,
+  type AdminProductView,
   type BrandView,
   type CreateBrandInput,
   type CreateProductInput,
+  type ImportProductsInput,
   type ImportRowResult,
   type ListProductsQuery,
   type Page,
   type ProductImageView,
   type ProductListItemView,
   type ProductView,
+  type ReorderProductImagesInput,
+  type SetProductHiddenInput,
   type SuggestProductsQuery,
   type UpdateBrandInput,
   type UpdateProductInput,
@@ -50,7 +55,6 @@ import { RequireAdmin } from '../auth/admin.guard.js';
 import { CurrentUserId } from '../auth/jwt-auth.guard.js';
 import { CatalogAdminService } from './catalog-admin.service.js';
 import { CatalogImportService } from './catalog-import.service.js';
-import type { AdminProductListItemView, AdminProductView } from './catalog-views.js';
 import { CatalogService } from './catalog.service.js';
 
 const uuidParam = new ZodValidationPipe(z.uuid());
@@ -62,13 +66,13 @@ interface IncomingFile {
   readonly size: number;
 }
 
-/** Правило приёма картинки — то же, что у клуба: форма отказывает тому же файлу (ADR-036). */
+/** Правило приёма картинки — общее с формой: она отказывает тому же файлу (ADR-036). */
 function acceptedImage(file: IncomingFile | undefined): Buffer {
   if (file === undefined) {
     throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'File is missing', { field: 'file' });
   }
 
-  const rejection = rejectPhoto({ type: file.mimetype, size: file.size }, CLUB_IMAGE_MAX_BYTES);
+  const rejection = rejectPhoto({ type: file.mimetype, size: file.size }, CATALOG_IMAGE_MAX_BYTES);
 
   if (rejection !== null) {
     throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'File is not accepted', {
@@ -80,7 +84,7 @@ function acceptedImage(file: IncomingFile | undefined): Buffer {
   return file.buffer;
 }
 
-const imageUpload = FileInterceptor('file', { limits: { fileSize: CLUB_IMAGE_MAX_BYTES } });
+const imageUpload = FileInterceptor('file', { limits: { fileSize: CATALOG_IMAGE_MAX_BYTES } });
 
 /**
  * Каталог маркета — ADR-058, `docs/10` 4.1.
@@ -204,7 +208,7 @@ export class CatalogAdminController {
   async setHidden(
     @Param('id', uuidParam) id: string,
     @Body(new ZodValidationPipe(setProductHiddenSchema))
-    body: z.infer<typeof setProductHiddenSchema>,
+    body: SetProductHiddenInput,
   ): Promise<AdminProductView> {
     return this.admin.setProductHidden(id, body.hidden);
   }
@@ -223,7 +227,7 @@ export class CatalogAdminController {
   async reorderImages(
     @Param('id', uuidParam) id: string,
     @Body(new ZodValidationPipe(reorderProductImagesSchema))
-    body: z.infer<typeof reorderProductImagesSchema>,
+    body: ReorderProductImagesInput,
   ): Promise<ProductImageView[]> {
     return this.admin.reorderImages(id, body.ids);
   }
@@ -244,7 +248,7 @@ export class CatalogAdminController {
   @Post('import')
   @HttpCode(HttpStatus.OK)
   async import(
-    @Body(new ZodValidationPipe(importProductsSchema)) body: z.infer<typeof importProductsSchema>,
+    @Body(new ZodValidationPipe(importProductsSchema)) body: ImportProductsInput,
     @CurrentUserId() userId: string,
   ): Promise<ImportRowResult[]> {
     return this.importer.import(body.rows, userId);

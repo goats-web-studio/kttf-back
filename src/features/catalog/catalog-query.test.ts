@@ -1,6 +1,7 @@
-import { parseProductFilters } from '@kttf/shared/types';
+import { PRODUCT_CATEGORIES, parseProductFilters } from '@kttf/shared/types';
 import { describe, expect, it } from 'vitest';
 
+import { ProductCategory } from '../../generated/prisma/client.js';
 import {
   containsPattern,
   pickSlug,
@@ -10,6 +11,13 @@ import {
   searchTokens,
   suggestSql,
 } from './catalog-query.js';
+
+describe('категории', () => {
+  it('перечисление в базе совпадает с общим кодом', () => {
+    // Новая категория в kttf-shared без миграции упала бы на первой записи.
+    expect(Object.values(ProductCategory).sort()).toEqual([...PRODUCT_CATEGORIES].sort());
+  });
+});
 
 describe('адрес товара', () => {
   it('свободная основа — как есть', () => {

@@ -5,6 +5,8 @@ import {
   productAttrsSchema,
   productOptionsSchema,
   slugify,
+  type AdminProductListItemView,
+  type AdminProductView,
   type BrandView,
   type CreateBrandInput,
   type CreateProductInput,
@@ -35,8 +37,6 @@ import {
   toAdminProductView,
   toBrandView,
   toImageView,
-  type AdminProductListItemView,
-  type AdminProductView,
 } from './catalog-views.js';
 import { CatalogService } from './catalog.service.js';
 
