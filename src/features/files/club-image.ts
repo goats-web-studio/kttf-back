@@ -5,26 +5,39 @@ import type { UploadedImage } from '@kttf/shared/types';
 import type { ProcessedImage } from './image.service.js';
 import type { StorageService } from './storage.service.js';
 
+/** Папки картинок, пережатых сервером: у каждой свой набор ширин. */
+export type ImageFolder = 'clubs' | 'products' | 'brands';
+
 /**
- * Кладёт обработанную картинку клуба: основной файл — самая широкая, рядом
+ * Кладёт обработанную картинку: основной файл — самая широкая, рядом
  * варианты с суффиксом ширины (`clubs/<uuid>-480.webp`). Логотип, обложка,
- * фото галереи и обложка видео лежат одинаково — ADR-055.
+ * фото галереи и обложка видео клуба лежат одинаково — ADR-055; фото товара
+ * и логотип производителя — так же, своими ширинами (ADR-058).
  */
-export async function storeClubImage(
+export async function storeImage(
   storage: StorageService,
+  folder: ImageFolder,
   image: ProcessedImage,
 ): Promise<UploadedImage> {
   const id = randomUUID();
+  const main = Math.max(...image.variants.keys());
 
   await Promise.all(
     [...image.variants].map(([width, body]) =>
       storage.putAt(
-        width === 1600 ? `clubs/${id}.webp` : `clubs/${id}-${String(width)}.webp`,
+        width === main ? `${folder}/${id}.webp` : `${folder}/${id}-${String(width)}.webp`,
         body,
         'image/webp',
       ),
     ),
   );
 
-  return { url: `/api/v1/files/clubs/${id}.webp`, width: image.width, height: image.height };
+  return { url: `/api/v1/files/${folder}/${id}.webp`, width: image.width, height: image.height };
+}
+
+export async function storeClubImage(
+  storage: StorageService,
+  image: ProcessedImage,
+): Promise<UploadedImage> {
+  return storeImage(storage, 'clubs', image);
 }

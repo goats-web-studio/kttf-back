@@ -1,5 +1,3 @@
-import { createHmac } from 'node:crypto';
-
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import {
   CLUB_UTC_OFFSET_MIN,
@@ -10,6 +8,7 @@ import {
 } from '@kttf/shared/types';
 import { Inject, Injectable } from '@nestjs/common';
 
+import { RepeatFilter } from '../../common/repeat-filter.js';
 import { ENV, type Env } from '../../infra/config/env.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
 
@@ -24,44 +23,27 @@ const COLUMNS = {
   ROUTE: 'routeClicks',
 } as const satisfies Record<ClubEventKind, string>;
 
-/**
- * Окно, в котором повтор того же события с того же адреса не считается.
- *
- * Полчаса: человек, который перечитывает страницу или дважды нажал
- * «Позвонить», — это одно обращение, а не два.
- */
-export const REPEAT_WINDOW_MS = 30 * 60 * 1000;
-
-/** Сколько отметок держит память, прежде чем выбросить истёкшие. */
-const SEEN_MAX = 50_000;
-
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Статистика страницы клуба — ADR-055, решение 4.
  *
  * Дневные счётчики без персональных данных: ни адреса, ни cookie в базу не
- * попадают. Повторы отсекаются в памяти экземпляра по HMAC от адреса —
- * после перезапуска API повтор посчитается ещё раз, и это дешевле, чем
- * хранить отметки. Это число для клуба, а не для расчётов: точность «плюс-
- * минус один просмотр» его устраивает.
+ * попадают. Повторы отсекаются в памяти экземпляра — `RepeatFilter`.
  */
 @Injectable()
 export class ClubStatsService {
-  private readonly seen = new Map<string, number>();
+  private readonly repeats: RepeatFilter;
 
   constructor(
     private readonly prisma: PrismaService,
-    @Inject(ENV) private readonly env: Env,
-  ) {}
+    @Inject(ENV) env: Env,
+  ) {
+    this.repeats = new RepeatFilter(env.JWT_SECRET);
+  }
 
   async record(clubId: string, event: ClubEventInput, ip: string, now = new Date()): Promise<void> {
-    const key = `${this.hashIp(ip)}:${clubId}:${event.kind}`;
-    const last = this.seen.get(key);
-
-    if (last !== undefined && now.getTime() - last < REPEAT_WINDOW_MS) return;
-
-    this.remember(key, now.getTime());
+    if (this.repeats.isRepeat(ip, `club:${clubId}:${event.kind}`, now)) return;
 
     const club = await this.prisma.club.findUnique({ where: { id: clubId }, select: { id: true } });
 
@@ -118,25 +100,6 @@ export class ClubStatsService {
         route: row.routeClicks,
       })),
     };
-  }
-
-  private remember(key: string, at: number): void {
-    if (this.seen.size >= SEEN_MAX) {
-      for (const [stale, time] of this.seen) {
-        if (at - time >= REPEAT_WINDOW_MS) this.seen.delete(stale);
-      }
-    }
-
-    // Память забита свежими отметками — значит, по сайту идёт поток, и
-    // точность повторов уступает памяти процесса.
-    if (this.seen.size >= SEEN_MAX) this.seen.clear();
-
-    this.seen.set(key, at);
-  }
-
-  /** HMAC, а не голый адрес: даже в памяти адрес — персональные данные (ADR-047). */
-  private hashIp(ip: string): string {
-    return createHmac('sha256', this.env.JWT_SECRET).update(ip).digest('base64url');
   }
 }
 

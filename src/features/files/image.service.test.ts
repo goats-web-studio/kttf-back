@@ -1,3 +1,4 @@
+import { CATALOG_IMAGE_WIDTHS } from '@kttf/shared/types';
 import sharp from 'sharp';
 import { describe, expect, it } from 'vitest';
 
@@ -47,5 +48,28 @@ describe('картинка клуба', () => {
       code: 'VALIDATION_FAILED',
       details: { reason: 'DECODE' },
     });
+  });
+});
+
+describe('картинка каталога', () => {
+  it('свои ширины, прозрачный фон остаётся прозрачным', async () => {
+    const cutout = await sharp({
+      create: {
+        width: 2000,
+        height: 1000,
+        channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      },
+    })
+      .png()
+      .toBuffer();
+
+    const result = await service.process(cutout, CATALOG_IMAGE_WIDTHS);
+
+    expect([...result.variants.keys()]).toEqual([240, 640, 1280]);
+    expect(result).toMatchObject({ width: 1280, height: 640 });
+
+    const meta = await sharp(result.variants.get(1280)).metadata();
+    expect(meta).toMatchObject({ format: 'webp', hasAlpha: true });
   });
 });

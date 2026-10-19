@@ -1,5 +1,5 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
-import { CLUB_IMAGE_WIDTHS, type ClubImageWidth } from '@kttf/shared/types';
+import { CLUB_IMAGE_WIDTHS } from '@kttf/shared/types';
 import { Injectable } from '@nestjs/common';
 import sharp from 'sharp';
 
@@ -17,15 +17,16 @@ export interface ProcessedImage {
   readonly width: number;
   readonly height: number;
   /** Варианты по ширине; самый широкий — основной файл. */
-  readonly variants: ReadonlyMap<ClubImageWidth, Buffer>;
+  readonly variants: ReadonlyMap<number, Buffer>;
 }
 
 /**
- * Обработка картинок клуба — ADR-055, `docs/09` 6.
+ * Обработка картинок клуба — ADR-055, `docs/09` 6 — и каталога маркета (ADR-058).
  *
  * Поворот по EXIF, затем EXIF выбрасывается целиком: в снимке с телефона
  * лежат координаты места съёмки, а это персональные данные того, кто снимал.
- * `sharp` метаданные не переносит, пока его об этом не попросить.
+ * `sharp` метаданные не переносит, пока его об этом не попросить. Прозрачность
+ * WebP сохраняет: у фото товара и логотипа фон обычно прозрачный.
  */
 @Injectable()
 export class ImageService {
@@ -49,14 +50,18 @@ export class ImageService {
     return this.process(cropped);
   }
 
-  async process(input: Buffer): Promise<ProcessedImage> {
+  /** Ширины — по возрастанию: размеры основного файла берутся с последней. */
+  async process(
+    input: Buffer,
+    widths: readonly number[] = CLUB_IMAGE_WIDTHS,
+  ): Promise<ProcessedImage> {
     const source = sharp(input, { limitInputPixels: IMAGE_MAX_INPUT_PIXELS, failOn: 'error' });
 
     try {
-      const variants = new Map<ClubImageWidth, Buffer>();
+      const variants = new Map<number, Buffer>();
       let size = { width: 0, height: 0 };
 
-      for (const width of CLUB_IMAGE_WIDTHS) {
+      for (const width of widths) {
         const { data, info } = await source
           .clone()
           .rotate()

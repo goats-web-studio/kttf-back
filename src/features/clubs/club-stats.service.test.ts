@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { REPEAT_WINDOW_MS } from '../../common/repeat-filter.js';
 import type { Env } from '../../infra/config/env.js';
 import type { PrismaService } from '../../infra/prisma/prisma.service.js';
-import { REPEAT_WINDOW_MS, ClubStatsService, clubDate } from './club-stats.service.js';
+import { ClubStatsService, clubDate } from './club-stats.service.js';
 
 function makePrisma() {
   return {
