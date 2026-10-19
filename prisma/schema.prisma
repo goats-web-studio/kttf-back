@@ -113,6 +113,17 @@ model Player {
   rubberBackhand String?
   bio            String?
 
+  // Инвентарь из каталога маркета — ADR-058, docs/10 4.2. Строки выше
+  // остаются для того, чего в каталоге нет. Основание — товар BLADE,
+  // накладки — RUBBER: категорию сверяет сервер. Товар удалён — ссылка
+  // стирается, строка остаётся.
+  bladeProductId          String?
+  bladeProduct            Product? @relation("PlayerBlade", fields: [bladeProductId], references: [id], onDelete: SetNull)
+  rubberForehandProductId String?
+  rubberForehandProduct   Product? @relation("PlayerRubberForehand", fields: [rubberForehandProductId], references: [id], onDelete: SetNull)
+  rubberBackhandProductId String?
+  rubberBackhandProduct   Product? @relation("PlayerRubberBackhand", fields: [rubberBackhandProductId], references: [id], onDelete: SetNull)
+
   // Тренер задаётся либо выбором из уже заведённых игроков, либо строкой,
   // но не обоими сразу. Роли тренера в продукте ещё нет: «тренер» — это тот,
   // на кого сослались, и список берётся из самих данных.
@@ -139,6 +150,10 @@ model Player {
   // Список тренеров — это выборка distinct по ссылке. Без индекса она
   // прочитала бы всю таблицу игроков ради выпадающего списка в форме.
   @@index([coachPlayerId])
+  // «Кто играет» — список игроков с фильтром по товару (ADR-058).
+  @@index([bladeProductId])
+  @@index([rubberForehandProductId])
+  @@index([rubberBackhandProductId])
 }
 
 enum Gender {
@@ -246,6 +261,7 @@ model Club {
   stats        ClubStatDaily[]
   posts        ClubPost[]
   media        ClubMedia[]
+  tables       ClubTable[]
 
   @@index([cityId])
 }
@@ -471,31 +487,36 @@ model Brand {
 }
 
 model Product {
-  id          String          @id @default(uuid())
-  category    ProductCategory
-  brandId     String
-  brand       Brand           @relation(fields: [brandId], references: [id])
+  id                    String          @id @default(uuid())
+  category              ProductCategory
+  brandId               String
+  brand                 Brand           @relation(fields: [brandId], references: [id])
   // «E. Lebesson» — без слова категории и производителя
-  name        String
-  slug        String          @unique
+  name                  String
+  slug                  String          @unique
   // Русские написания для поиска: «Лебессон»
-  aliases     String[]        @default([])
-  description String? // простой текст
+  aliases               String[]        @default([])
+  description           String? // простой текст
   // Характеристики и оси вариантов. Схема — по категории, PRODUCT_ATTRIBUTES
   // в kttf-shared: база её не знает, проверяет сервер
-  attrs       Json            @default("{}")
-  options     Json            @default("{}")
-  status      ProductStatus   @default(PUBLISHED)
+  attrs                 Json            @default("{}")
+  options               Json            @default("{}")
+  status                ProductStatus   @default(PUBLISHED)
   // Порядок «популярные»: просмотры, при импорте — начальное значение RTTF
-  popularity  Int             @default(0)
+  popularity            Int             @default(0)
   // Товар RTTF — ключ повторного импорта
-  rttfId      Int?            @unique
-  createdById String?
-  createdBy   User?           @relation(fields: [createdById], references: [id], onDelete: SetNull)
-  createdAt   DateTime        @default(now())
-  updatedAt   DateTime        @updatedAt
-  hiddenAt    DateTime?
-  images      ProductImage[]
+  rttfId                Int?            @unique
+  createdById           String?
+  createdBy             User?           @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+  hiddenAt              DateTime?
+  images                ProductImage[]
+  // Инвентарь игроков и столы клубов — M1.2
+  bladePlayers          Player[]        @relation("PlayerBlade")
+  rubberForehandPlayers Player[]        @relation("PlayerRubberForehand")
+  rubberBackhandPlayers Player[]        @relation("PlayerRubberBackhand")
+  clubTables            ClubTable[]
 
   @@index([category, status, hiddenAt])
   @@index([brandId])
@@ -537,6 +558,21 @@ model ProductImage {
   createdAt DateTime @default(now())
 
   @@index([productId, sortOrder])
+}
+
+// Модели столов клуба из каталога маркета — ADR-058, docs/10 4.2. Правятся
+// списком целиком, как часы и цены. Сумма может не совпасть с tableCount:
+// столы без известной модели в список не попадают.
+model ClubTable {
+  clubId    String
+  productId String
+  count     Int
+  club      Club    @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@id([clubId, productId])
+  // «Где стоит» — клубы со столом этой модели.
+  @@index([productId])
 }
 
 // ============ Турниры ============

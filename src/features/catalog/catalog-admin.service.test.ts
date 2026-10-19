@@ -23,6 +23,7 @@ const product = {
   createdAt: new Date('2026-10-20T10:00:00.000Z'),
   updatedAt: new Date('2026-10-20T10:00:00.000Z'),
   images: [],
+  _count: { clubTables: 0 },
 };
 
 const processed = {
@@ -69,6 +70,7 @@ function makeDeps() {
       delete: vi.fn().mockResolvedValue({}),
     },
     $transaction: vi.fn().mockResolvedValue([]),
+    $queryRaw: vi.fn().mockResolvedValue([]),
   };
   const images = { process: vi.fn().mockResolvedValue(processed), processVideoCover: vi.fn() };
   const storage = { putAt: vi.fn().mockResolvedValue(undefined) };

@@ -32,6 +32,7 @@ const clubRow = {
   hiddenAt: null,
   hours: [],
   prices: [],
+  tables: [],
   createdAt: new Date('2026-08-29T00:00:00.000Z'),
 };
 
@@ -49,6 +50,11 @@ function makePrisma() {
       deleteMany: vi.fn().mockReturnValue('delete-prices'),
       createMany: vi.fn().mockReturnValue('create-prices'),
     },
+    clubTable: {
+      deleteMany: vi.fn().mockReturnValue('delete-tables'),
+      createMany: vi.fn().mockReturnValue('create-tables'),
+    },
+    product: { findMany: vi.fn().mockResolvedValue([]) },
     match: { findMany: vi.fn().mockResolvedValue([]) },
     tournament: {
       count: vi.fn().mockResolvedValue(0),
@@ -116,6 +122,77 @@ describe('часы и прайс', () => {
       code: 'NOT_FOUND',
     });
     expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+});
+
+describe('столы клуба — ADR-058', () => {
+  const TABLE = '33333333-3333-4333-8333-333333333333';
+  const OTHER = '44444444-4444-4444-8444-444444444444';
+
+  it('список заменяется целиком одной транзакцией, страница становится свежей', async () => {
+    prisma.product.findMany.mockResolvedValue([{ id: TABLE }]);
+
+    await service.setTables('club-1', { tables: [{ productId: TABLE, count: 8 }] });
+
+    expect(prisma.product.findMany.mock.calls[0]?.[0]).toMatchObject({
+      where: { category: 'TABLE', status: 'PUBLISHED', hiddenAt: null },
+    });
+    expect(prisma.$transaction).toHaveBeenCalledWith([
+      'delete-tables',
+      'create-tables',
+      expect.anything(),
+    ]);
+    expect(prisma.clubTable.createMany).toHaveBeenCalledWith({
+      data: [{ clubId: 'club-1', productId: TABLE, count: 8 }],
+    });
+    expect(prisma.club.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { profileReviewedAt: expect.any(Date) as Date } }),
+    );
+  });
+
+  it('не стол каталога — отказ с номером строки, до записи', async () => {
+    prisma.product.findMany.mockResolvedValue([{ id: TABLE }]);
+
+    await expect(
+      service.setTables('club-1', {
+        tables: [
+          { productId: TABLE, count: 4 },
+          { productId: OTHER, count: 2 },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+      details: { field: 'tables.1.productId' },
+    });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('в странице — только видимые модели', async () => {
+    const product = {
+      id: TABLE,
+      slug: 'stiga-expert',
+      category: 'TABLE' as const,
+      name: 'Expert',
+      status: 'PUBLISHED' as const,
+      hiddenAt: null,
+      brand: { id: 'brand-1', name: 'Stiga', slug: 'stiga' },
+      images: [],
+    };
+    prisma.club.update.mockResolvedValue({
+      ...clubRow,
+      tables: [
+        { count: 8, product },
+        { count: 2, product: { ...product, id: OTHER, hiddenAt: new Date() } },
+      ],
+    });
+
+    const club = await service.markReviewed('club-1');
+
+    expect(club.tables).toHaveLength(1);
+    expect(club.tables[0]).toMatchObject({
+      product: { slug: 'stiga-expert', playerCount: 0 },
+      count: 8,
+    });
   });
 });
 

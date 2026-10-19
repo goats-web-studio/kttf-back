@@ -197,6 +197,12 @@ describe('ведение каталога', () => {
     ['PUT', `/admin/catalog/products/${PRODUCT_ID}/images/order`, { ids: [IMAGE_ID] }],
     ['DELETE', `/admin/catalog/products/${PRODUCT_ID}/images/${IMAGE_ID}`, undefined],
     ['POST', '/admin/catalog/import', { rows: [{}] }],
+    ['GET', '/admin/catalog/equipment-texts?kind=BLADE', undefined],
+    [
+      'POST',
+      '/admin/catalog/equipment-texts/link',
+      { kind: 'BLADE', text: 'Viscaria', productId: PRODUCT_ID },
+    ],
   ] as const;
 
   it.each(routes)('%s %s без токена — 401', async (method, path, body) => {

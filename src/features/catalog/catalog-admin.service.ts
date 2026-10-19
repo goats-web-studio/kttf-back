@@ -26,6 +26,7 @@ import { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { storeImage } from '../files/club-image.js';
 import { ImageService } from '../files/image.service.js';
 import { StorageService } from '../files/storage.service.js';
+import { countPlayers } from './catalog-players.js';
 import { pickSlug } from './catalog-query.js';
 import {
   VISIBLE,
@@ -37,6 +38,7 @@ import {
   toAdminProductView,
   toBrandView,
   toImageView,
+  type ProductRecord,
 } from './catalog-views.js';
 import { CatalogService } from './catalog.service.js';
 
@@ -172,9 +174,13 @@ export class CatalogAdminService {
     query: ListProductsQuery,
     raw: Readonly<Record<string, unknown>>,
   ): Promise<Page<AdminProductListItemView>> {
-    const { rows, total } = await this.catalog.findPage(query, raw, true);
+    const { rows, total, players } = await this.catalog.findPage(query, raw, true);
 
-    return pageOf(rows.map(toAdminListItemView), total, query);
+    return pageOf(
+      rows.map((row) => toAdminListItemView(row, players.get(row.id) ?? 0)),
+      total,
+      query,
+    );
   }
 
   async findProduct(id: string): Promise<AdminProductView> {
@@ -184,7 +190,7 @@ export class CatalogAdminService {
       throw new AppError(ERROR_CODES.NOT_FOUND, 'Product not found', { id });
     }
 
-    return toAdminProductView(product);
+    return this.view(product);
   }
 
   async createProduct(input: CreateProductInput, userId: string): Promise<AdminProductView> {
@@ -204,7 +210,7 @@ export class CatalogAdminService {
       select: productFields,
     });
 
-    return toAdminProductView(product);
+    return this.view(product);
   }
 
   /**
@@ -243,19 +249,25 @@ export class CatalogAdminService {
       select: productFields,
     });
 
-    return toAdminProductView(product);
+    return this.view(product);
   }
 
   async setProductHidden(id: string, hidden: boolean): Promise<AdminProductView> {
     await this.assertProduct(id);
 
-    return toAdminProductView(
+    return this.view(
       await this.prisma.product.update({
         where: { id },
         data: { hiddenAt: hidden ? new Date() : null },
         select: productFields,
       }),
     );
+  }
+
+  private async view(product: ProductRecord): Promise<AdminProductView> {
+    const players = await countPlayers(this.prisma, [product.id]);
+
+    return toAdminProductView(product, players.get(product.id) ?? 0);
   }
 
   /** Свободный адрес товара: `tibhar-e-lebesson`, занят — `tibhar-e-lebesson-2`. */

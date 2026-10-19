@@ -4,6 +4,8 @@ import {
   createBrandSchema,
   createProductSchema,
   importProductsSchema,
+  linkEquipmentTextSchema,
+  listEquipmentTextsSchema,
   listProductsSchema,
   rejectPhoto,
   reorderProductImagesSchema,
@@ -16,8 +18,12 @@ import {
   type BrandView,
   type CreateBrandInput,
   type CreateProductInput,
+  type EquipmentTextView,
   type ImportProductsInput,
   type ImportRowResult,
+  type LinkEquipmentTextInput,
+  type LinkEquipmentTextResult,
+  type ListEquipmentTextsQuery,
   type ListProductsQuery,
   type Page,
   type ProductImageView,
@@ -54,6 +60,7 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { RequireAdmin } from '../auth/admin.guard.js';
 import { CurrentUserId } from '../auth/jwt-auth.guard.js';
 import { CatalogAdminService } from './catalog-admin.service.js';
+import { CatalogEquipmentService } from './catalog-equipment.service.js';
 import { CatalogImportService } from './catalog-import.service.js';
 import { CatalogService } from './catalog.service.js';
 
@@ -143,6 +150,7 @@ export class CatalogAdminController {
   constructor(
     private readonly admin: CatalogAdminService,
     private readonly importer: CatalogImportService,
+    private readonly equipment: CatalogEquipmentService,
   ) {}
 
   @Get('brands')
@@ -252,5 +260,22 @@ export class CatalogAdminController {
     @CurrentUserId() userId: string,
   ): Promise<ImportRowResult[]> {
     return this.importer.import(body.rows, userId);
+  }
+
+  /** Строки инвентаря игроков без товара каталога — самые частые сверху (`docs/10` 4.2). */
+  @Get('equipment-texts')
+  async listEquipmentTexts(
+    @Query(new ZodValidationPipe(listEquipmentTextsSchema)) query: ListEquipmentTextsQuery,
+  ): Promise<Page<EquipmentTextView>> {
+    return this.equipment.listTexts(query);
+  }
+
+  /** Связать строку с товаром у всех, кто так написал. */
+  @Post('equipment-texts/link')
+  @HttpCode(HttpStatus.OK)
+  async linkEquipmentText(
+    @Body(new ZodValidationPipe(linkEquipmentTextSchema)) body: LinkEquipmentTextInput,
+  ): Promise<LinkEquipmentTextResult> {
+    return this.equipment.link(body);
   }
 }

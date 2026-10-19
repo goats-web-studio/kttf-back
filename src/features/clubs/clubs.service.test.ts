@@ -32,6 +32,7 @@ const club = {
   hiddenAt: null,
   hours: [],
   prices: [],
+  tables: [],
   createdAt: new Date('2026-08-29T00:00:00.000Z'),
 };
 

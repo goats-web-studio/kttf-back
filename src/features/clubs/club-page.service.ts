@@ -6,10 +6,12 @@ import {
   type ClubView,
   type SetClubHoursInput,
   type SetClubPricesInput,
+  type SetClubTablesInput,
 } from '@kttf/shared/types';
 import { Injectable } from '@nestjs/common';
 
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
+import { VISIBLE } from '../catalog/catalog-views.js';
 import { OCCUPYING_STATUSES } from '../tournaments/tournaments.select.js';
 import { TournamentsService } from '../tournaments/tournaments.service.js';
 import { clubFields, toClubView } from './club-view.js';
@@ -60,6 +62,38 @@ export class ClubPageService {
           note: price.note ?? null,
           sortOrder: index,
         })),
+      }),
+      this.touch(clubId),
+    ]);
+
+    return toClubView(club);
+  }
+
+  /**
+   * Столы клуба — модели из каталога маркета с числом столов (ADR-058).
+   * Каждая модель — опубликованный и не скрытый товар категории TABLE.
+   */
+  async setTables(clubId: string, input: SetClubTablesInput): Promise<ClubView> {
+    await this.assertExists(clubId);
+
+    const ids = input.tables.map((table) => table.productId);
+    const tables = await this.prisma.product.findMany({
+      where: { id: { in: ids }, category: 'TABLE', ...VISIBLE },
+      select: { id: true },
+    });
+    const known = new Set(tables.map((product) => product.id));
+    const unknown = ids.findIndex((id) => !known.has(id));
+
+    if (unknown !== -1) {
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Not a table from the catalog', {
+        field: `tables.${String(unknown)}.productId`,
+      });
+    }
+
+    const [, , club] = await this.prisma.$transaction([
+      this.prisma.clubTable.deleteMany({ where: { clubId } }),
+      this.prisma.clubTable.createMany({
+        data: input.tables.map((table) => ({ clubId, ...table })),
       }),
       this.touch(clubId),
     ]);

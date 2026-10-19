@@ -33,6 +33,7 @@ const CLUB_ID = '11111111-1111-4111-8111-111111111111';
 const USER_ID = '22222222-2222-4222-8222-222222222222';
 const OTHER_ID = '33333333-3333-4333-8333-333333333333';
 const CITY_ID = '55555555-5555-4555-8555-555555555555';
+const TABLE_ID = '66666666-6666-4666-8666-666666666666';
 
 const club = {
   id: CLUB_ID,
@@ -62,6 +63,7 @@ const club = {
   hiddenAt: null,
   hours: [],
   prices: [],
+  tables: [],
   createdAt: new Date('2026-08-29T00:00:00.000Z'),
 };
 
@@ -109,6 +111,9 @@ function makePrisma() {
         blade: null,
         rubberForehand: null,
         rubberBackhand: null,
+        bladeProduct: null,
+        rubberForehandProduct: null,
+        rubberBackhandProduct: null,
         bio: null,
         coachPlayerId: null,
         coachName: null,
@@ -119,6 +124,8 @@ function makePrisma() {
     },
     user: { findUnique: vi.fn().mockResolvedValue({ id: USER_ID }) },
     city: { findFirst: vi.fn().mockResolvedValue({ id: CITY_ID }) },
+    product: { findMany: vi.fn().mockResolvedValue([{ id: TABLE_ID }]) },
+    clubTable: { deleteMany: vi.fn(), createMany: vi.fn() },
     $transaction: vi.fn(),
   };
 
@@ -279,6 +286,49 @@ describe('изменение клуба', () => {
     expect(
       (await call('PATCH', `/clubs/${CLUB_ID}`, { body: { name: null }, auth: true })).status,
     ).toBe(400);
+  });
+});
+
+describe('столы клуба — ADR-058', () => {
+  const body = { tables: [{ productId: TABLE_ID, count: 8 }] };
+
+  it('без токена — 401, без роли — 403', async () => {
+    expect((await call('PUT', `/clubs/${CLUB_ID}/tables`, { body })).status).toBe(401);
+    expect((await call('PUT', `/clubs/${CLUB_ID}/tables`, { body, auth: true })).status).toBe(403);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('организатору — можно, список заменяется', async () => {
+    prisma.clubMember.findUnique.mockResolvedValue({ role: 'ORGANIZER' });
+    prisma.$transaction.mockResolvedValue([{}, {}, club]);
+
+    expect((await call('PUT', `/clubs/${CLUB_ID}/tables`, { body, auth: true })).status).toBe(200);
+    expect(prisma.$transaction).toHaveBeenCalledOnce();
+  });
+
+  it('повтор модели и ноль столов отвергаются схемой', async () => {
+    prisma.clubMember.findUnique.mockResolvedValue({ role: 'OWNER' });
+
+    const repeated = { tables: [body.tables[0], body.tables[0]] };
+    expect(
+      (await call('PUT', `/clubs/${CLUB_ID}/tables`, { body: repeated, auth: true })).status,
+    ).toBe(400);
+    expect(
+      (
+        await call('PUT', `/clubs/${CLUB_ID}/tables`, {
+          body: { tables: [{ productId: TABLE_ID, count: 0 }] },
+          auth: true,
+        })
+      ).status,
+    ).toBe(400);
+  });
+
+  it('«Где стоит» — фильтр списка клубов', async () => {
+    await call('GET', `/clubs?tableProductId=${TABLE_ID}`);
+
+    expect(prisma.club.findMany.mock.calls[0]?.[0]).toMatchObject({
+      where: { tables: { some: { productId: TABLE_ID } } },
+    });
   });
 });
 

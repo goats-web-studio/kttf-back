@@ -53,6 +53,10 @@ export class ClubsService {
         ? {}
         : { name: { contains: query.search, mode: 'insensitive' as const } }),
       ...(query.amenities === undefined ? {} : { amenities: { hasEvery: query.amenities } }),
+      // «Где стоит» — клубы со столом этой модели (ADR-058).
+      ...(query.tableProductId === undefined
+        ? {}
+        : { tables: { some: { productId: query.tableProductId } } }),
     };
 
     const candidates = await this.prisma.club.findMany({

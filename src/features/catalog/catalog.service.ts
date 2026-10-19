@@ -23,6 +23,7 @@ import {
   searchTokens,
   suggestSql,
 } from './catalog-query.js';
+import { countPlayers } from './catalog-players.js';
 import {
   VISIBLE,
   brandFields,
@@ -31,9 +32,8 @@ import {
   toBrandView,
   toListItemView,
   toProductView,
+  type ListItemRecord,
 } from './catalog-views.js';
-
-type ListItemRecord = Prisma.ProductGetPayload<{ select: typeof listItemFields }>;
 
 type CategoryCounts = Partial<Record<ProductCategory, number>>;
 
@@ -84,22 +84,27 @@ export class CatalogService {
     query: ListProductsQuery,
     raw: Readonly<Record<string, unknown>>,
   ): Promise<Page<ProductListItemView>> {
-    const { rows, total } = await this.findPage(query, raw, false);
+    const { rows, total, players } = await this.findPage(query, raw, false);
 
-    return pageOf(rows.map(toListItemView), total, query);
+    return pageOf(
+      rows.map((row) => toListItemView(row, players.get(row.id) ?? 0)),
+      total,
+      query,
+    );
   }
 
   /**
    * Страница списка — общая для витрины и администрирования.
    *
-   * Без поиска — два запроса: число и страница. С поиском — ещё один
-   * впереди: идентификаторы найденного (`searchIdsSql`).
+   * Без поиска — два запроса: число и страница, и третий — игроки товаров
+   * страницы одной группировкой. С поиском — ещё один впереди:
+   * идентификаторы найденного (`searchIdsSql`).
    */
   async findPage(
     query: ListProductsQuery,
     raw: Readonly<Record<string, unknown>>,
     withHidden: boolean,
-  ): Promise<{ rows: ListItemRecord[]; total: number }> {
+  ): Promise<{ rows: ListItemRecord[]; total: number; players: Map<string, number> }> {
     const filters = query.category === undefined ? null : parseProductFilters(query.category, raw);
     let ids: string[] | undefined;
 
@@ -114,6 +119,9 @@ export class CatalogService {
       withHidden,
       ...(ids === undefined ? {} : { ids }),
     });
+
+    if (query.sort === 'players') return this.findPageByPlayers(query, where);
+
     const [rows, total] = await Promise.all([
       this.prisma.product.findMany({
         where,
@@ -124,8 +132,82 @@ export class CatalogService {
       }),
       this.prisma.product.count({ where }),
     ]);
+    const players = await countPlayers(
+      this.prisma,
+      rows.map((row) => row.id),
+      query,
+    );
 
-    return { rows, total };
+    return { rows, total, players };
+  }
+
+  /**
+   * «Выбор игроков» — по числу игроков в границах рейтинга, затем по
+   * популярности и названию.
+   *
+   * Число игроков — агрегат по другой таблице, и `orderBy` Prisma его не
+   * выражает. Товаров, которыми кто-то играет, — сотни, а не весь каталог:
+   * они считаются одной группировкой и упорядочиваются в памяти. Остальные
+   * идут за ними обычной выборкой с тем же условием — страница на стыке
+   * берёт хвост первых и начало вторых.
+   */
+  private async findPageByPlayers(
+    query: ListProductsQuery,
+    where: Prisma.ProductWhereInput,
+  ): Promise<{ rows: ListItemRecord[]; total: number; players: Map<string, number> }> {
+    const players = await countPlayers(this.prisma, null, query);
+    const playedIds = [...players.keys()];
+
+    const [played, total] = await Promise.all([
+      playedIds.length === 0
+        ? Promise.resolve([])
+        : this.prisma.product.findMany({
+            where: { AND: [where, { id: { in: playedIds } }] },
+            select: { id: true, popularity: true, name: true },
+          }),
+      this.prisma.product.count({ where }),
+    ]);
+
+    const ranked = played
+      .sort(
+        (a, b) =>
+          (players.get(b.id) ?? 0) - (players.get(a.id) ?? 0) ||
+          b.popularity - a.popularity ||
+          a.name.localeCompare(b.name) ||
+          a.id.localeCompare(b.id),
+      )
+      .map((product) => product.id);
+
+    const skip = skipOf(query);
+    const head = ranked.slice(skip, skip + query.limit);
+    const restTake = query.limit - head.length;
+    const rest =
+      restTake === 0
+        ? []
+        : await this.prisma.product.findMany({
+            where: { AND: [where, { id: { notIn: playedIds } }] },
+            select: { id: true },
+            orderBy: productOrder('players'),
+            skip: Math.max(0, skip - ranked.length),
+            take: restTake,
+          });
+
+    const pageIds = [...head, ...rest.map((product) => product.id)];
+    const rows = await this.prisma.product.findMany({
+      where: { id: { in: pageIds } },
+      select: listItemFields,
+    });
+    const byId = new Map(rows.map((row) => [row.id, row]));
+
+    return {
+      rows: pageIds.flatMap((id) => {
+        const row = byId.get(id);
+
+        return row === undefined ? [] : [row];
+      }),
+      total,
+      players,
+    };
   }
 
   /** Подсказки при вводе — в порядке похожести. */
@@ -141,11 +223,15 @@ export class CatalogService {
       select: listItemFields,
     });
     const byId = new Map(rows.map((row) => [row.id, row]));
+    const players = await countPlayers(
+      this.prisma,
+      rows.map((row) => row.id),
+    );
 
     return found.flatMap((row) => {
       const product = byId.get(row.id);
 
-      return product === undefined ? [] : [toListItemView(product)];
+      return product === undefined ? [] : [toListItemView(product, players.get(row.id) ?? 0)];
     });
   }
 
@@ -159,7 +245,9 @@ export class CatalogService {
       throw new AppError(ERROR_CODES.NOT_FOUND, 'Product not found', { slug });
     }
 
-    return toProductView(product);
+    const players = await countPlayers(this.prisma, [product.id]);
+
+    return toProductView(product, players.get(product.id) ?? 0);
   }
 
   /**

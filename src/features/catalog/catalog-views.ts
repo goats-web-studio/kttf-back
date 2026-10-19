@@ -60,12 +60,14 @@ export const productFields = {
   createdAt: true,
   updatedAt: true,
   images: { select: imageFields, orderBy: [...imageOrder] },
+  // «Где стоит»: клубы со столом этой модели, без скрытых.
+  _count: { select: { clubTables: { where: { club: { hiddenAt: null } } } } },
 } as const satisfies Prisma.ProductSelect;
 
 type BrandRecord = Prisma.BrandGetPayload<{ select: typeof brandFields }>;
 type ImageRecord = Prisma.ProductImageGetPayload<{ select: typeof imageFields }>;
-type ListItemRecord = Prisma.ProductGetPayload<{ select: typeof listItemFields }>;
-type ProductRecord = Prisma.ProductGetPayload<{ select: typeof productFields }>;
+export type ListItemRecord = Prisma.ProductGetPayload<{ select: typeof listItemFields }>;
+export type ProductRecord = Prisma.ProductGetPayload<{ select: typeof productFields }>;
 
 export function toBrandView(
   brand: BrandRecord,
@@ -84,7 +86,13 @@ export function toImageView(image: ImageRecord): ProductImageView {
   };
 }
 
-export function toListItemView(product: ListItemRecord): ProductListItemView {
+/** Виден ли товар в общем каталоге — для мест, где он приходит связью, а не выборкой. */
+export function isVisible(product: { status: string; hiddenAt: Date | null }): boolean {
+  return product.status === 'PUBLISHED' && product.hiddenAt === null;
+}
+
+/** `playerCount` считается отдельно, одним запросом на страницу (`countPlayers`). */
+export function toListItemView(product: ListItemRecord, playerCount: number): ProductListItemView {
   const first = product.images[0];
 
   return {
@@ -97,14 +105,22 @@ export function toListItemView(product: ListItemRecord): ProductListItemView {
       first === undefined
         ? null
         : { id: first.id, url: first.imageUrl, width: first.width, height: first.height },
+    playerCount,
   };
 }
 
-export function toAdminListItemView(product: ListItemRecord): AdminProductListItemView {
-  return { ...toListItemView(product), hidden: product.hiddenAt !== null, status: product.status };
+export function toAdminListItemView(
+  product: ListItemRecord,
+  playerCount: number,
+): AdminProductListItemView {
+  return {
+    ...toListItemView(product, playerCount),
+    hidden: product.hiddenAt !== null,
+    status: product.status,
+  };
 }
 
-export function toProductView(product: ProductRecord): ProductView {
+export function toProductView(product: ProductRecord, playerCount: number): ProductView {
   return {
     id: product.id,
     slug: product.slug,
@@ -117,13 +133,15 @@ export function toProductView(product: ProductRecord): ProductView {
     options: optionLists(product.options),
     images: product.images.map(toImageView),
     status: product.status,
+    playerCount,
+    clubCount: product._count.clubTables,
     createdAt: product.createdAt.toISOString(),
     updatedAt: product.updatedAt.toISOString(),
   };
 }
 
-export function toAdminProductView(product: ProductRecord): AdminProductView {
-  return { ...toProductView(product), hidden: product.hiddenAt !== null };
+export function toAdminProductView(product: ProductRecord, playerCount: number): AdminProductView {
+  return { ...toProductView(product, playerCount), hidden: product.hiddenAt !== null };
 }
 
 /** `Json` из базы как объект. Пишет туда только сервер после проверки, но тип у колонки шире. */

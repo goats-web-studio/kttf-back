@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { PlacesService } from '../places/places.service.js';
-import { isOnline, PlayersService } from './players.service.js';
+import { equipmentLabel, isOnline, PlayersService } from './players.service.js';
 
 const player = {
   id: 'player-1',
@@ -27,6 +27,9 @@ const player = {
   blade: null,
   rubberForehand: null,
   rubberBackhand: null,
+  bladeProduct: null,
+  rubberForehandProduct: null,
+  rubberBackhandProduct: null,
   bio: null,
   coachPlayerId: null,
   coachName: null,
@@ -57,6 +60,8 @@ function makePrisma() {
     clubMember: { findUnique: vi.fn().mockResolvedValue(null) },
     city: { findFirst: vi.fn().mockResolvedValue({ id: 'city-1' }) },
     ratingEvent: { groupBy: vi.fn().mockResolvedValue([]) },
+    product: { findMany: vi.fn().mockResolvedValue([]) },
+    $queryRaw: vi.fn().mockResolvedValue([]),
   };
 }
 
@@ -440,12 +445,13 @@ describe('анкета игрока', () => {
     expect(where.students).toEqual({ some: {} });
   });
 
-  it('анкета не уезжает в списки', async () => {
+  it('анкета не уезжает в списки — только инвентарь подписью (ADR-058)', async () => {
     // Краткий вид попадает в офлайн-снимок консоли (ТС 6).
     const page = await service.list({ page: 1, limit: 20 });
 
     expect(page.items[0]).not.toHaveProperty('bio');
-    expect(page.items[0]).not.toHaveProperty('blade');
+    expect(page.items[0]).not.toHaveProperty('playingHand');
+    expect(page.items[0]?.blade).toBeNull();
   });
 });
 
@@ -455,6 +461,107 @@ describe('анкета игрока', () => {
  * Прячет сервер, а не экран: спрятанное только в интерфейсе поле видно
  * всякому, кто открыл сетевую вкладку.
  */
+/** Инвентарь из каталога маркета — ADR-058, `docs/10` 4.2. */
+describe('инвентарь из каталога', () => {
+  const BLADE = '11111111-1111-4111-8111-111111111111';
+  const RUBBER = '22222222-2222-4222-8222-222222222222';
+
+  const listed = {
+    id: BLADE,
+    slug: 'tibhar-e-lebesson',
+    category: 'BLADE' as const,
+    name: 'E. Lebesson',
+    status: 'PUBLISHED' as const,
+    hiddenAt: null,
+    brand: { id: 'brand-1', name: 'Tibhar', slug: 'tibhar' },
+    images: [],
+  };
+
+  it('основание — только товар BLADE, накладка — только RUBBER', async () => {
+    prisma.product.findMany.mockResolvedValue([
+      { id: BLADE, category: 'BLADE' },
+      { id: RUBBER, category: 'RUBBER' },
+    ]);
+
+    await expect(
+      service.update('player-1', { bladeProductId: BLADE, rubberForehandProductId: RUBBER }),
+    ).resolves.toBeDefined();
+
+    await expect(
+      service.update('player-1', { rubberBackhandProductId: BLADE }),
+    ).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+      details: { field: 'rubberBackhandProductId' },
+    });
+  });
+
+  it('скрытый, непроверенный или чужой товар — отказ до записи', async () => {
+    // Выборка идёт только по видимым: такого товара в ответе базы нет.
+    prisma.product.findMany.mockResolvedValue([]);
+
+    await expect(
+      service.create({ ...newcomer, bladeProductId: BLADE }, 'user-1'),
+    ).rejects.toMatchObject({ code: 'VALIDATION_FAILED', details: { field: 'bladeProductId' } });
+    expect(prisma.product.findMany.mock.calls[0]?.[0]).toMatchObject({
+      where: { status: 'PUBLISHED', hiddenAt: null },
+    });
+    expect(prisma.player.create).not.toHaveBeenCalled();
+  });
+
+  it('уже записанный товар не перепроверяется, null стирает ссылку', async () => {
+    prisma.player.findUnique
+      .mockResolvedValueOnce(player)
+      .mockResolvedValueOnce({ bladeProductId: BLADE, rubberForehandProductId: null });
+
+    await service.update('player-1', { bladeProductId: BLADE, rubberForehandProductId: null });
+
+    expect(prisma.product.findMany).not.toHaveBeenCalled();
+    expect(prisma.player.update.mock.calls[0]?.[0]).toMatchObject({
+      data: { bladeProductId: BLADE, rubberForehandProductId: null },
+    });
+  });
+
+  it('в профиле — карточка товара с числом игроков, скрытый — null', async () => {
+    prisma.player.findUnique.mockResolvedValue({
+      ...player,
+      bladeProduct: listed,
+      rubberForehandProduct: { ...listed, id: RUBBER, hiddenAt: new Date() },
+    });
+    prisma.$queryRaw.mockResolvedValue([{ productId: BLADE, players: 12 }]);
+
+    const view = await service.findById('player-1');
+
+    expect(view.bladeProduct).toMatchObject({ slug: 'tibhar-e-lebesson', playerCount: 12 });
+    expect(view.rubberForehandProduct).toBeNull();
+    expect(prisma.$queryRaw).toHaveBeenCalledOnce();
+  });
+
+  it('«Кто играет»: основание — своим полем, накладка — с любой стороны', async () => {
+    await service.list({ page: 1, limit: 20, bladeId: BLADE, rubberId: RUBBER });
+
+    expect(prisma.player.findMany.mock.calls[0]?.[0]).toMatchObject({
+      where: {
+        bladeProductId: BLADE,
+        OR: [{ rubberForehandProductId: RUBBER }, { rubberBackhandProductId: RUBBER }],
+      },
+    });
+  });
+
+  it('подпись в списке: товар со ссылкой, иначе строка анкеты', () => {
+    const product = { ...listed, brand: { name: 'Tibhar' } };
+
+    expect(equipmentLabel(product, 'что-то')).toEqual({
+      label: 'Tibhar E. Lebesson',
+      slug: 'tibhar-e-lebesson',
+    });
+    expect(equipmentLabel({ ...product, hiddenAt: new Date() }, 'Лебессон')).toEqual({
+      label: 'Лебессон',
+      slug: null,
+    });
+    expect(equipmentLabel(null, null)).toBeNull();
+  });
+});
+
 describe('дата рождения посторонним', () => {
   const born = { ...player, birthDate: new Date('2001-04-12T00:00:00.000Z') };
 

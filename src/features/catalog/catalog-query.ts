@@ -103,7 +103,10 @@ function attributeCondition(
 /** Порядок списка. Последним — идентификатор: без него страницы теряют и повторяют строки. */
 export function productOrder(sort: ProductSort): Prisma.ProductOrderByWithRelationInput[] {
   switch (sort) {
+    // У «Выбора игроков» впереди товары с игроками (`CatalogService`), а
+    // остальные — как в «популярных».
     case 'popular':
+    case 'players':
       return [{ popularity: 'desc' }, { name: 'asc' }, { id: 'asc' }];
     case 'name':
       return [{ brand: { name: 'asc' } }, { name: 'asc' }, { id: 'asc' }];

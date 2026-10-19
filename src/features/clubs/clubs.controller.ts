@@ -21,6 +21,7 @@ import {
   setClubHiddenSchema,
   setClubHoursSchema,
   setClubPricesSchema,
+  setClubTablesSchema,
   updateClubSchema,
   type AddMemberInput,
   type ClubEventInput,
@@ -36,6 +37,7 @@ import {
   type SetClubHiddenInput,
   type SetClubHoursInput,
   type SetClubPricesInput,
+  type SetClubTablesInput,
   type UpdateClubInput,
 } from '@kttf/shared/types';
 import type { Request } from 'express';
@@ -120,6 +122,16 @@ export class ClubsController {
     @Body(new ZodValidationPipe(setClubPricesSchema)) body: SetClubPricesInput,
   ): Promise<ClubView> {
     return this.page.setPrices(id, body);
+  }
+
+  /** Модели столов из каталога маркета целиком — ADR-058. */
+  @Put(':id/tables')
+  @RequireClubRole('OWNER', 'ORGANIZER')
+  async setTables(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @Body(new ZodValidationPipe(setClubTablesSchema)) body: SetClubTablesInput,
+  ): Promise<ClubView> {
+    return this.page.setTables(id, body);
   }
 
   /** «Всё актуально» — страница проверена без правок. */

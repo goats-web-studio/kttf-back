@@ -1,6 +1,7 @@
 import type { ClubView } from '@kttf/shared/types';
 
 import type { Prisma } from '../../generated/prisma/client.js';
+import { isVisible, listItemFields, toListItemView } from '../catalog/catalog-views.js';
 import { cityRefFields } from '../places/place.fields.js';
 
 /**
@@ -45,15 +46,25 @@ export const clubFields = {
     select: { id: true, kind: true, title: true, priceKzt: true, unit: true, note: true },
     orderBy: { sortOrder: 'asc' },
   },
+  // Модели столов из каталога маркета — ADR-058. Больше столов — выше.
+  tables: {
+    select: { count: true, product: { select: listItemFields } },
+    orderBy: [{ count: 'desc' }, { productId: 'asc' }],
+  },
 } as const satisfies Prisma.ClubSelect;
 
 export type ClubRecord = Prisma.ClubGetPayload<{ select: typeof clubFields }>;
 
 export function toClubView(club: ClubRecord): ClubView {
-  const { hiddenAt, profileReviewedAt, createdAt, ...rest } = club;
+  const { hiddenAt, profileReviewedAt, createdAt, tables, ...rest } = club;
 
   return {
     ...rest,
+    // Скрытая модель со страницы уходит. Игроков у стола не бывает: в анкету
+    // игрока ставятся только основания и накладки, поэтому без подсчёта.
+    tables: tables
+      .filter((table) => isVisible(table.product))
+      .map((table) => ({ product: toListItemView(table.product, 0), count: table.count })),
     profileReviewedAt: profileReviewedAt?.toISOString() ?? null,
     hidden: hiddenAt !== null,
     createdAt: createdAt.toISOString(),

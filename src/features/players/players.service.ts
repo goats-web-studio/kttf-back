@@ -3,6 +3,7 @@ import {
   ONLINE_WINDOW_MS,
   type CityRef,
   type CreatePlayerInput,
+  type EquipmentLabel,
   type HeadToHeadView,
   type ListPlayersQuery,
   type Page,
@@ -11,6 +12,8 @@ import {
   type PlayerMatchView,
   type PlayerProfileView,
   type PlayerView,
+  type ProductCategory,
+  type ProductListItemView,
   type RatingHistoryQuery,
   type RatingHistoryView,
   type UpdatePlayerInput,
@@ -24,7 +27,16 @@ import { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { cityRefFields } from '../places/place.fields.js';
 import { PlacesService } from '../places/places.service.js';
 
+import { countPlayers } from '../catalog/catalog-players.js';
+import {
+  VISIBLE,
+  isVisible,
+  listItemFields,
+  toListItemView,
+  type ListItemRecord,
+} from '../catalog/catalog-views.js';
 import { buildRatingPoints, summarize, toPlayerMatch } from './history.js';
+import { ratingBounds } from './rating-band.js';
 
 export const playerFields = {
   id: true,
@@ -59,6 +71,10 @@ const profileFields = {
   blade: true,
   rubberForehand: true,
   rubberBackhand: true,
+  // Инвентарь из каталога — ADR-058. Скрытый товар в профиле не показывается.
+  bladeProduct: { select: listItemFields },
+  rubberForehandProduct: { select: listItemFields },
+  rubberBackhandProduct: { select: listItemFields },
   bio: true,
   coachPlayerId: true,
   coachName: true,
@@ -68,6 +84,42 @@ const profileFields = {
   // «В сети» и последнее посещение — с аккаунта, а не с игрока (ADR-050).
   user: { select: { lastSeenAt: true } },
 } as const;
+
+/** Товар в строке списка: подпись и адрес, без фото и характеристик. */
+const labelProduct = {
+  select: {
+    slug: true,
+    name: true,
+    status: true,
+    hiddenAt: true,
+    brand: { select: { name: true } },
+  },
+} as const;
+
+/**
+ * Строка списка игроков — таблица «основание / справа / слева», как у RTTF
+ * (ADR-058). Товары приходят связью той же выборки, без запроса на игрока.
+ */
+const listFields = {
+  ...playerFields,
+  blade: true,
+  rubberForehand: true,
+  rubberBackhand: true,
+  bladeProduct: labelProduct,
+  rubberForehandProduct: labelProduct,
+  rubberBackhandProduct: labelProduct,
+} as const;
+
+type LabelProduct = Prisma.ProductGetPayload<typeof labelProduct>;
+
+/** Слоты инвентаря и категория товара, которая в них допустима. */
+const EQUIPMENT_SLOTS = [
+  ['bladeProductId', 'BLADE'],
+  ['rubberForehandProductId', 'RUBBER'],
+  ['rubberBackhandProductId', 'RUBBER'],
+] as const satisfies readonly (readonly [string, ProductCategory])[];
+
+type EquipmentIds = Partial<Record<(typeof EQUIPMENT_SLOTS)[number][0], string | null | undefined>>;
 
 /** Сыгранная встреча этого игрока: без результата в истории показывать нечего. */
 function playedBy(playerId: string) {
@@ -119,13 +171,23 @@ export class PlayersService {
       // выдуманной колонки.
       ...(query.coachesOnly === true ? { students: { some: {} } } : {}),
       ...(query.search === undefined ? {} : { AND: nameWords(query.search) }),
+      // «Кто играет» — ADR-058. Накладка — с любой стороны.
+      ...(query.bladeId === undefined ? {} : { bladeProductId: query.bladeId }),
+      ...(query.rubberId === undefined
+        ? {}
+        : {
+            OR: [
+              { rubberForehandProductId: query.rubberId },
+              { rubberBackhandProductId: query.rubberId },
+            ],
+          }),
     };
     const order = query.order ?? 'desc';
 
     const [rows, total] = await Promise.all([
       this.prisma.player.findMany({
         where,
-        select: playerFields,
+        select: listFields,
         // По рейтингу: список игроков читают как таблицу силы.
         orderBy: [{ rating: order }, { lastName: 'asc' }],
         skip: skipOf(query),
@@ -150,6 +212,9 @@ export class PlayersService {
       rows.map((row) => ({
         ...toPlayerView(row),
         ratingUpdatedAt: updatedAt.get(row.id)?.toISOString() ?? null,
+        blade: equipmentLabel(row.bladeProduct, row.blade),
+        rubberForehand: equipmentLabel(row.rubberForehandProduct, row.rubberForehand),
+        rubberBackhand: equipmentLabel(row.rubberBackhandProduct, row.rubberBackhand),
       })),
       total,
       query,
@@ -256,7 +321,24 @@ export class PlayersService {
       throw new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { id });
     }
 
-    return toProfileView(player, await this.maySeeBirthDate(player, viewerId));
+    return this.profileView(player, await this.maySeeBirthDate(player, viewerId));
+  }
+
+  /** Профиль с инвентарём: игроки товаров считаются одним запросом на все три слота. */
+  private async profileView(
+    player: ProfileRecord,
+    maySeeBirthDate = true,
+  ): Promise<PlayerProfileView> {
+    const products = [
+      player.bladeProduct,
+      player.rubberForehandProduct,
+      player.rubberBackhandProduct,
+    ].filter((product): product is ListItemRecord => product !== null && isVisible(product));
+    const players = await countPlayers(this.prisma, [
+      ...new Set(products.map((product) => product.id)),
+    ]);
+
+    return toProfileView(player, players, maySeeBirthDate);
   }
 
   /**
@@ -310,6 +392,7 @@ export class PlayersService {
     await this.places.assertCityAvailable(input.cityId);
     await this.assertClubExists(input.clubId);
     await this.assertCoachExists(input.coachPlayerId);
+    await this.assertEquipment(input);
 
     const own = await this.prisma.player.findUnique({
       where: { userId: actorId },
@@ -327,7 +410,7 @@ export class PlayersService {
       await this.assertClubStaff(input.clubId, actorId);
     }
 
-    return toProfileView(
+    return this.profileView(
       await this.prisma.player.create({
         data: {
           ...defined(input),
@@ -344,8 +427,19 @@ export class PlayersService {
     await this.places.assertCityAvailable(input.cityId, current.city.id);
     await this.assertClubExists(input.clubId ?? undefined);
     await this.assertCoachExists(input.coachPlayerId ?? undefined, id);
+    await this.assertEquipment(
+      input,
+      await this.prisma.player.findUnique({
+        where: { id },
+        select: {
+          bladeProductId: true,
+          rubberForehandProductId: true,
+          rubberBackhandProductId: true,
+        },
+      }),
+    );
 
-    return toProfileView(
+    return this.profileView(
       await this.prisma.player.update({
         where: { id },
         data: { ...defined(input), ...toBirthDate(input.birthDate) },
@@ -421,6 +515,35 @@ export class PlayersService {
 
     if (coach === null) {
       throw new AppError(ERROR_CODES.NOT_FOUND, 'Coach not found', { coachId });
+    }
+  }
+
+  /**
+   * Инвентарь из каталога: товар существует, виден в каталоге и подходит
+   * слоту — основание BLADE, накладки RUBBER (ADR-058). Уже записанный товар
+   * остаётся и после скрытия: повторная отправка той же формы не падает.
+   */
+  private async assertEquipment(input: EquipmentIds, current?: EquipmentIds | null): Promise<void> {
+    const wanted = EQUIPMENT_SLOTS.flatMap(([field, category]) => {
+      const id = input[field];
+
+      return typeof id === 'string' && id !== current?.[field] ? [{ field, category, id }] : [];
+    });
+
+    if (wanted.length === 0) return;
+
+    const products = await this.prisma.product.findMany({
+      where: { id: { in: wanted.map((slot) => slot.id) }, ...VISIBLE },
+      select: { id: true, category: true },
+    });
+    const categories = new Map(products.map((product) => [product.id, product.category]));
+
+    for (const slot of wanted) {
+      if (categories.get(slot.id) !== slot.category) {
+        throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Product does not fit the slot', {
+          field: slot.field,
+        });
+      }
     }
   }
 
@@ -502,6 +625,9 @@ interface ProfileRecord extends PlayerRecord {
   blade: string | null;
   rubberForehand: string | null;
   rubberBackhand: string | null;
+  bladeProduct: ListItemRecord | null;
+  rubberForehandProduct: ListItemRecord | null;
+  rubberBackhandProduct: ListItemRecord | null;
   bio: string | null;
   coachPlayerId: string | null;
   coachName: string | null;
@@ -521,8 +647,33 @@ function toBirthDate(value: string | null | undefined): { birthDate?: Date | nul
   return { birthDate: value === null ? null : new Date(`${value}T00:00:00.000Z`) };
 }
 
+/**
+ * Подпись инвентаря в списке: товар каталога со ссылкой, иначе строка анкеты.
+ * Скрытый товар — как будто его нет: остаётся строка, если она есть.
+ */
+export function equipmentLabel(
+  product: LabelProduct | null,
+  text: string | null,
+): EquipmentLabel | null {
+  if (product !== null && isVisible(product)) {
+    return { label: `${product.brand.name} ${product.name}`, slug: product.slug };
+  }
+
+  return text === null ? null : { label: text, slug: null };
+}
+
+function equipmentProduct(
+  product: ListItemRecord | null,
+  players: ReadonlyMap<string, number>,
+): ProductListItemView | null {
+  return product === null || !isVisible(product)
+    ? null
+    : toListItemView(product, players.get(product.id) ?? 0);
+}
+
 function toProfileView(
   player: ProfileRecord,
+  players: ReadonlyMap<string, number>,
   maySeeBirthDate = true,
   now: Date = new Date(),
 ): PlayerProfileView {
@@ -542,6 +693,9 @@ function toProfileView(
     blade: player.blade,
     rubberForehand: player.rubberForehand,
     rubberBackhand: player.rubberBackhand,
+    bladeProduct: equipmentProduct(player.bladeProduct, players),
+    rubberForehandProduct: equipmentProduct(player.rubberForehandProduct, players),
+    rubberBackhandProduct: equipmentProduct(player.rubberBackhandProduct, players),
     bio: player.bio,
     coachPlayerId: player.coachPlayerId,
     // Выбранный из списка тренер подставляется по связи, вписанный руками
@@ -563,24 +717,13 @@ export function isOnline(lastSeenAt: Date | null, now: Date): boolean {
   return lastSeenAt !== null && now.getTime() - lastSeenAt.getTime() < ONLINE_WINDOW_MS;
 }
 
-/**
- * Рейтинг «от» и «до» по числу на экране — ADR-054.
- *
- * Рейтинг показывается целым до ближайшего (ADR-053), поэтому «до 384»
- * обязано найти и 384.10, а «от 385» — 384.50. Граница сдвигается на
- * половину: показанное n — это [n − 0.5; n + 0.5).
- */
+/** Условие рейтинга списка — правило границ в `ratingBounds`. */
 function ratingRange(from: number | undefined, to: number | undefined) {
   if (from === undefined && to === undefined) {
     return {};
   }
 
-  return {
-    rating: {
-      ...(from === undefined ? {} : { gte: from - 0.5 }),
-      ...(to === undefined ? {} : { lt: to + 0.5 }),
-    },
-  };
+  return { rating: ratingBounds(from, to) };
 }
 
 /**
