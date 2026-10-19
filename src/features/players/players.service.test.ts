@@ -56,6 +56,7 @@ function makePrisma() {
     club: { findUnique: vi.fn().mockResolvedValue({ id: 'club-1' }) },
     clubMember: { findUnique: vi.fn().mockResolvedValue(null) },
     city: { findFirst: vi.fn().mockResolvedValue({ id: 'city-1' }) },
+    ratingEvent: { groupBy: vi.fn().mockResolvedValue([]) },
   };
 }
 
@@ -142,12 +143,88 @@ describe('в сети и последнее посещение', () => {
 });
 
 describe('список игроков', () => {
-  it('поиск идёт и по фамилии, и по имени', async () => {
+  function listWhere(): Record<string, unknown> {
+    return (prisma.player.findMany.mock.calls[0]?.[0] as { where: Record<string, unknown> }).where;
+  }
+
+  it('поиск идёт по фамилии, имени и отчеству', async () => {
     await service.list({ page: 1, limit: 20, search: 'ким' });
 
-    const where = (prisma.player.findMany.mock.calls[0]?.[0] as { where: { OR?: unknown[] } })
-      .where;
-    expect(where.OR).toHaveLength(2);
+    const words = listWhere().AND as { OR: unknown[] }[];
+    expect(words).toHaveLength(1);
+    expect(words[0]?.OR).toHaveLength(3);
+  });
+
+  it('поиск словами в любом порядке: «Ким Артём» — два условия сразу (ADR-054)', async () => {
+    await service.list({ page: 1, limit: 20, search: '  Артём   Ким ' });
+
+    const words = listWhere().AND as { OR: { lastName: { contains: string } }[] }[];
+    expect(words.map((word) => word.OR[0]?.lastName.contains)).toEqual(['Артём', 'Ким']);
+  });
+
+  it('рейтинг «от» и «до» — по числу на экране, со сдвигом на половину (ADR-054)', async () => {
+    await service.list({ page: 1, limit: 20, ratingFrom: 300, ratingTo: 384 });
+
+    // «до 384» находит 384.10, «от 300» — 299.50: на экране оба целые.
+    expect(listWhere().rating).toEqual({ gte: 299.5, lt: 384.5 });
+  });
+
+  it('одна граница рейтинга — без второй', async () => {
+    await service.list({ page: 1, limit: 20, ratingTo: 1000 });
+
+    expect(listWhere().rating).toEqual({ lt: 1000.5 });
+  });
+
+  it('несколько городов, пол и рука доходят до запроса', async () => {
+    await service.list({
+      page: 1,
+      limit: 20,
+      cityId: ['city-1', 'city-2'],
+      gender: 'FEMALE',
+      playingHand: 'LEFT',
+    });
+
+    expect(listWhere()).toMatchObject({
+      cityId: { in: ['city-1', 'city-2'] },
+      gender: 'FEMALE',
+      playingHand: 'LEFT',
+    });
+  });
+
+  it('без фильтров в запросе нет лишних условий', async () => {
+    await service.list({ page: 1, limit: 20 });
+
+    expect(listWhere()).toEqual({});
+  });
+
+  it('порядок по рейтингу вверх — по запросу', async () => {
+    await service.list({ page: 1, limit: 20, order: 'asc' });
+
+    expect((prisma.player.findMany.mock.calls[0]?.[0] as { orderBy: unknown[] }).orderBy).toEqual([
+      { rating: 'asc' },
+      { lastName: 'asc' },
+    ]);
+  });
+
+  it('«обновлён» — последнее событие журнала, одним запросом на страницу', async () => {
+    prisma.ratingEvent.groupBy.mockResolvedValue([
+      { playerId: 'player-1', _max: { createdAt: new Date('2026-10-19T10:00:00.000Z') } },
+    ]);
+
+    const page = await service.list({ page: 1, limit: 20 });
+
+    expect(prisma.ratingEvent.groupBy).toHaveBeenCalledWith({
+      by: ['playerId'],
+      where: { playerId: { in: ['player-1'] } },
+      _max: { createdAt: true },
+    });
+    expect(page.items[0]?.ratingUpdatedAt).toBe('2026-10-19T10:00:00.000Z');
+  });
+
+  it('без событий рейтинга «обновлён» пуст', async () => {
+    const page = await service.list({ page: 1, limit: 20 });
+
+    expect(page.items[0]?.ratingUpdatedAt).toBeNull();
   });
 
   it('сортировка по рейтингу вниз', async () => {

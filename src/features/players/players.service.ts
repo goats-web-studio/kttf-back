@@ -7,6 +7,7 @@ import {
   type ListPlayersQuery,
   type Page,
   type PlayerMatchesQuery,
+  type PlayerListItemView,
   type PlayerMatchView,
   type PlayerProfileView,
   type PlayerView,
@@ -102,10 +103,13 @@ export class PlayersService {
     private readonly places: PlacesService,
   ) {}
 
-  async list(query: ListPlayersQuery): Promise<Page<PlayerView>> {
+  async list(query: ListPlayersQuery): Promise<Page<PlayerListItemView>> {
     const where = {
-      ...(query.cityId === undefined ? {} : { cityId: query.cityId }),
+      ...(query.cityId === undefined ? {} : { cityId: { in: query.cityId } }),
       ...(query.clubId === undefined ? {} : { clubId: query.clubId }),
+      ...(query.gender === undefined ? {} : { gender: query.gender }),
+      ...(query.playingHand === undefined ? {} : { playingHand: query.playingHand }),
+      ...ratingRange(query.ratingFrom, query.ratingTo),
       // Игроки без кабинета — список для выбора себя при регистрации
       // (ADR-034). Без фильтра это был бы список всех игроков страны, то
       // есть приглашение занять чужую историю.
@@ -114,31 +118,42 @@ export class PlayersService {
       // продукте ещё нет, и список берётся из самих данных, а не из
       // выдуманной колонки.
       ...(query.coachesOnly === true ? { students: { some: {} } } : {}),
-      ...(query.search === undefined
-        ? {}
-        : {
-            // Поиск идёт по фамилии и имени раздельно: составное поле в базе
-            // не хранится, а искать по нему люди будут и так, и так.
-            OR: [
-              { lastName: { contains: query.search, mode: 'insensitive' as const } },
-              { firstName: { contains: query.search, mode: 'insensitive' as const } },
-            ],
-          }),
+      ...(query.search === undefined ? {} : { AND: nameWords(query.search) }),
     };
+    const order = query.order ?? 'desc';
 
     const [rows, total] = await Promise.all([
       this.prisma.player.findMany({
         where,
         select: playerFields,
-        // По рейтингу вниз: список игроков читают как таблицу силы.
-        orderBy: [{ rating: 'desc' }, { lastName: 'asc' }],
+        // По рейтингу: список игроков читают как таблицу силы.
+        orderBy: [{ rating: order }, { lastName: 'asc' }],
         skip: skipOf(query),
         take: query.limit,
       }),
       this.prisma.player.count({ where }),
     ]);
 
-    return pageOf(rows.map(toPlayerView), total, query);
+    // «Обновлён» — последнее событие журнала (ADR-054). Одним запросом на
+    // страницу по индексу (playerId, createdAt), без колонки в проекции.
+    const updated =
+      rows.length === 0
+        ? []
+        : await this.prisma.ratingEvent.groupBy({
+            by: ['playerId'],
+            where: { playerId: { in: rows.map((row) => row.id) } },
+            _max: { createdAt: true },
+          });
+    const updatedAt = new Map(updated.map((entry) => [entry.playerId, entry._max.createdAt]));
+
+    return pageOf(
+      rows.map((row) => ({
+        ...toPlayerView(row),
+        ratingUpdatedAt: updatedAt.get(row.id)?.toISOString() ?? null,
+      })),
+      total,
+      query,
+    );
   }
 
   /**
@@ -546,6 +561,46 @@ function toProfileView(
  */
 export function isOnline(lastSeenAt: Date | null, now: Date): boolean {
   return lastSeenAt !== null && now.getTime() - lastSeenAt.getTime() < ONLINE_WINDOW_MS;
+}
+
+/**
+ * Рейтинг «от» и «до» по числу на экране — ADR-054.
+ *
+ * Рейтинг показывается целым до ближайшего (ADR-053), поэтому «до 384»
+ * обязано найти и 384.10, а «от 385» — 384.50. Граница сдвигается на
+ * половину: показанное n — это [n − 0.5; n + 0.5).
+ */
+function ratingRange(from: number | undefined, to: number | undefined) {
+  if (from === undefined && to === undefined) {
+    return {};
+  }
+
+  return {
+    rating: {
+      ...(from === undefined ? {} : { gte: from - 0.5 }),
+      ...(to === undefined ? {} : { lt: to + 0.5 }),
+    },
+  };
+}
+
+/**
+ * Поиск по ФИО словами — ADR-054.
+ *
+ * «Ким Артём» и «Артём Ким» находят одного человека: каждое слово обязано
+ * найтись в фамилии, имени или отчестве, порядок не важен. Составное поле в
+ * базе не хранится.
+ */
+function nameWords(search: string) {
+  return search
+    .split(/\s+/)
+    .filter((word) => word.length > 0)
+    .map((word) => ({
+      OR: [
+        { lastName: { contains: word, mode: 'insensitive' as const } },
+        { firstName: { contains: word, mode: 'insensitive' as const } },
+        { middleName: { contains: word, mode: 'insensitive' as const } },
+      ],
+    }));
 }
 
 export function toPlayerView(player: PlayerRecord): PlayerView {

@@ -15,13 +15,13 @@ import {
   type PlayerBestWinsQuery,
   type PlayerBestWinsView,
   type PlayerMatchesQuery,
+  type PlayerListItemView,
   type PlayerMatchView,
   type PlayerProfileView,
   type PlayerSummaryQuery,
   type PlayerSummaryView,
   type PlayerTournamentsQuery,
   type PlayerTournamentView,
-  type PlayerView,
   type RatingHistoryQuery,
   type RatingHistoryView,
   type UpdatePlayerInput,
@@ -52,7 +52,7 @@ export class PlayersController {
   @Get()
   async list(
     @Query(new ZodValidationPipe(listPlayersSchema)) query: ListPlayersQuery,
-  ): Promise<Page<PlayerView>> {
+  ): Promise<Page<PlayerListItemView>> {
     return this.players.list(query);
   }
 
