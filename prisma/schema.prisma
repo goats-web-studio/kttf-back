@@ -51,6 +51,7 @@ model User {
   sessions         Session[]
   clubApplications ClubApplication[]
   products         Product[]
+  coaches          Coach[]
 }
 
 enum Locale {
@@ -143,6 +144,9 @@ model Player {
 
   registrations Registration[]
   ratingEvents  RatingEvent[]
+  // Страница тренера на этом профиле — ADR-059. Не путать с `coach`:
+  // там тренер, которого игрок выбрал себе в анкете.
+  coachPage     Coach?
 
   @@index([rating(sort: Desc)])
   @@index([cityId, rating(sort: Desc)])
@@ -206,6 +210,7 @@ model City {
 
   clubs   Club[]
   players Player[]
+  coaches Coach[]
 
   @@unique([countryId, name])
 }
@@ -573,6 +578,207 @@ model ClubTable {
   @@id([clubId, productId])
   // «Где стоит» — клубы со столом этой модели.
   @@index([productId])
+}
+
+// ============ Тренеры ============
+
+// ADR-059, docs/11 4. Страница тренера строится на профиле игрока: имя, фото
+// и рейтинг берутся оттуда. Заявка — статус самой страницы, а не отдельная
+// таблица: администратор видит ровно то, что будет опубликовано. Публичны
+// только APPROVED и не скрытые.
+model Coach {
+  id                String          @id @default(uuid())
+  playerId          String          @unique
+  player            Player          @relation(fields: [playerId], references: [id])
+  // Кто правит страницу — аккаунт игрока на момент заведения.
+  userId            String
+  user              User            @relation(fields: [userId], references: [id])
+  slug              String          @unique
+  status            CoachStatus     @default(DRAFT)
+  rejectReason      String?
+  reviewedAt        DateTime?
+  // Последняя отправка на проверку — порядок очереди у администратора.
+  submittedAt       DateTime?
+  headline          String?
+  about             String?
+  coverUrl          String?
+  photoUrl          String?
+  coachingSince     Int?
+  cityId            String?
+  city              City?           @relation(fields: [cityId], references: [id])
+  formats           TrainingPlace[] @default([])
+  visitAreas        String?
+  languages         CoachLanguage[] @default([])
+  phone             String?
+  whatsapp          String?
+  telegram          String?
+  instagram         String?
+  primaryContact    ContactKind?
+  sportsRank        SportsRank?
+  coachCategory     CoachCategory?
+  refereeCategory   String?
+  education         String?
+  profileReviewedAt DateTime?
+  // Тариф заложен и выключен, как у клуба (ADR-055)
+  plan              CoachPlan       @default(FREE)
+  planUntil         DateTime?
+  // Скрыта администратором (постмодерация); причину видит тренер
+  hiddenAt          DateTime?
+  hiddenReason      String?
+  createdAt         DateTime        @default(now())
+
+  services     CoachService[]
+  credentials  CoachCredential[]
+  achievements CoachAchievement[]
+  stats        CoachStatDaily[]
+
+  // Публичный список: одобренные, не скрытые, свежие сверху.
+  @@index([status, hiddenAt, profileReviewedAt])
+  @@index([cityId])
+  @@index([userId])
+}
+
+enum CoachStatus {
+  DRAFT
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum TrainingPlace {
+  CLUB
+  VISIT
+  ONLINE
+}
+
+enum CoachLanguage {
+  KK
+  RU
+  EN
+}
+
+enum TrainingKind {
+  INDIVIDUAL
+  GROUP
+  SPLIT
+  KIDS_GROUP
+  VIDEO_REVIEW
+  CAMP
+  SPARRING
+  OTHER
+}
+
+enum TrainingAudience {
+  KIDS
+  TEENS
+  ADULT_BEGINNERS
+  AMATEURS
+  ATHLETES
+}
+
+enum SportsRank {
+  YOUTH_3
+  YOUTH_2
+  YOUTH_1
+  RANK_3
+  RANK_2
+  RANK_1
+  KMS
+  MS
+  MSMK
+  ZMS
+}
+
+enum CoachCategory {
+  HIGHEST
+  FIRST
+  SECOND
+  NONE
+}
+
+enum CredentialKind {
+  DIPLOMA
+  CERTIFICATE
+  COURSE
+  LICENSE
+  OTHER
+}
+
+enum AchievementRole {
+  AS_PLAYER
+  AS_COACH
+}
+
+enum CoachPlan {
+  FREE
+  PRO
+}
+
+// Тренировка — строка прайса тренера. Правится списком целиком, как цены
+// клуба. Ссылка на клуб из штаба (место CLUB) появится в T2.
+model CoachService {
+  id          String             @id @default(uuid())
+  coachId     String
+  kind        TrainingKind
+  audiences   TrainingAudience[]
+  kidsFromAge Int?
+  place       TrainingPlace
+  title       String
+  schedule    String?
+  // Без цены — «по договорённости»
+  priceKzt    Int?
+  unit        PriceUnit
+  note        String?
+  sortOrder   Int
+  coach       Coach              @relation(fields: [coachId], references: [id], onDelete: Cascade)
+
+  @@index([coachId, sortOrder])
+}
+
+// Документ тренера. fileKey — путь загрузки скана (/api/v1/files/coach-docs/…);
+// общей выдачей файлов эта папка не отдаётся — только маршрутом документа.
+model CoachCredential {
+  id         String         @id @default(uuid())
+  coachId    String
+  kind       CredentialKind
+  title      String
+  issuer     String?
+  year       Int?
+  fileKey    String?
+  filePublic Boolean        @default(false)
+  // «Проверено KTTF» — ставит администратор, снимается при правке документа
+  verifiedAt DateTime?
+  sortOrder  Int
+  coach      Coach          @relation(fields: [coachId], references: [id], onDelete: Cascade)
+
+  @@index([coachId, sortOrder])
+}
+
+model CoachAchievement {
+  id        String          @id @default(uuid())
+  coachId   String
+  role      AchievementRole
+  year      Int?
+  title     String
+  sortOrder Int
+  coach     Coach           @relation(fields: [coachId], references: [id], onDelete: Cascade)
+
+  @@index([coachId, sortOrder])
+}
+
+// Дневные счётчики страницы тренера — без IP и cookie, как у клуба (ADR-055)
+model CoachStatDaily {
+  coachId         String
+  date            DateTime      @db.Date // день по UTC+5
+  source          TrafficSource
+  views           Int           @default(0)
+  phoneClicks     Int           @default(0)
+  whatsappClicks  Int           @default(0)
+  telegramClicks  Int           @default(0)
+  instagramClicks Int           @default(0)
+  coach           Coach         @relation(fields: [coachId], references: [id], onDelete: Cascade)
+
+  @@id([coachId, date, source])
 }
 
 // ============ Турниры ============
