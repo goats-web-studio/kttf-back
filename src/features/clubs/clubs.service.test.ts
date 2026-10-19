@@ -18,6 +18,20 @@ const club = {
   instagram: null,
   logoUrl: null,
   description: null,
+  coverUrl: null,
+  website: null,
+  telegram: null,
+  twoGisUrl: null,
+  amenities: [],
+  tableBrand: null,
+  floorType: null,
+  ceilingHeightCm: null,
+  hoursNote: null,
+  primaryContact: null,
+  profileReviewedAt: null,
+  hiddenAt: null,
+  hours: [],
+  prices: [],
   createdAt: new Date('2026-08-29T00:00:00.000Z'),
 };
 
@@ -38,6 +52,7 @@ function makePrisma() {
       upsert: vi.fn().mockResolvedValue({}),
       delete: vi.fn().mockResolvedValue({}),
     },
+    tournament: { groupBy: vi.fn().mockResolvedValue([]) },
     user: { findUnique: vi.fn().mockResolvedValue({ id: 'user-1' }) },
     city: { findFirst: vi.fn().mockResolvedValue({ id: 'city-1' }) },
     $transaction: vi.fn(),
@@ -66,9 +81,16 @@ describe('список клубов', () => {
   });
 
   it('пропускает записи предыдущих страниц', async () => {
-    await service.list({ page: 3, limit: 20 });
+    prisma.club.findMany.mockResolvedValueOnce([
+      { id: 'a', name: 'А', profileReviewedAt: null },
+      { id: 'b', name: 'Б', profileReviewedAt: null },
+      { id: 'c', name: 'В', profileReviewedAt: null },
+    ]);
 
-    expect(prisma.club.findMany.mock.calls[0]?.[0]).toMatchObject({ skip: 40, take: 20 });
+    const page = await service.list({ page: 2, limit: 1 });
+
+    expect(page.total).toBe(3);
+    expect(prisma.club.findMany.mock.calls[1]?.[0]).toMatchObject({ where: { id: { in: ['b'] } } });
   });
 
   it('поиск по названию не зависит от регистра', async () => {
@@ -80,12 +102,79 @@ describe('список клубов', () => {
     expect(query.where.name).toEqual({ contains: 'ракет', mode: 'insensitive' });
   });
 
-  it('без фильтров условие пустое, а не с undefined внутри', async () => {
-    // Prisma трактует undefined как «не фильтровать», но пустой объект
+  it('без фильтров — только нескрытые, без undefined внутри', async () => {
+    // Prisma трактует undefined как «не фильтровать», но условие без него
     // читается однозначно и не зависит от этой трактовки.
     await service.list({ page: 1, limit: 20 });
 
-    expect((prisma.club.findMany.mock.calls[0]?.[0] as { where: object }).where).toEqual({});
+    expect((prisma.club.findMany.mock.calls[0]?.[0] as { where: object }).where).toEqual({
+      hiddenAt: null,
+    });
+  });
+
+  it('города и удобства — списком, удобства все сразу', async () => {
+    await service.list({ page: 1, limit: 20, cityId: ['c1', 'c2'], amenities: ['KIDS', 'WIFI'] });
+
+    expect((prisma.club.findMany.mock.calls[0]?.[0] as { where: object }).where).toEqual({
+      hiddenAt: null,
+      cityId: { in: ['c1', 'c2'] },
+      amenities: { hasEvery: ['KIDS', 'WIFI'] },
+    });
+  });
+
+  it('сначала ближайший турнир, затем свежесть страницы, затем название', async () => {
+    prisma.club.findMany.mockResolvedValueOnce([
+      { id: 'old', name: 'А', profileReviewedAt: new Date('2026-01-01') },
+      { id: 'fresh', name: 'Я', profileReviewedAt: new Date('2026-10-01') },
+      { id: 'never', name: 'Б', profileReviewedAt: null },
+      { id: 'never2', name: 'В', profileReviewedAt: null },
+      { id: 'soon', name: 'Ю', profileReviewedAt: null },
+      { id: 'later', name: 'Э', profileReviewedAt: null },
+    ]);
+    prisma.tournament.groupBy.mockResolvedValueOnce([
+      { clubId: 'later', _min: { startsAt: new Date('2026-11-01') } },
+      { clubId: 'soon', _min: { startsAt: new Date('2026-10-25') } },
+    ]);
+
+    await service.list({ page: 1, limit: 20 });
+
+    expect(prisma.club.findMany.mock.calls[1]?.[0]).toMatchObject({
+      where: { id: { in: ['soon', 'later', 'fresh', 'old', 'never', 'never2'] } },
+    });
+  });
+
+  it('«скоро турнир» — только клубы с ближайшим турниром, с его датой в карточке', async () => {
+    prisma.club.findMany
+      .mockResolvedValueOnce([
+        { id: 'club-1', name: 'Ракетка', profileReviewedAt: null },
+        { id: 'idle', name: 'Тишина', profileReviewedAt: null },
+      ])
+      .mockResolvedValueOnce([club]);
+    prisma.tournament.groupBy.mockResolvedValueOnce([
+      { clubId: 'club-1', _min: { startsAt: new Date('2026-10-25T09:00:00.000Z') } },
+    ]);
+
+    const page = await service.list({ page: 1, limit: 20, upcoming: true });
+
+    expect(page.total).toBe(1);
+    expect(page.items[0]?.nextTournamentAt).toBe('2026-10-25T09:00:00.000Z');
+  });
+
+  it('скрытый признак и даты уходят наружу без лишних полей', async () => {
+    prisma.club.findMany
+      .mockResolvedValueOnce([{ id: 'club-1', name: 'Ракетка', profileReviewedAt: null }])
+      .mockResolvedValueOnce([
+        { ...club, hiddenAt: new Date(), profileReviewedAt: new Date('2026-10-01T00:00:00Z') },
+      ]);
+
+    const page = await service.list({ page: 1, limit: 20 });
+
+    expect(page.items[0]).toMatchObject({
+      hidden: true,
+      profileReviewedAt: '2026-10-01T00:00:00.000Z',
+      nextTournamentAt: null,
+    });
+    expect(page.items[0]).not.toHaveProperty('hiddenAt');
   });
 
   it('баланс и тариф в карточку не попадают', async () => {
@@ -143,8 +232,10 @@ describe('изменение клуба', () => {
   it('переданные поля меняются, остальные не трогаются', async () => {
     await service.update('club-1', { name: 'Другое' });
 
+    // Сохранённая страница — свежая: отметка «обновлено» ставится сама (ADR-055).
     expect((prisma.club.update.mock.calls[0]?.[0] as { data: object }).data).toEqual({
       name: 'Другое',
+      profileReviewedAt: expect.any(Date) as Date,
     });
   });
 });

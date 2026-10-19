@@ -72,8 +72,19 @@ export class StorageService implements OnModuleInit {
 
   /** Кладёт файл и отдаёт его ключ. Имя выдаётся своё: чужое имя файла — это путь. */
   async put(prefix: string, body: Buffer, contentType: string, extension: string): Promise<string> {
-    const client = this.required();
     const key = `${prefix}/${randomUUID()}.${extension}`;
+
+    await this.putAt(key, body, contentType);
+
+    return key;
+  }
+
+  /**
+   * Кладёт файл под готовым ключом. Ключ собирает сервер, а не клиент:
+   * варианты картинки клуба лежат рядом с основным файлом (ADR-055).
+   */
+  async putAt(key: string, body: Buffer, contentType: string): Promise<void> {
+    const client = this.required();
 
     await client.send(
       new PutObjectCommand({
@@ -83,8 +94,6 @@ export class StorageService implements OnModuleInit {
         ContentType: contentType,
       }),
     );
-
-    return key;
   }
 
   /** Читает файл целиком. Аватары мелкие, потоком отдавать нечего. */

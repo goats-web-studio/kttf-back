@@ -2,7 +2,7 @@ import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import { PHONE_PATTERN } from '@kttf/shared/types';
 import type {
   AddMemberInput,
-  CityRef,
+  ClubListItemView,
   ClubMemberView,
   ClubView,
   CreateClubInput,
@@ -14,33 +14,21 @@ import { Injectable } from '@nestjs/common';
 
 import { defined } from '../../common/objects.js';
 import { pageOf, skipOf } from '../../common/pagination.js';
+import type { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
-import { cityRefFields } from '../places/place.fields.js';
 import { PlacesService } from '../places/places.service.js';
+import { clubFields, toClubView } from './club-view.js';
+import { nextTournaments } from './next-tournaments.js';
 
 /**
- * Поля клуба в ответах.
+ * Сколько клубов список упорядочивает в памяти.
  *
- * `balance` и `tariffId` сюда не входят намеренно: финансы клуба — отдельный
- * эндпоинт 7.4 с отдельными правами, и вытекать они через публичную карточку
- * не должны.
+ * Порядок «ближайший турнир, затем свежесть страницы» не выражается одним
+ * `orderBy`: ближайший турнир — агрегат по другой таблице. Клубов в продукте
+ * десятки, их заводит администратор (ADR-049), поэтому список берётся целиком
+ * и режется на страницы после сортировки. Потолок — страховка, а не план.
  */
-const clubFields = {
-  id: true,
-  name: true,
-  shortName: true,
-  city: { select: cityRefFields },
-  address: true,
-  lat: true,
-  lng: true,
-  tableCount: true,
-  phone: true,
-  whatsapp: true,
-  instagram: true,
-  logoUrl: true,
-  description: true,
-  createdAt: true,
-} as const;
+const LIST_SCAN_MAX = 2000;
 
 @Injectable()
 export class ClubsService {
@@ -49,26 +37,69 @@ export class ClubsService {
     private readonly places: PlacesService,
   ) {}
 
-  async list(query: ListClubsQuery): Promise<Page<ClubView>> {
-    const where = {
-      ...(query.cityId === undefined ? {} : { cityId: query.cityId }),
+  /**
+   * Каталог клубов — ADR-055, `docs/09` 5.1.
+   *
+   * Сначала клубы с ближайшим турниром — по его дате, затем по свежести
+   * страницы, затем по названию. Свежесть в порядке — это то, что заставляет
+   * клуб обновлять страницу. Скрытые администратором клубы в каталог не
+   * попадают.
+   */
+  async list(query: ListClubsQuery): Promise<Page<ClubListItemView>> {
+    const where: Prisma.ClubWhereInput = {
+      hiddenAt: null,
+      ...(query.cityId === undefined ? {} : { cityId: { in: query.cityId } }),
       ...(query.search === undefined
         ? {}
         : { name: { contains: query.search, mode: 'insensitive' as const } }),
+      ...(query.amenities === undefined ? {} : { amenities: { hasEvery: query.amenities } }),
     };
 
-    const [rows, total] = await Promise.all([
-      this.prisma.club.findMany({
-        where,
-        select: clubFields,
-        orderBy: { name: 'asc' },
-        skip: skipOf(query),
-        take: query.limit,
-      }),
-      this.prisma.club.count({ where }),
-    ]);
+    const candidates = await this.prisma.club.findMany({
+      where,
+      select: { id: true, name: true, profileReviewedAt: true },
+      take: LIST_SCAN_MAX,
+    });
+    const next = await nextTournaments(
+      this.prisma,
+      candidates.map((club) => club.id),
+      new Date(),
+    );
 
-    return pageOf(rows.map(toClubView), total, query);
+    const ordered = candidates
+      .filter((club) => query.upcoming !== true || next.has(club.id))
+      .sort((a, b) => {
+        const nextA = next.get(a.id)?.getTime() ?? Number.POSITIVE_INFINITY;
+        const nextB = next.get(b.id)?.getTime() ?? Number.POSITIVE_INFINITY;
+
+        if (nextA !== nextB) return nextA < nextB ? -1 : 1;
+
+        const reviewedA = a.profileReviewedAt?.getTime() ?? 0;
+        const reviewedB = b.profileReviewedAt?.getTime() ?? 0;
+
+        if (reviewedA !== reviewedB) return reviewedB - reviewedA;
+
+        return a.name.localeCompare(b.name, 'ru');
+      });
+
+    const pageIds = ordered
+      .slice(skipOf(query), skipOf(query) + query.limit)
+      .map((club) => club.id);
+    const rows = await this.prisma.club.findMany({
+      where: { id: { in: pageIds } },
+      select: clubFields,
+    });
+    const byId = new Map(rows.map((row) => [row.id, row]));
+
+    const items = pageIds.flatMap((id) => {
+      const row = byId.get(id);
+
+      return row === undefined
+        ? []
+        : [{ ...toClubView(row), nextTournamentAt: next.get(id)?.toISOString() ?? null }];
+    });
+
+    return pageOf(items, ordered.length, query);
   }
 
   async findById(id: string): Promise<ClubView> {
@@ -109,8 +140,13 @@ export class ClubsService {
     const current = await this.findById(id);
     await this.places.assertCityAvailable(input.cityId, current.city.id);
 
+    // Сохранённая страница — свежая страница: отметка «обновлено» ставится сама.
     return toClubView(
-      await this.prisma.club.update({ where: { id }, data: defined(input), select: clubFields }),
+      await this.prisma.club.update({
+        where: { id },
+        data: { ...defined(input), profileReviewedAt: new Date() },
+        select: clubFields,
+      }),
     );
   }
 
@@ -223,25 +259,4 @@ export class ClubsService {
       });
     }
   }
-}
-
-interface ClubRecord {
-  id: string;
-  name: string;
-  shortName: string | null;
-  city: CityRef;
-  address: string | null;
-  lat: number | null;
-  lng: number | null;
-  tableCount: number;
-  phone: string | null;
-  whatsapp: string | null;
-  instagram: string | null;
-  logoUrl: string | null;
-  description: string | null;
-  createdAt: Date;
-}
-
-function toClubView(club: ClubRecord): ClubView {
-  return { ...club, createdAt: club.createdAt.toISOString() };
 }

@@ -48,11 +48,26 @@ const club = {
   instagram: null,
   logoUrl: null,
   description: null,
+  coverUrl: null,
+  website: null,
+  telegram: null,
+  twoGisUrl: null,
+  amenities: [],
+  tableBrand: null,
+  floorType: null,
+  ceilingHeightCm: null,
+  hoursNote: null,
+  primaryContact: null,
+  profileReviewedAt: null,
+  hiddenAt: null,
+  hours: [],
+  prices: [],
   createdAt: new Date('2026-08-29T00:00:00.000Z'),
 };
 
 function makePrisma() {
   const prisma = {
+    tournament: { groupBy: vi.fn().mockResolvedValue([]) },
     club: {
       findMany: vi.fn().mockResolvedValue([club]),
       count: vi.fn().mockResolvedValue(1),

@@ -16,16 +16,33 @@ import type { StorageService } from './storage.service.js';
 function makeStorage() {
   return {
     put: vi.fn().mockResolvedValue('players/11111111-1111-4111-8111-111111111111.jpg'),
+    putAt: vi.fn().mockResolvedValue(undefined),
     get: vi.fn().mockResolvedValue({ body: Buffer.from('x'), contentType: 'image/jpeg' }),
   };
 }
+
+const images = {
+  process: vi.fn().mockResolvedValue({
+    width: 1600,
+    height: 900,
+    variants: new Map([
+      [480, Buffer.from('s')],
+      [960, Buffer.from('m')],
+      [1600, Buffer.from('l')],
+    ]),
+  }),
+};
 
 let storage: ReturnType<typeof makeStorage>;
 let controller: FilesController;
 
 beforeEach(() => {
+  images.process.mockClear();
   storage = makeStorage();
-  controller = new FilesController(storage as unknown as StorageService);
+  controller = new FilesController(
+    storage as unknown as StorageService,
+    images,
+  );
 });
 
 describe('загрузка фото', () => {
@@ -95,5 +112,35 @@ describe('отдача файла', () => {
 
     expect(storage.get).toHaveBeenCalledWith('players/11111111-1111-4111-8111-111111111111.jpg');
     expect(response.type).toHaveBeenCalledWith('image/jpeg');
+  });
+});
+
+describe('картинка клуба', () => {
+  const CLUB = '22222222-2222-4222-8222-222222222222';
+  const image = { buffer: Buffer.from('x'), mimetype: 'image/jpeg', size: PHOTO_MAX_BYTES + 1 };
+
+  it('кладёт три ширины рядом и отдаёт путь основного файла с размерами', async () => {
+    // Снимок с телефона больше потолка портрета, но в потолок клуба влезает.
+    const result = await controller.uploadClubImage(CLUB, image);
+
+    expect(result).toMatchObject({ width: 1600, height: 900 });
+    expect(result.url).toMatch(/^\/api\/v1\/files\/clubs\/[0-9a-f-]{36}\.webp$/);
+
+    const keys = storage.putAt.mock.calls.map((call) => call[0] as string).sort();
+    const id = result.url.slice('/api/v1/files/clubs/'.length, -'.webp'.length);
+    expect(keys).toEqual([`clubs/${id}-480.webp`, `clubs/${id}-960.webp`, `clubs/${id}.webp`]);
+  });
+
+  it('чужой тип отвергается до обработки', async () => {
+    await expect(
+      controller.uploadClubImage(CLUB, { ...image, mimetype: 'image/svg+xml' }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_FAILED', details: { reason: 'TYPE' } });
+    expect(images.process).not.toHaveBeenCalled();
+  });
+
+  it('пустой запрос — отказ', async () => {
+    await expect(controller.uploadClubImage(CLUB, undefined)).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+    });
   });
 });

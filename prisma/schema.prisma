@@ -210,6 +210,24 @@ model Club {
   logoUrl     String?
   description String?
 
+  // Страница клуба — ADR-055, docs/09
+  coverUrl          String?
+  website           String?
+  telegram          String?
+  twoGisUrl         String?
+  amenities         ClubAmenity[] @default([])
+  tableBrand        String?
+  floorType         FloorType?
+  ceilingHeightCm   Int?
+  hoursNote         String?
+  primaryContact    ContactKind?
+  profileReviewedAt DateTime?
+  // Тариф страницы заложен и выключен (ADR-055); это не Tariff — плата за турниры
+  plan              ClubPlan      @default(FREE)
+  planUntil         DateTime?
+  // Скрыт из каталога администратором
+  hiddenAt          DateTime?
+
   balance  Decimal @default(0) @db.Decimal(12, 2)
   tariffId String?
   tariff   Tariff? @relation(fields: [tariffId], references: [id])
@@ -220,8 +238,103 @@ model Club {
   tournaments  Tournament[]
   players      Player[]
   transactions Transaction[]
+  hours        ClubHours[]
+  prices       ClubPrice[]
+  stats        ClubStatDaily[]
 
   @@index([cityId])
+}
+
+enum ClubAmenity {
+  AIR_CONDITIONING
+  SHOWER
+  PARKING
+  LOCKER_ROOM
+  WIFI
+  CAFE
+  SHOP
+  KIDS
+}
+
+enum FloorType {
+  SPORT_COVER
+  LINOLEUM
+  WOOD
+  OTHER
+}
+
+enum ContactKind {
+  PHONE
+  WHATSAPP
+  TELEGRAM
+}
+
+enum ClubPlan {
+  FREE
+  PRO
+}
+
+// Часы работы: минуты от полуночи по UTC+5; closesMin > 1440 — после полуночи
+model ClubHours {
+  clubId    String
+  weekday   Int // 1 — понедельник … 7 — воскресенье
+  opensMin  Int
+  closesMin Int
+  club      Club   @relation(fields: [clubId], references: [id], onDelete: Cascade)
+
+  @@id([clubId, weekday, opensMin])
+}
+
+model ClubPrice {
+  id        String    @id @default(uuid())
+  clubId    String
+  kind      PriceKind
+  title     String
+  priceKzt  Int
+  unit      PriceUnit
+  note      String?
+  sortOrder Int
+  club      Club      @relation(fields: [clubId], references: [id], onDelete: Cascade)
+
+  @@index([clubId, sortOrder])
+}
+
+enum PriceKind {
+  TABLE_RENT
+  MEMBERSHIP
+  TRAINING
+  KIDS
+  OTHER
+}
+
+enum PriceUnit {
+  HOUR
+  VISIT
+  MONTH
+  COURSE
+  NONE
+}
+
+// Дневные счётчики страницы клуба — без IP и cookie (ADR-055)
+model ClubStatDaily {
+  clubId          String
+  date            DateTime      @db.Date // день по UTC+5
+  source          TrafficSource
+  views           Int           @default(0)
+  phoneClicks     Int           @default(0)
+  whatsappClicks  Int           @default(0)
+  telegramClicks  Int           @default(0)
+  instagramClicks Int           @default(0)
+  websiteClicks   Int           @default(0)
+  routeClicks     Int           @default(0)
+  club            Club          @relation(fields: [clubId], references: [id], onDelete: Cascade)
+
+  @@id([clubId, date, source])
+}
+
+enum TrafficSource {
+  ORGANIC
+  CAMPAIGN
 }
 
 model ClubMember {

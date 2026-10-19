@@ -8,27 +8,46 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
+  Req,
 } from '@nestjs/common';
 import {
   addMemberSchema,
+  clubEventSchema,
+  clubStatsQuerySchema,
   createClubSchema,
   listClubsSchema,
+  setClubHiddenSchema,
+  setClubHoursSchema,
+  setClubPricesSchema,
   updateClubSchema,
   type AddMemberInput,
+  type ClubEventInput,
+  type ClubListItemView,
   type ClubMemberView,
+  type ClubStatsQuery,
+  type ClubStatsView,
+  type ClubSummaryView,
   type ClubView,
   type CreateClubInput,
   type ListClubsQuery,
   type Page,
+  type SetClubHiddenInput,
+  type SetClubHoursInput,
+  type SetClubPricesInput,
   type UpdateClubInput,
 } from '@kttf/shared/types';
+import type { Request } from 'express';
 import { z } from 'zod';
 
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { RequireAdmin } from '../auth/admin.guard.js';
 import { CurrentUserId } from '../auth/jwt-auth.guard.js';
+import { clientIp } from '../club-applications/client-ip.js';
+import { ClubPageService } from './club-page.service.js';
 import { RequireClubRole } from './club-role.guard.js';
+import { ClubStatsService } from './club-stats.service.js';
 import { ClubsService } from './clubs.service.js';
 
 const uuidParam = z.uuid();
@@ -42,12 +61,16 @@ const uuidParam = z.uuid();
  */
 @Controller('clubs')
 export class ClubsController {
-  constructor(private readonly clubs: ClubsService) {}
+  constructor(
+    private readonly clubs: ClubsService,
+    private readonly page: ClubPageService,
+    private readonly stats: ClubStatsService,
+  ) {}
 
   @Get()
   async list(
     @Query(new ZodValidationPipe(listClubsSchema)) query: ListClubsQuery,
-  ): Promise<Page<ClubView>> {
+  ): Promise<Page<ClubListItemView>> {
     return this.clubs.list(query);
   }
 
@@ -77,6 +100,76 @@ export class ClubsController {
     @Body(new ZodValidationPipe(updateClubSchema)) body: UpdateClubInput,
   ): Promise<ClubView> {
     return this.clubs.update(id, body);
+  }
+
+  /** Часы работы неделей целиком — ADR-055. */
+  @Put(':id/hours')
+  @RequireClubRole('OWNER', 'ORGANIZER')
+  async setHours(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @Body(new ZodValidationPipe(setClubHoursSchema)) body: SetClubHoursInput,
+  ): Promise<ClubView> {
+    return this.page.setHours(id, body);
+  }
+
+  /** Прайс целиком, порядок строк — порядок в теле. */
+  @Put(':id/prices')
+  @RequireClubRole('OWNER', 'ORGANIZER')
+  async setPrices(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @Body(new ZodValidationPipe(setClubPricesSchema)) body: SetClubPricesInput,
+  ): Promise<ClubView> {
+    return this.page.setPrices(id, body);
+  }
+
+  /** «Всё актуально» — страница проверена без правок. */
+  @Post(':id/reviewed')
+  @RequireClubRole('OWNER', 'ORGANIZER')
+  async markReviewed(@Param('id', new ZodValidationPipe(uuidParam)) id: string): Promise<ClubView> {
+    return this.page.markReviewed(id);
+  }
+
+  /** Скрыть из каталога — администратор платформы. */
+  @Patch(':id/hidden')
+  @RequireAdmin()
+  async setHidden(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @Body(new ZodValidationPipe(setClubHiddenSchema)) body: SetClubHiddenInput,
+  ): Promise<ClubView> {
+    return this.page.setHidden(id, body.hidden);
+  }
+
+  /** Живые данные клуба — публичны, как и сама страница. */
+  @Get(':id/summary')
+  async summary(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+  ): Promise<ClubSummaryView> {
+    return this.page.summary(id);
+  }
+
+  /**
+   * Просмотр и нажатие на способ связи. Открыт всем: смотрят страницу без
+   * входа. Ответ пустой и одинаковый всегда — и для повтора, и для чужого
+   * клуба.
+   */
+  @Post(':id/events')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async recordEvent(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @Body(new ZodValidationPipe(clubEventSchema)) body: ClubEventInput,
+    @Req() request: Request,
+  ): Promise<void> {
+    await this.stats.record(id, body, clientIp(request));
+  }
+
+  /** Статистика обращений — только составу клуба. */
+  @Get(':id/stats')
+  @RequireClubRole('OWNER', 'ORGANIZER')
+  async clubStats(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @Query(new ZodValidationPipe(clubStatsQuerySchema)) query: ClubStatsQuery,
+  ): Promise<ClubStatsView> {
+    return this.stats.stats(id, query.days);
   }
 
   /** Состав публичен — ТЗ 3.2 показывает его на странице клуба. */

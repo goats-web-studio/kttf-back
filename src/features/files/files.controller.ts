@@ -1,5 +1,13 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
-import { PHOTO_MAX_BYTES, rejectPhoto, type UploadedFile } from '@kttf/shared/types';
+import { randomUUID } from 'node:crypto';
+
+import {
+  CLUB_IMAGE_MAX_BYTES,
+  PHOTO_MAX_BYTES,
+  rejectPhoto,
+  type UploadedFile,
+  type UploadedImage,
+} from '@kttf/shared/types';
 import {
   Controller,
   Get,
@@ -17,6 +25,8 @@ import { z } from 'zod';
 
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import { RequireClubRole } from '../clubs/club-role.guard.js';
+import { ImageService } from './image.service.js';
 import { StorageService } from './storage.service.js';
 
 /** Пришедший файл. Структурно, чтобы не тянуть типы multer ради четырёх полей. */
@@ -39,7 +49,9 @@ const EXTENSIONS: Readonly<Record<string, string>> = {
  * Проверяется схемой, потому что приходит из пути запроса: без ограничения
  * `../` в ключе — это чтение чужого бакета.
  */
-const fileKeyParam = z.string().regex(/^[a-z-]+\/[0-9a-f-]{36}\.[a-z]{3,4}$/);
+const fileKeyParam = z.string().regex(/^[a-z-]+\/[0-9a-f-]{36}(?:-\d{3,4})?\.[a-z]{3,4}$/);
+
+const uuidParam = z.uuid();
 
 /**
  * Файлы — ТС 7.9, ADR-036.
@@ -51,7 +63,10 @@ const fileKeyParam = z.string().regex(/^[a-z-]+\/[0-9a-f-]{36}\.[a-z]{3,4}$/);
  */
 @Controller('files')
 export class FilesController {
-  constructor(private readonly storage: StorageService) {}
+  constructor(
+    private readonly storage: StorageService,
+    private readonly images: ImageService,
+  ) {}
 
   /**
    * Фото игрока — ТЗ 2.2.
@@ -87,6 +102,51 @@ export class FilesController {
     const key = await this.storage.put('players', file.buffer, file.mimetype, extension);
 
     return { url: `/api/v1/files/${key}` };
+  }
+
+  /**
+   * Логотип или обложка клуба — ADR-055.
+   *
+   * Загружает только состав клуба. Сервер пережимает картинку в WebP трёх
+   * ширин и снимает метаданные (`ImageService`); основной файл — самый
+   * широкий, варианты лежат рядом с суффиксом ширины. Сохранить путь в
+   * клубе — отдельный `PATCH /clubs/:id`: загруженная, но не сохранённая
+   * картинка страницу не меняет.
+   */
+  @Post('clubs/:id')
+  @RequireClubRole('OWNER', 'ORGANIZER')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: CLUB_IMAGE_MAX_BYTES } }))
+  async uploadClubImage(
+    @Param('id', new ZodValidationPipe(uuidParam)) _clubId: string,
+    @UploadedFileParam() file?: IncomingFile,
+  ): Promise<UploadedImage> {
+    if (file === undefined) {
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'File is missing', { field: 'file' });
+    }
+
+    const rejection = rejectPhoto({ type: file.mimetype, size: file.size }, CLUB_IMAGE_MAX_BYTES);
+
+    if (rejection !== null) {
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'File is not accepted', {
+        field: 'file',
+        reason: rejection,
+      });
+    }
+
+    const image = await this.images.process(file.buffer);
+    const id = randomUUID();
+
+    await Promise.all(
+      [...image.variants].map(([width, body]) =>
+        this.storage.putAt(
+          width === 1600 ? `clubs/${id}.webp` : `clubs/${id}-${String(width)}.webp`,
+          body,
+          'image/webp',
+        ),
+      ),
+    );
+
+    return { url: `/api/v1/files/clubs/${id}.webp`, width: image.width, height: image.height };
   }
 
   /**
