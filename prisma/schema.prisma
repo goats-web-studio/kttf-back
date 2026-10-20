@@ -733,6 +733,9 @@ model Training {
   clubId       String?
   club         Club?              @relation(fields: [clubId], references: [id], onDelete: Cascade)
   link         TrainingLink       @default(NONE)
+  // Кто записывает и принимает оплату. У своей тренировки тренера в клубе
+  // KTTF — тренер лично или клуб; у клубной и без клуба — как задано сервером
+  booking      TrainingBooking    @default(COACH)
   // Когда вторая сторона подтвердила, отказала или разорвала связь
   linkAt       DateTime?
   kind         TrainingKind
@@ -760,6 +763,11 @@ model Training {
 }
 
 enum TrainingAuthor {
+  COACH
+  CLUB
+}
+
+enum TrainingBooking {
   COACH
   CLUB
 }

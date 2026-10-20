@@ -206,6 +206,8 @@ export class CoachesService {
         author: 'COACH' as const,
         coachId: id,
         clubId,
+        // Записывать через клуб можно только в клубе KTTF; без клуба — сам тренер.
+        booking: clubId === null ? ('COACH' as const) : (row.booking ?? 'COACH'),
         ...keptLink(
           previous && { partner: previous.clubId, link: previous.link, linkAt: previous.linkAt },
           clubId,

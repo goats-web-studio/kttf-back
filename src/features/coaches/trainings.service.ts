@@ -239,6 +239,7 @@ export class TrainingsService {
       const previous = row.id === undefined ? undefined : byId.get(row.id);
       const fields = {
         author: 'CLUB' as const,
+        booking: 'CLUB' as const,
         clubId,
         coachId,
         ...keptLink(

@@ -64,6 +64,7 @@ function makeTraining(overrides: Record<string, unknown> = {}): TrainingRecord {
     clubId: null,
     link: 'NONE',
     linkAt: null,
+    booking: 'COACH',
     kind: 'GROUP',
     audiences: ['AMATEURS'],
     kidsFromAge: null,
@@ -184,6 +185,16 @@ describe('публичность тренировки', () => {
       link: 'CONFIRMED',
       club: { id: CLUB_ID },
     });
+  });
+
+  it('кто записывает: клубную — всегда клуб, тренерскую — как сохранено', () => {
+    expect(toTrainingView(inClub({ author: 'CLUB', booking: 'COACH' }), false).booking).toBe(
+      'CLUB',
+    );
+    expect(toTrainingView(inClub({ link: 'CONFIRMED', booking: 'CLUB' }), false).booking).toBe(
+      'CLUB',
+    );
+    expect(toTrainingView(makeTraining(), false).booking).toBe('COACH');
   });
 
   it('зал вне KTTF — названием и адресом', () => {
@@ -587,6 +598,7 @@ describe('тренировки клуба', () => {
         author: 'CLUB',
         clubId: CLUB_ID,
         place: 'CLUB',
+        booking: 'CLUB',
         coachId: COACH_ID,
         link: 'PENDING',
       }),

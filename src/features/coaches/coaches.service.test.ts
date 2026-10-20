@@ -89,6 +89,7 @@ function makeTraining(overrides: Record<string, unknown> = {}) {
     clubId: null,
     link: 'NONE',
     linkAt: null,
+    booking: 'COACH',
     kind: 'GROUP',
     audiences: ['AMATEURS'],
     kidsFromAge: null,
@@ -421,6 +422,26 @@ describe('свои тренировки тренера', () => {
     await service.setTrainings(COACH_ID, { trainings: [{ ...row, id, place: 'ONLINE' }] });
 
     expect(written()[0]).toMatchObject({ id, clubId: null, link: 'NONE', linkAt: null });
+  });
+
+  it('кто записывает: в клубе KTTF — как выбрал тренер, без клуба — всегда тренер', async () => {
+    stored([]);
+
+    await service.setTrainings(COACH_ID, {
+      trainings: [
+        { ...row, place: 'CLUB', clubId: CLUB_ID, booking: 'CLUB' },
+        { ...row, place: 'CLUB', clubId: CLUB_ID },
+        { ...row, place: 'CLUB', venueName: 'Школа №5', venueAddress: 'Сатпаева 1' },
+        { ...row, place: 'ONLINE' },
+      ],
+    });
+
+    expect(written().map((training) => training.booking)).toEqual([
+      'CLUB',
+      'COACH',
+      'COACH',
+      'COACH',
+    ]);
   });
 
   it('чужой id — новая строка', async () => {

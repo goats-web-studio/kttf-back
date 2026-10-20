@@ -86,6 +86,7 @@ export const trainingFields = {
   coachId: true,
   clubId: true,
   link: true,
+  booking: true,
   linkAt: true,
   kind: true,
   audiences: true,
@@ -174,6 +175,8 @@ export function toTrainingView(training: TrainingRecord, reveal: boolean): Train
   return {
     id: training.id,
     author: training.author,
+    // Клубную записывает клуб — всегда, что бы ни лежало в строке.
+    booking: training.author === 'CLUB' ? 'CLUB' : training.booking,
     kind: training.kind,
     audiences: training.audiences,
     kidsFromAge: training.kidsFromAge,
