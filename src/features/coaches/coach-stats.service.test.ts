@@ -57,6 +57,27 @@ describe('учёт события', () => {
     });
   });
 
+  it('«Записаться» в группу клуба — своей колонкой, повтор не считается', async () => {
+    const event = { kind: 'CLUB_GROUP', source: 'ORGANIC' } as const;
+
+    await service.record('coach-1', event, '1.2.3.4', NOW);
+    await service.record('coach-1', event, '1.2.3.4', new Date(NOW.getTime() + 60_000));
+
+    expect(prisma.coachStatDaily.upsert).toHaveBeenCalledOnce();
+    expect(prisma.coachStatDaily.upsert.mock.calls[0]?.[0]).toMatchObject({
+      create: { clubGroupClicks: 1 },
+      update: { clubGroupClicks: { increment: 1 } },
+    });
+  });
+
+  it('у неопубликованной страницы «Записаться» в группу не считается', async () => {
+    prisma.coach.findUnique.mockResolvedValueOnce({ status: 'PENDING', hiddenAt: null });
+
+    await service.record('coach-1', { kind: 'CLUB_GROUP', source: 'ORGANIC' }, '1.2.3.4', NOW);
+
+    expect(prisma.coachStatDaily.upsert).not.toHaveBeenCalled();
+  });
+
   it('адрес в базу не попадает', async () => {
     await service.record('coach-1', view, '10.0.0.77', NOW);
 
@@ -99,6 +120,7 @@ describe('статистика', () => {
         whatsappClicks: 2,
         telegramClicks: 0,
         instagramClicks: 3,
+        clubGroupClicks: 2,
       },
     ]);
 
@@ -116,6 +138,7 @@ describe('статистика', () => {
           whatsapp: 2,
           telegram: 0,
           instagram: 3,
+          clubGroup: 2,
         },
       ],
     });

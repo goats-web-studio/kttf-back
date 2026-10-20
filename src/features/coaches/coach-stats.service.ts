@@ -20,6 +20,7 @@ const COLUMNS = {
   WHATSAPP: 'whatsappClicks',
   TELEGRAM: 'telegramClicks',
   INSTAGRAM: 'instagramClicks',
+  CLUB_GROUP: 'clubGroupClicks',
 } as const satisfies Record<CoachEventKind, string>;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -110,6 +111,7 @@ export class CoachStatsService {
         whatsapp: row.whatsappClicks,
         telegram: row.telegramClicks,
         instagram: row.instagramClicks,
+        clubGroup: row.clubGroupClicks,
       })),
     };
   }

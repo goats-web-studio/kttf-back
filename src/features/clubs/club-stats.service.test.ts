@@ -87,6 +87,21 @@ describe('учёт события', () => {
   });
 });
 
+describe('«Записаться» к тренеру в зале клуба (ADR-059)', () => {
+  it('считается своей колонкой, повтор — нет', async () => {
+    const event = { kind: 'COACH_TRAINING', source: 'ORGANIC' } as const;
+
+    await service.record('club-1', event, '1.2.3.4', NOW);
+    await service.record('club-1', event, '1.2.3.4', new Date(NOW.getTime() + 60_000));
+
+    expect(prisma.clubStatDaily.upsert).toHaveBeenCalledOnce();
+    expect(prisma.clubStatDaily.upsert.mock.calls[0]?.[0]).toMatchObject({
+      create: { coachTrainingClicks: 1 },
+      update: { coachTrainingClicks: { increment: 1 } },
+    });
+  });
+});
+
 describe('статистика', () => {
   it('окно в днях включительно, колонки — короткими именами', async () => {
     prisma.clubStatDaily.findMany.mockResolvedValue([
@@ -101,6 +116,7 @@ describe('статистика', () => {
         instagramClicks: 0,
         websiteClicks: 0,
         routeClicks: 1,
+        coachTrainingClicks: 4,
       },
     ]);
 
@@ -118,6 +134,7 @@ describe('статистика', () => {
         instagram: 0,
         website: 0,
         route: 1,
+        coachTraining: 4,
       },
     ]);
   });

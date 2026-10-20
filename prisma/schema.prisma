@@ -347,17 +347,19 @@ enum PriceUnit {
 
 // Дневные счётчики страницы клуба — без IP и cookie (ADR-055)
 model ClubStatDaily {
-  clubId          String
-  date            DateTime      @db.Date // день по UTC+5
-  source          TrafficSource
-  views           Int           @default(0)
-  phoneClicks     Int           @default(0)
-  whatsappClicks  Int           @default(0)
-  telegramClicks  Int           @default(0)
-  instagramClicks Int           @default(0)
-  websiteClicks   Int           @default(0)
-  routeClicks     Int           @default(0)
-  club            Club          @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  clubId              String
+  date                DateTime      @db.Date // день по UTC+5
+  source              TrafficSource
+  views               Int           @default(0)
+  phoneClicks         Int           @default(0)
+  whatsappClicks      Int           @default(0)
+  telegramClicks      Int           @default(0)
+  instagramClicks     Int           @default(0)
+  websiteClicks       Int           @default(0)
+  routeClicks         Int           @default(0)
+  // «Записаться» к тренеру на его личную тренировку в зале клуба (ADR-059)
+  coachTrainingClicks Int           @default(0)
+  club                Club          @relation(fields: [clubId], references: [id], onDelete: Cascade)
 
   @@id([clubId, date, source])
 }
@@ -810,6 +812,8 @@ model CoachStatDaily {
   whatsappClicks  Int           @default(0)
   telegramClicks  Int           @default(0)
   instagramClicks Int           @default(0)
+  // «Записаться» в группу клуба, где он тренер
+  clubGroupClicks Int           @default(0)
   coach           Coach         @relation(fields: [coachId], references: [id], onDelete: Cascade)
 
   @@id([coachId, date, source])

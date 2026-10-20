@@ -21,6 +21,7 @@ const COLUMNS = {
   INSTAGRAM: 'instagramClicks',
   WEBSITE: 'websiteClicks',
   ROUTE: 'routeClicks',
+  COACH_TRAINING: 'coachTrainingClicks',
 } as const satisfies Record<ClubEventKind, string>;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -98,6 +99,7 @@ export class ClubStatsService {
         instagram: row.instagramClicks,
         website: row.websiteClicks,
         route: row.routeClicks,
+        coachTraining: row.coachTrainingClicks,
       })),
     };
   }
