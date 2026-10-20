@@ -49,7 +49,7 @@ const coach = {
   plan: 'FREE',
   profileReviewedAt: null,
   createdAt: new Date('2026-10-19T00:00:00.000Z'),
-  services: [],
+  trainings: [],
   credentials: [
     {
       id: 'doc-1',

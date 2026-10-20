@@ -64,6 +64,8 @@ const STATUS_BY_CODE: Readonly<Record<ErrorCode, number>> = {
   COACH_ALREADY_EXISTS: HttpStatus.CONFLICT,
   COACH_INCOMPLETE: HttpStatus.CONFLICT,
   COACH_STATUS_INVALID: HttpStatus.CONFLICT,
+  // Ответ на связь, которая этого ответа не ждёт, — тоже конфликт состояния.
+  TRAINING_LINK_INVALID: HttpStatus.CONFLICT,
 };
 
 const CODE_BY_STATUS: Readonly<Record<number, ErrorCode>> = {

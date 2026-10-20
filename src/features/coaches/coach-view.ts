@@ -3,50 +3,27 @@ import {
   type CoachApplicationView,
   type CoachCredentialView,
   type CoachListItemView,
-  type CoachPlayerRef,
-  type CoachServiceView,
   type CoachView,
-  type TrainingListItemView,
+  type TrainingLink,
 } from '@kttf/shared/types';
 
 import type { Prisma } from '../../generated/prisma/client.js';
 import { cityRefFields } from '../places/place.fields.js';
+import {
+  TRAINING_ORDER,
+  coachPlayerFields,
+  toPlayerRef,
+  toTrainingView,
+  trainingFields,
+} from './training-view.js';
 
-/** Страница видна всем: одобрена и не скрыта (`isCoachPublic`). */
-export const PUBLIC_COACH = {
-  status: 'APPROVED',
-  hiddenAt: null,
-} as const satisfies Prisma.CoachWhereInput;
+export { PUBLIC_COACH } from './training-view.js';
 
 /** Свежие страницы сверху: «Всё актуально» поднимает тренера в списке. */
 export const COACH_ORDER = [
   { profileReviewedAt: { sort: 'desc', nulls: 'last' } },
   { createdAt: 'desc' },
 ] as const satisfies Prisma.CoachOrderByWithRelationInput[];
-
-export const coachPlayerFields = {
-  id: true,
-  lastName: true,
-  firstName: true,
-  middleName: true,
-  photoUrl: true,
-  rating: true,
-  isProvisional: true,
-  city: { select: cityRefFields },
-} as const satisfies Prisma.PlayerSelect;
-
-export const serviceFields = {
-  id: true,
-  kind: true,
-  audiences: true,
-  kidsFromAge: true,
-  place: true,
-  title: true,
-  schedule: true,
-  priceKzt: true,
-  unit: true,
-  note: true,
-} as const satisfies Prisma.CoachServiceSelect;
 
 export const credentialFields = {
   id: true,
@@ -96,7 +73,8 @@ export const coachFields = {
   plan: true,
   profileReviewedAt: true,
   createdAt: true,
-  services: { select: serviceFields, orderBy: { sortOrder: 'asc' } },
+  // Все тренировки с этим тренером: свои и клубные, где он указан.
+  trainings: { select: trainingFields, orderBy: [...TRAINING_ORDER] },
   credentials: { select: credentialFields, orderBy: { sortOrder: 'asc' } },
   achievements: {
     select: { id: true, role: true, year: true, title: true },
@@ -121,32 +99,43 @@ export const coachListFields = {
   coachCategory: true,
   coachingSince: true,
   profileReviewedAt: true,
-  services: { select: { priceKzt: true } },
+  trainings: {
+    select: {
+      author: true,
+      clubId: true,
+      link: true,
+      priceKzt: true,
+      club: { select: { id: true, name: true, hiddenAt: true } },
+    },
+  },
 } as const satisfies Prisma.CoachSelect;
 
 export type CoachListRecord = Prisma.CoachGetPayload<{ select: typeof coachListFields }>;
 
-/** Тренер в карточке тренировки — ровно то, что берёт `trainingListItemViewSchema`. */
-export const trainingCoachFields = {
-  id: true,
-  slug: true,
-  playerId: true,
-  player: { select: coachPlayerFields },
-  photoUrl: true,
-  city: { select: cityRefFields },
-  languages: true,
-} as const satisfies Prisma.CoachSelect;
-
-export const trainingFields = {
-  ...serviceFields,
-  coach: { select: trainingCoachFields },
-} as const satisfies Prisma.CoachServiceSelect;
-
-export type TrainingRecord = Prisma.CoachServiceGetPayload<{ select: typeof trainingFields }>;
-
-type PlayerRecord = CoachRecord['player'];
-type ServiceRecord = CoachRecord['services'][number];
 type CredentialRecord = CoachRecord['credentials'][number];
+
+/** Тренировка с этим тренером — в том объёме, который нужен правилу видимости. */
+interface CoachTrainingLink {
+  readonly author: 'COACH' | 'CLUB';
+  readonly clubId: string | null;
+  readonly link: TrainingLink;
+  readonly club: { readonly hiddenAt: Date | null } | null;
+}
+
+/** Связь с клубом подтверждена, и клуб не скрыт. */
+function confirmedInOpenClub(training: CoachTrainingLink): boolean {
+  return training.link === 'CONFIRMED' && training.club !== null && training.club.hiddenAt === null;
+}
+
+/**
+ * Тренировка на опубликованной странице тренера: своя без клуба или с
+ * подтвердившим клубом, клубная — где тренер подтвердил участие.
+ */
+export function visibleOnCoachPage(training: CoachTrainingLink): boolean {
+  return training.author === 'COACH' && training.clubId === null
+    ? true
+    : confirmedInOpenClub(training);
+}
 
 /**
  * Кто смотрит. Владелец страницы и администратор видят причину отказа,
@@ -154,24 +143,6 @@ type CredentialRecord = CoachRecord['credentials'][number];
  */
 export interface CoachViewer {
   readonly privileged: boolean;
-}
-
-export function toPlayerRef(player: PlayerRecord): CoachPlayerRef {
-  return {
-    id: player.id,
-    lastName: player.lastName,
-    firstName: player.firstName,
-    middleName: player.middleName,
-    photoUrl: player.photoUrl,
-    // Строкой, как везде (ADR-014): через number рейтинг потерял бы точность.
-    rating: player.rating.toString(),
-    isProvisional: player.isProvisional,
-    city: player.city,
-  };
-}
-
-export function toServiceView(service: ServiceRecord): CoachServiceView {
-  return { ...service };
 }
 
 export function toCredentialView(
@@ -228,7 +199,20 @@ export function toCoachView(
     coachCategory: coach.coachCategory,
     refereeCategory: coach.refereeCategory,
     education: coach.education,
-    services: coach.services.map(toServiceView),
+    // Владельцу и администратору — свои тренировки как есть, со статусом
+    // связи; остальным — только видимые. Клубные — с подтверждённой связью.
+    trainings: coach.trainings
+      .filter((training) =>
+        training.author === 'COACH'
+          ? viewer.privileged || visibleOnCoachPage(training)
+          : confirmedInOpenClub(training),
+      )
+      .map((training) => toTrainingView(training, viewer.privileged)),
+    trainingRequests: viewer.privileged
+      ? coach.trainings
+          .filter((training) => training.author === 'CLUB' && training.link === 'PENDING')
+          .map((training) => toTrainingView(training, true))
+      : [],
     credentials: coach.credentials.map((credential) =>
       toCredentialView(coach.id, credential, viewer),
     ),
@@ -248,9 +232,15 @@ export function toApplicationView(coach: CoachRecord, studentsCount: number): Co
 }
 
 export function toListItemView(coach: CoachListRecord, studentsCount: number): CoachListItemView {
-  const prices = coach.services.flatMap((service) =>
-    service.priceKzt === null ? [] : [service.priceKzt],
+  const visible = coach.trainings.filter(visibleOnCoachPage);
+  const prices = visible.flatMap((training) =>
+    training.priceKzt === null ? [] : [training.priceKzt],
   );
+  const clubs = new Map<string, { id: string; name: string }>();
+
+  for (const training of visible) {
+    if (training.club !== null) clubs.set(training.club.id, training.club);
+  }
 
   return {
     id: coach.id,
@@ -265,28 +255,9 @@ export function toListItemView(coach: CoachListRecord, studentsCount: number): C
     coachCategory: coach.coachCategory,
     coachingSince: coach.coachingSince,
     minPriceKzt: prices.length === 0 ? null : Math.min(...prices),
-    servicesCount: coach.services.length,
+    trainingsCount: visible.length,
+    clubs: [...clubs.values()].map((club) => ({ id: club.id, name: club.name })),
     studentsCount,
     profileReviewedAt: coach.profileReviewedAt?.toISOString() ?? null,
-  };
-}
-
-export function toTrainingView(
-  training: TrainingRecord,
-  studentsCount: number,
-): TrainingListItemView {
-  const { coach, ...service } = training;
-
-  return {
-    ...toServiceView(service),
-    coach: {
-      id: coach.id,
-      slug: coach.slug,
-      player: toPlayerRef(coach.player),
-      photoUrl: coach.photoUrl,
-      city: coach.city,
-      languages: coach.languages,
-      studentsCount,
-    },
   };
 }

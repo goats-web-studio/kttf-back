@@ -24,7 +24,8 @@ import {
   setCoachAchievementsSchema,
   setCoachCredentialsSchema,
   setCoachHiddenSchema,
-  setCoachServicesSchema,
+  setClubTrainingsSchema,
+  setCoachTrainingsSchema,
   updateCoachSchema,
   verifyCoachCredentialSchema,
   type CoachApplicationView,
@@ -41,8 +42,11 @@ import {
   type SetCoachAchievementsInput,
   type SetCoachCredentialsInput,
   type SetCoachHiddenInput,
-  type SetCoachServicesInput,
-  type TrainingListItemView,
+  type SetClubTrainingsInput,
+  type SetCoachTrainingsInput,
+  type ClubTrainingsManageView,
+  type TrainingGroupView,
+  type TrainingView,
   type UpdateCoachInput,
   type VerifyCoachCredentialInput,
 } from '@kttf/shared/types';
@@ -54,12 +58,14 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { RequireAdmin } from '../auth/admin.guard.js';
 import { CurrentUserId, JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { OptionalJwtGuard, OptionalUserId } from '../auth/optional-jwt.guard.js';
+import { RequireClubRole } from '../clubs/club-role.guard.js';
 import { StorageService } from '../files/storage.service.js';
 import { CoachAdminService } from './coach-admin.service.js';
 import { CoachCatalogService } from './coach-catalog.service.js';
 import { RequireCoachOwner } from './coach-owner.guard.js';
 import { CoachStatsService } from './coach-stats.service.js';
 import { CoachesService } from './coaches.service.js';
+import { TrainingsService } from './trainings.service.js';
 
 const uuidParam = new ZodValidationPipe(z.uuid());
 const slugParam = new ZodValidationPipe(z.string().max(100).regex(SLUG_PATTERN));
@@ -118,14 +124,17 @@ export class CoachesController {
     return this.coaches.update(id, body);
   }
 
-  /** Тренировки целиком, порядок строк — порядок в теле. */
-  @Put(':id/services')
+  /**
+   * Свои тренировки целиком, порядок строк — порядок в теле. «В клубе» —
+   * клуб KTTF (клуб подтверждает) или зал вне KTTF с адресом.
+   */
+  @Put(':id/trainings')
   @RequireCoachOwner()
-  async setServices(
+  async setTrainings(
     @Param('id', uuidParam) id: string,
-    @Body(new ZodValidationPipe(setCoachServicesSchema)) body: SetCoachServicesInput,
+    @Body(new ZodValidationPipe(setCoachTrainingsSchema)) body: SetCoachTrainingsInput,
   ): Promise<CoachView> {
-    return this.coaches.setServices(id, body);
+    return this.coaches.setTrainings(id, body);
   }
 
   @Put(':id/credentials')
@@ -207,16 +216,66 @@ export class CoachesController {
   }
 }
 
-/** Раздел «Тренировки» — карточки тренировок опубликованных страниц. */
+/**
+ * Раздел «Тренировки» — блоками по месту — и ответ второй стороны на связь
+ * (решение владельца от 20.10.2026).
+ */
 @Controller('trainings')
 export class TrainingsController {
-  constructor(private readonly catalog: CoachCatalogService) {}
+  constructor(private readonly trainings: TrainingsService) {}
 
   @Get()
   async list(
     @Query(new ZodValidationPipe(listTrainingsSchema)) query: ListTrainingsQuery,
-  ): Promise<Page<TrainingListItemView>> {
-    return this.catalog.trainings(query);
+  ): Promise<Page<TrainingGroupView>> {
+    return this.trainings.list(query);
+  }
+
+  /** Подтвердить связь — клуб у тренировки тренера, тренер у клубной. */
+  @Post(':id/confirm')
+  @UseGuards(JwtAuthGuard)
+  async confirm(
+    @Param('id', uuidParam) id: string,
+    @CurrentUserId() userId: string,
+  ): Promise<TrainingView> {
+    return this.trainings.confirm(id, userId);
+  }
+
+  /** Отказать или разорвать подтверждённую связь. */
+  @Post(':id/decline')
+  @UseGuards(JwtAuthGuard)
+  async decline(
+    @Param('id', uuidParam) id: string,
+    @CurrentUserId() userId: string,
+  ): Promise<TrainingView> {
+    return this.trainings.decline(id, userId);
+  }
+}
+
+/** Тренировки на странице клуба и в его кабинете. */
+@Controller('clubs')
+export class ClubTrainingsController {
+  constructor(private readonly trainings: TrainingsService) {}
+
+  @Get(':id/trainings')
+  async list(@Param('id', uuidParam) id: string): Promise<TrainingView[]> {
+    return this.trainings.forClub(id);
+  }
+
+  @Get(':id/trainings/manage')
+  @RequireClubRole('OWNER', 'ORGANIZER')
+  async manage(@Param('id', uuidParam) id: string): Promise<ClubTrainingsManageView> {
+    return this.trainings.manage(id);
+  }
+
+  /** Тренировки клуба целиком, порядок строк — порядок в теле. */
+  @Put(':id/trainings')
+  @RequireClubRole('OWNER', 'ORGANIZER')
+  async setTrainings(
+    @Param('id', uuidParam) id: string,
+    @Body(new ZodValidationPipe(setClubTrainingsSchema)) body: SetClubTrainingsInput,
+  ): Promise<ClubTrainingsManageView> {
+    return this.trainings.setClubTrainings(id, body);
   }
 }
 

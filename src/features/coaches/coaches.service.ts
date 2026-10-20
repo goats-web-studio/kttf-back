@@ -9,7 +9,7 @@ import {
   type CoachView,
   type SetCoachAchievementsInput,
   type SetCoachCredentialsInput,
-  type SetCoachServicesInput,
+  type SetCoachTrainingsInput,
   type UpdateCoachInput,
 } from '@kttf/shared/types';
 import { Injectable } from '@nestjs/common';
@@ -20,6 +20,7 @@ import { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { pickSlug } from '../catalog/catalog-query.js';
 import { PlacesService } from '../places/places.service.js';
 import { countStudents } from './coach-students.js';
+import { keptLink } from './training-rules.js';
 import { coachFields, toCoachView, type CoachRecord, type CoachViewer } from './coach-view.js';
 
 /** Владелец страницы и администратор: маршруты под `RequireCoachOwner`. */
@@ -171,28 +172,66 @@ export class CoachesService {
     return this.view(coach, OWNER);
   }
 
-  async setServices(id: string, input: SetCoachServicesInput): Promise<CoachView> {
-    const { plan } = await this.planOf(id);
+  /**
+   * Свои тренировки тренера целиком (`author: COACH`). Клубные, где тренер
+   * подтвердил участие, этим списком не правятся — их ведёт клуб.
+   *
+   * Строка с `id` своей тренировки остаётся той же записью. Связь с клубом
+   * переживает правку, если клуб тот же — в том числе отказ: тренер не
+   * может переспросить клуб, отправив список заново. Другой клуб — снова
+   * ждёт подтверждения; без клуба (выезд, онлайн, зал по адресу) — связи нет.
+   */
+  async setTrainings(id: string, input: SetCoachTrainingsInput): Promise<CoachView> {
+    const current = await this.prisma.coach.findUnique({
+      where: { id },
+      select: {
+        plan: true,
+        trainings: {
+          where: { author: 'COACH' },
+          select: { id: true, clubId: true, link: true, linkAt: true, createdAt: true },
+        },
+      },
+    });
 
-    assertLimit(input.services.length, coachLimits(plan).services, 'services');
+    if (current === null) throw notFound(id);
+
+    assertLimit(input.trainings.length, coachLimits(current.plan).trainings, 'trainings');
+    await this.assertClubsOpen(input.trainings.map((row) => row.clubId ?? null));
+
+    const stored = new Map(current.trainings.map((training) => [training.id, training]));
+    const data = input.trainings.map((row, index) => {
+      const clubId = row.place === 'CLUB' ? (row.clubId ?? null) : null;
+      const previous = row.id === undefined ? undefined : stored.get(row.id);
+      const fields = {
+        author: 'COACH' as const,
+        coachId: id,
+        clubId,
+        ...keptLink(
+          previous && { partner: previous.clubId, link: previous.link, linkAt: previous.linkAt },
+          clubId,
+        ),
+        kind: row.kind,
+        audiences: row.audiences,
+        kidsFromAge: row.kidsFromAge ?? null,
+        place: row.place,
+        venueName: clubId === null ? (row.venueName ?? null) : null,
+        venueAddress: clubId === null ? (row.venueAddress ?? null) : null,
+        title: row.title,
+        schedule: row.schedule ?? null,
+        priceKzt: row.priceKzt ?? null,
+        unit: row.unit,
+        note: row.note ?? null,
+        sortOrder: index,
+      };
+
+      return previous === undefined
+        ? fields
+        : { ...fields, id: previous.id, createdAt: previous.createdAt };
+    });
 
     const [, , coach] = await this.prisma.$transaction([
-      this.prisma.coachService.deleteMany({ where: { coachId: id } }),
-      this.prisma.coachService.createMany({
-        data: input.services.map((service, index) => ({
-          coachId: id,
-          kind: service.kind,
-          audiences: service.audiences,
-          kidsFromAge: service.kidsFromAge ?? null,
-          place: service.place,
-          title: service.title,
-          schedule: service.schedule ?? null,
-          priceKzt: service.priceKzt ?? null,
-          unit: service.unit,
-          note: service.note ?? null,
-          sortOrder: index,
-        })),
-      }),
+      this.prisma.training.deleteMany({ where: { coachId: id, author: 'COACH' } }),
+      this.prisma.training.createMany({ data }),
       this.touch(id),
     ]);
 
@@ -293,16 +332,13 @@ export class CoachesService {
    * запроса не отправят заявку дважды.
    */
   async submit(id: string, now = new Date()): Promise<CoachView> {
-    const coach = await this.prisma.coach.findUnique({
-      where: { id },
-      select: { status: true, cityId: true, services: { select: { id: true } } },
-    });
-
-    if (coach === null) throw notFound(id);
+    const coach = await this.view(await this.load(id), OWNER);
 
     if (!canSubmitCoach(coach.status)) throw statusInvalid(coach.status);
 
-    const missing = coachMissing({ city: coach.cityId, services: coach.services });
+    // По тому, что видит владелец: тренировка в клубе, который ещё не
+    // ответил, — тоже тренировка, проверять её будет администратор.
+    const missing = coachMissing({ city: coach.city, trainings: coach.trainings });
 
     if (missing.length > 0) {
       throw new AppError(ERROR_CODES.COACH_INCOMPLETE, 'Coach page is incomplete', { missing });
@@ -395,6 +431,26 @@ export class CoachesService {
     });
 
     return viewer?.isAdmin === true;
+  }
+
+  /** Клуб тренировки — существующий и не скрытый клуб KTTF. */
+  private async assertClubsOpen(clubIds: readonly (string | null)[]): Promise<void> {
+    const wanted = clubIds.flatMap((clubId) => (clubId === null ? [] : [clubId]));
+
+    if (wanted.length === 0) return;
+
+    const open = await this.prisma.club.findMany({
+      where: { id: { in: [...new Set(wanted)] }, hiddenAt: null },
+      select: { id: true },
+    });
+    const known = new Set(open.map((club) => club.id));
+    const unknown = clubIds.findIndex((clubId) => clubId !== null && !known.has(clubId));
+
+    if (unknown !== -1) {
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Club is unknown or hidden', {
+        field: `trainings.${String(unknown)}.clubId`,
+      });
+    }
   }
 
   private touch(id: string) {

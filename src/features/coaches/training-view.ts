@@ -1,0 +1,181 @@
+import {
+  isCoachPublic,
+  type CoachPlayerRef,
+  type TrainingClubRef,
+  type TrainingView,
+} from '@kttf/shared/types';
+
+import type { Prisma } from '../../generated/prisma/client.js';
+import { cityRefFields } from '../places/place.fields.js';
+
+/** Страница тренера видна всем: одобрена и не скрыта (`isCoachPublic`). */
+export const PUBLIC_COACH = {
+  status: 'APPROVED',
+  hiddenAt: null,
+} as const satisfies Prisma.CoachWhereInput;
+
+/**
+ * Тренировка видна всем — решение владельца от 20.10.2026:
+ * - тренерская — у опубликованной страницы, без клуба (выезд, онлайн, зал
+ *   по адресу) или с клубом, который подтвердил связь и не скрыт;
+ * - клубная — у не скрытого клуба; тренер в ней показывается отдельно,
+ *   только подтверждённый и опубликованный (`toTrainingView`).
+ */
+export const PUBLIC_TRAINING = {
+  OR: [
+    { author: 'COACH', coach: { is: PUBLIC_COACH }, clubId: null },
+    {
+      author: 'COACH',
+      coach: { is: PUBLIC_COACH },
+      link: 'CONFIRMED',
+      club: { is: { hiddenAt: null } },
+    },
+    { author: 'CLUB', club: { is: { hiddenAt: null } } },
+  ],
+} as const satisfies Prisma.TrainingWhereInput;
+
+/** Внутри места — как расставил автор, затем по времени заведения. */
+export const TRAINING_ORDER = [
+  { sortOrder: 'asc' },
+  { createdAt: 'asc' },
+] as const satisfies Prisma.TrainingOrderByWithRelationInput[];
+
+export const coachPlayerFields = {
+  id: true,
+  lastName: true,
+  firstName: true,
+  middleName: true,
+  photoUrl: true,
+  rating: true,
+  isProvisional: true,
+  city: { select: cityRefFields },
+} as const satisfies Prisma.PlayerSelect;
+
+export const trainingClubFields = {
+  id: true,
+  name: true,
+  logoUrl: true,
+  address: true,
+  city: { select: cityRefFields },
+  hiddenAt: true,
+  profileReviewedAt: true,
+} as const satisfies Prisma.ClubSelect;
+
+export const trainingCoachFields = {
+  id: true,
+  slug: true,
+  userId: true,
+  photoUrl: true,
+  status: true,
+  hiddenAt: true,
+  player: { select: coachPlayerFields },
+} as const satisfies Prisma.CoachSelect;
+
+export const trainingFields = {
+  id: true,
+  author: true,
+  coachId: true,
+  clubId: true,
+  link: true,
+  linkAt: true,
+  kind: true,
+  audiences: true,
+  kidsFromAge: true,
+  place: true,
+  venueName: true,
+  venueAddress: true,
+  title: true,
+  schedule: true,
+  priceKzt: true,
+  unit: true,
+  note: true,
+  sortOrder: true,
+  createdAt: true,
+  club: { select: trainingClubFields },
+  coach: { select: trainingCoachFields },
+} as const satisfies Prisma.TrainingSelect;
+
+export type TrainingRecord = Prisma.TrainingGetPayload<{ select: typeof trainingFields }>;
+type PlayerRecord = Prisma.PlayerGetPayload<{ select: typeof coachPlayerFields }>;
+type ClubRecord = NonNullable<TrainingRecord['club']>;
+
+export function toPlayerRef(player: PlayerRecord): CoachPlayerRef {
+  return {
+    id: player.id,
+    lastName: player.lastName,
+    firstName: player.firstName,
+    middleName: player.middleName,
+    photoUrl: player.photoUrl,
+    // Строкой, как везде (ADR-014): через number рейтинг потерял бы точность.
+    rating: player.rating.toString(),
+    isProvisional: player.isProvisional,
+    city: player.city,
+  };
+}
+
+export function toClubRef(club: ClubRecord): TrainingClubRef {
+  return {
+    id: club.id,
+    name: club.name,
+    logoUrl: club.logoUrl,
+    address: club.address,
+    city: club.city,
+  };
+}
+
+/** Видна ли тренировка всем — то же правило, что `PUBLIC_TRAINING`, для уже прочитанных строк. */
+export function isTrainingPublic(training: TrainingRecord): boolean {
+  const clubOpen = training.club !== null && training.club.hiddenAt === null;
+
+  if (training.author === 'CLUB') return clubOpen;
+
+  const coachOpen =
+    training.coach !== null &&
+    isCoachPublic({ status: training.coach.status, hidden: training.coach.hiddenAt !== null });
+
+  return coachOpen && (training.clubId === null || (training.link === 'CONFIRMED' && clubOpen));
+}
+
+/**
+ * Тренировка в ответе. `reveal` — смотрит автор, вторая сторона или
+ * администратор: им вторая сторона показывается как есть, при любом
+ * статусе связи. Остальным тренер клубной тренировки виден только
+ * подтверждённым и опубликованным.
+ */
+export function toTrainingView(training: TrainingRecord, reveal: boolean): TrainingView {
+  const coach = training.coach;
+  const showCoach =
+    coach !== null &&
+    (training.author === 'COACH' ||
+      reveal ||
+      (training.link === 'CONFIRMED' &&
+        isCoachPublic({ status: coach.status, hidden: coach.hiddenAt !== null })));
+
+  return {
+    id: training.id,
+    author: training.author,
+    kind: training.kind,
+    audiences: training.audiences,
+    kidsFromAge: training.kidsFromAge,
+    place: training.place,
+    club: training.club === null ? null : toClubRef(training.club),
+    venue:
+      training.venueName === null || training.venueAddress === null
+        ? null
+        : { name: training.venueName, address: training.venueAddress },
+    coach: showCoach
+      ? {
+          id: coach.id,
+          slug: coach.slug,
+          player: toPlayerRef(coach.player),
+          photoUrl: coach.photoUrl,
+        }
+      : null,
+    link: training.link,
+    title: training.title,
+    schedule: training.schedule,
+    priceKzt: training.priceKzt,
+    unit: training.unit,
+    note: training.note,
+  };
+}

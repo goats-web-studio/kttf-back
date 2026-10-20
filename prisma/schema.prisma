@@ -267,6 +267,7 @@ model Club {
   posts        ClubPost[]
   media        ClubMedia[]
   tables       ClubTable[]
+  trainings    Training[]
 
   @@index([cityId])
 }
@@ -627,7 +628,7 @@ model Coach {
   hiddenReason      String?
   createdAt         DateTime        @default(now())
 
-  services     CoachService[]
+  trainings    Training[]
   credentials  CoachCredential[]
   achievements CoachAchievement[]
   stats        CoachStatDaily[]
@@ -714,25 +715,53 @@ enum CoachPlan {
   PRO
 }
 
-// Тренировка — строка прайса тренера. Правится списком целиком, как цены
-// клуба. Ссылка на клуб из штаба (место CLUB) появится в T2.
-model CoachService {
-  id          String             @id @default(uuid())
-  coachId     String
-  kind        TrainingKind
-  audiences   TrainingAudience[]
-  kidsFromAge Int?
-  place       TrainingPlace
-  title       String
-  schedule    String?
+// Тренировка — решение владельца от 20.10.2026: её заводит тренер на своей
+// странице или клуб на своей. «В клубе» у тренера — клуб KTTF (clubId,
+// клуб подтверждает) или зал вне KTTF названием и адресом. Клуб указывает
+// тренера со страницей — подтверждает тренер. link — связь со второй
+// стороной; разорвать её может любая сторона.
+model Training {
+  id           String             @id @default(uuid())
+  author       TrainingAuthor
+  coachId      String?
+  coach        Coach?             @relation(fields: [coachId], references: [id], onDelete: Cascade)
+  clubId       String?
+  club         Club?              @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  link         TrainingLink       @default(NONE)
+  // Когда вторая сторона подтвердила, отказала или разорвала связь
+  linkAt       DateTime?
+  kind         TrainingKind
+  audiences    TrainingAudience[]
+  kidsFromAge  Int?
+  place        TrainingPlace
+  // Зал вне KTTF — у тренировки тренера «в клубе» без clubId
+  venueName    String?
+  venueAddress String?
+  title        String
+  schedule     String?
   // Без цены — «по договорённости»
-  priceKzt    Int?
-  unit        PriceUnit
-  note        String?
-  sortOrder   Int
-  coach       Coach              @relation(fields: [coachId], references: [id], onDelete: Cascade)
+  priceKzt     Int?
+  unit         PriceUnit
+  note         String?
+  sortOrder    Int
+  createdAt    DateTime           @default(now())
 
   @@index([coachId, sortOrder])
+  @@index([clubId, sortOrder])
+  // Раздел «Тренировки»: выезд и онлайн, входящие запросы по статусу связи
+  @@index([place, link])
+}
+
+enum TrainingAuthor {
+  COACH
+  CLUB
+}
+
+enum TrainingLink {
+  NONE
+  PENDING
+  CONFIRMED
+  DECLINED
 }
 
 // Документ тренера. fileKey — путь загрузки скана (/api/v1/files/coach-docs/…);

@@ -10,6 +10,7 @@ const COACH_ID = '11111111-1111-4111-8111-111111111111';
 const DOC_ID = '22222222-2222-4222-8222-222222222222';
 const SCAN = '/api/v1/files/coach-docs/33333333-3333-4333-8333-333333333333.webp';
 const OWNER_ID = 'user-owner';
+const CLUB_ID = '77777777-7777-4777-8777-777777777777';
 const VERIFIED = new Date('2026-10-01T00:00:00.000Z');
 
 const city = { id: 'city-1', name: 'Алматы', nameKk: null };
@@ -68,13 +69,58 @@ function makeCoach(overrides: Record<string, unknown> = {}) {
     plan: 'FREE',
     profileReviewedAt: null,
     createdAt: new Date('2026-10-20T00:00:00.000Z'),
-    services: [],
+    trainings: [],
     credentials: [
       credential,
       { ...credential, id: 'doc-public', filePublic: true },
       { ...credential, id: 'doc-empty', fileKey: null },
     ],
     achievements: [],
+    ...overrides,
+  };
+}
+
+/** Тренировка в выборке страницы — тренер в ней тот же. */
+function makeTraining(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'training-1',
+    author: 'COACH',
+    coachId: COACH_ID,
+    clubId: null,
+    link: 'NONE',
+    linkAt: null,
+    kind: 'GROUP',
+    audiences: ['AMATEURS'],
+    kidsFromAge: null,
+    place: 'ONLINE',
+    venueName: null,
+    venueAddress: null,
+    title: 'Группа',
+    schedule: null,
+    priceKzt: null,
+    unit: 'MONTH',
+    note: null,
+    sortOrder: 0,
+    createdAt: new Date('2026-10-20T00:00:00.000Z'),
+    club: null,
+    coach: {
+      id: COACH_ID,
+      slug: 'kim-sergey',
+      userId: OWNER_ID,
+      photoUrl: null,
+      status: 'APPROVED',
+      hiddenAt: null,
+      player: {
+        id: 'player-1',
+        lastName: 'Ким',
+        firstName: 'Сергей',
+        middleName: null,
+        photoUrl: null,
+        rating: { toString: () => '512.00' },
+        isProvisional: false,
+        city,
+      },
+    },
     ...overrides,
   };
 }
@@ -88,10 +134,11 @@ function makePrisma() {
       update: vi.fn().mockResolvedValue(makeCoach()),
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
-    coachService: {
+    training: {
       deleteMany: vi.fn().mockReturnValue('deleteMany'),
       createMany: vi.fn().mockReturnValue('createMany'),
     },
+    club: { findMany: vi.fn().mockResolvedValue([{ id: CLUB_ID }]) },
     coachCredential: {
       deleteMany: vi.fn().mockReturnValue('deleteMany'),
       createMany: vi.fn().mockReturnValue('createMany'),
@@ -282,40 +329,119 @@ describe('правка страницы', () => {
       code: 'NOT_FOUND',
     });
   });
+});
 
-  it('тренировки — порядок строк в sortOrder, пустое — null', async () => {
-    prisma.coach.findUnique.mockResolvedValue({ plan: 'FREE' });
+describe('свои тренировки тренера', () => {
+  const at = new Date('2026-10-19T00:00:00.000Z');
+  const id = '88888888-8888-4888-8888-888888888888';
+  const row = {
+    kind: 'GROUP' as const,
+    audiences: ['AMATEURS' as const],
+    title: 'Группа',
+    unit: 'MONTH' as const,
+  };
 
-    await service.setServices(COACH_ID, {
-      services: [
-        {
-          kind: 'INDIVIDUAL',
-          audiences: ['ADULT_BEGINNERS'],
-          place: 'CLUB',
-          title: 'А',
-          unit: 'HOUR',
-        },
-        {
-          kind: 'KIDS_GROUP',
-          audiences: ['KIDS'],
-          kidsFromAge: 6,
-          place: 'CLUB',
-          title: 'Б',
-          priceKzt: 20_000,
-          unit: 'MONTH',
-        },
+  function stored(trainings: Record<string, unknown>[]) {
+    prisma.coach.findUnique.mockResolvedValue({ plan: 'FREE', trainings });
+  }
+
+  function written(): Record<string, unknown>[] {
+    return (prisma.training.createMany.mock.calls[0]?.[0] as { data: Record<string, unknown>[] })
+      .data;
+  }
+
+  it('правит только свои строки; порядок — sortOrder, пустое — null', async () => {
+    stored([]);
+
+    await service.setTrainings(COACH_ID, {
+      trainings: [
+        { ...row, place: 'ONLINE', title: 'А' },
+        { ...row, place: 'VISIT', title: 'Б', priceKzt: 8_000 },
       ],
     });
 
-    const data = (
-      prisma.coachService.createMany.mock.calls[0]?.[0] as { data: Record<string, unknown>[] }
-    ).data;
-
-    expect(data.map((row) => [row.title, row.sortOrder, row.priceKzt, row.kidsFromAge])).toEqual([
-      ['А', 0, null, null],
-      ['Б', 1, 20_000, 6],
+    expect(prisma.training.deleteMany).toHaveBeenCalledWith({
+      where: { coachId: COACH_ID, author: 'COACH' },
+    });
+    expect(
+      written().map((training) => [training.title, training.sortOrder, training.priceKzt]),
+    ).toEqual([
+      ['А', 0, null],
+      ['Б', 1, 8_000],
     ]);
-    expect(prisma.coachService.deleteMany).toHaveBeenCalledWith({ where: { coachId: COACH_ID } });
+    expect(written()[0]).toMatchObject({ author: 'COACH', coachId: COACH_ID, link: 'NONE' });
+  });
+
+  it('клуб KTTF — ждёт подтверждения клуба; зал по адресу, выезд и онлайн — без связи', async () => {
+    stored([]);
+
+    await service.setTrainings(COACH_ID, {
+      trainings: [
+        { ...row, place: 'CLUB', clubId: CLUB_ID },
+        { ...row, place: 'CLUB', venueName: 'Школа №5', venueAddress: 'Сатпаева 1' },
+        { ...row, place: 'VISIT' },
+      ],
+    });
+
+    expect(written().map((training) => [training.clubId, training.link])).toEqual([
+      [CLUB_ID, 'PENDING'],
+      [null, 'NONE'],
+      [null, 'NONE'],
+    ]);
+    expect(written()[1]).toMatchObject({ venueName: 'Школа №5', venueAddress: 'Сатпаева 1' });
+  });
+
+  it('тот же id и тот же клуб сохраняют связь, включая отказ', async () => {
+    stored([{ id, clubId: CLUB_ID, link: 'DECLINED', linkAt: at, createdAt: at }]);
+
+    await service.setTrainings(COACH_ID, {
+      trainings: [{ ...row, id, place: 'CLUB', clubId: CLUB_ID }],
+    });
+
+    expect(written()[0]).toMatchObject({ id, link: 'DECLINED', linkAt: at, createdAt: at });
+  });
+
+  it('смена клуба — снова ожидание; без клуба — связи нет', async () => {
+    stored([{ id, clubId: 'club-old', link: 'CONFIRMED', linkAt: at, createdAt: at }]);
+
+    await service.setTrainings(COACH_ID, {
+      trainings: [{ ...row, id, place: 'CLUB', clubId: CLUB_ID }],
+    });
+
+    expect(written()[0]).toMatchObject({ id, link: 'PENDING', linkAt: null });
+
+    prisma.training.createMany.mockClear();
+    stored([{ id, clubId: CLUB_ID, link: 'CONFIRMED', linkAt: at, createdAt: at }]);
+
+    await service.setTrainings(COACH_ID, { trainings: [{ ...row, id, place: 'ONLINE' }] });
+
+    expect(written()[0]).toMatchObject({ id, clubId: null, link: 'NONE', linkAt: null });
+  });
+
+  it('чужой id — новая строка', async () => {
+    stored([]);
+
+    await service.setTrainings(COACH_ID, { trainings: [{ ...row, id, place: 'ONLINE' }] });
+
+    expect(written()[0]).not.toHaveProperty('id');
+  });
+
+  it('скрытый или неизвестный клуб — VALIDATION_FAILED с полем', async () => {
+    stored([]);
+    prisma.club.findMany.mockResolvedValue([]);
+
+    await expect(
+      service.setTrainings(COACH_ID, {
+        trainings: [
+          { ...row, place: 'ONLINE' },
+          { ...row, place: 'CLUB', clubId: CLUB_ID },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+      details: { field: 'trainings.1.clubId' },
+    });
+    expect(prisma.training.createMany).not.toHaveBeenCalled();
   });
 });
 
@@ -396,11 +522,11 @@ describe('документы и отметка «проверено KTTF»', () 
 });
 
 describe('отправка на проверку', () => {
-  const ready = { status: 'DRAFT', cityId: 'city-1', services: [{ id: 's-1' }] };
+  const online = makeTraining();
 
   it('из черновика и после отказа — PENDING, отметка времени, причина стёрта', async () => {
     for (const status of ['DRAFT', 'REJECTED']) {
-      prisma.coach.findUnique.mockResolvedValueOnce({ ...ready, status });
+      prisma.coach.findUnique.mockResolvedValueOnce(makeCoach({ status, trainings: [online] }));
       const now = new Date('2026-10-20T12:00:00.000Z');
 
       await service.submit(COACH_ID, now);
@@ -412,9 +538,20 @@ describe('отправка на проверку', () => {
     }
   });
 
+  it('тренировка в клубе, который ещё не ответил, тоже считается', async () => {
+    prisma.coach.findUnique.mockResolvedValueOnce(
+      makeCoach({
+        status: 'DRAFT',
+        trainings: [makeTraining({ place: 'CLUB', clubId: CLUB_ID, link: 'PENDING' })],
+      }),
+    );
+
+    await expect(service.submit(COACH_ID)).resolves.toBeDefined();
+  });
+
   it('уже отправленную или одобренную — COACH_STATUS_INVALID со статусом', async () => {
     for (const status of ['PENDING', 'APPROVED']) {
-      prisma.coach.findUnique.mockResolvedValueOnce({ ...ready, status });
+      prisma.coach.findUnique.mockResolvedValueOnce(makeCoach({ status, trainings: [online] }));
 
       await expect(service.submit(COACH_ID)).rejects.toMatchObject({
         code: 'COACH_STATUS_INVALID',
@@ -426,21 +563,83 @@ describe('отправка на проверку', () => {
   });
 
   it('без города и тренировок — COACH_INCOMPLETE со списком', async () => {
-    prisma.coach.findUnique.mockResolvedValueOnce({ ...ready, cityId: null, services: [] });
+    prisma.coach.findUnique.mockResolvedValueOnce(makeCoach({ status: 'DRAFT', city: null }));
 
     await expect(service.submit(COACH_ID)).rejects.toMatchObject({
       code: 'COACH_INCOMPLETE',
-      details: { missing: ['city', 'services'] },
+      details: { missing: ['city', 'trainings'] },
     });
   });
 
-  it('без тренировки — COACH_INCOMPLETE', async () => {
-    prisma.coach.findUnique.mockResolvedValueOnce({ ...ready, services: [] });
+  it('клубная тренировка без ответа тренера — не его тренировка', async () => {
+    prisma.coach.findUnique.mockResolvedValueOnce(
+      makeCoach({
+        status: 'DRAFT',
+        trainings: [
+          makeTraining({ author: 'CLUB', place: 'CLUB', clubId: CLUB_ID, link: 'PENDING' }),
+        ],
+      }),
+    );
 
     await expect(service.submit(COACH_ID)).rejects.toMatchObject({
       code: 'COACH_INCOMPLETE',
-      details: { missing: ['services'] },
+      details: { missing: ['trainings'] },
     });
+  });
+});
+
+describe('тренировки на странице тренера', () => {
+  const club = (overrides: Record<string, unknown> = {}) => ({
+    id: CLUB_ID,
+    name: 'Спин',
+    logoUrl: null,
+    address: null,
+    city,
+    hiddenAt: null,
+    profileReviewedAt: null,
+    ...overrides,
+  });
+  const inClub = (id: string, overrides: Record<string, unknown>) =>
+    makeTraining({ id, place: 'CLUB', clubId: CLUB_ID, club: club(), ...overrides });
+  const trainings = [
+    makeTraining({ id: 'online' }),
+    inClub('club-pending', { link: 'PENDING' }),
+    inClub('club-ok', { link: 'CONFIRMED' }),
+    inClub('from-club', { author: 'CLUB', link: 'CONFIRMED' }),
+    inClub('request', { author: 'CLUB', link: 'PENDING' }),
+    inClub('hidden-club', {
+      author: 'CLUB',
+      link: 'CONFIRMED',
+      club: club({ hiddenAt: new Date() }),
+    }),
+  ];
+
+  it('посторонний видит видимые свои и подтверждённые клубные, без входящих', async () => {
+    prisma.coach.findUnique.mockResolvedValue(makeCoach({ trainings }));
+
+    const view = await service.findBySlug('kim-sergey', undefined);
+
+    expect(view.trainings.map((training) => training.id)).toEqual([
+      'online',
+      'club-ok',
+      'from-club',
+    ]);
+    expect(view.trainingRequests).toEqual([]);
+  });
+
+  it('владелец видит свои как есть и входящие от клубов', async () => {
+    prisma.coach.findUnique.mockResolvedValue(makeCoach({ trainings }));
+
+    const view = await service.findBySlug('kim-sergey', OWNER_ID);
+
+    expect(view.trainings.map((training) => [training.id, training.link])).toEqual([
+      ['online', 'NONE'],
+      ['club-pending', 'PENDING'],
+      ['club-ok', 'CONFIRMED'],
+      ['from-club', 'CONFIRMED'],
+    ]);
+    expect(view.trainingRequests.map((training) => training.id)).toEqual(['request']);
+    expect(view.trainingRequests[0]?.club).toMatchObject({ id: CLUB_ID });
   });
 });
 

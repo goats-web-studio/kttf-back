@@ -1,5 +1,6 @@
--- Страница тренера — ADR-059, docs/11 4: тренер и заявка, тренировки, документы,
--- заслуги, дневная статистика. Только добавляет.
+-- Страница тренера — ADR-059, docs/11 4: тренер и заявка, тренировки тренера и клуба
+-- со связью «вторая сторона подтверждает», документы, заслуги, дневная
+-- статистика. Только добавляет.
 -- CreateEnum
 CREATE TYPE "CoachStatus" AS ENUM ('DRAFT', 'PENDING', 'APPROVED', 'REJECTED');
 
@@ -29,6 +30,12 @@ CREATE TYPE "AchievementRole" AS ENUM ('AS_PLAYER', 'AS_COACH');
 
 -- CreateEnum
 CREATE TYPE "CoachPlan" AS ENUM ('FREE', 'PRO');
+
+-- CreateEnum
+CREATE TYPE "TrainingAuthor" AS ENUM ('COACH', 'CLUB');
+
+-- CreateEnum
+CREATE TYPE "TrainingLink" AS ENUM ('NONE', 'PENDING', 'CONFIRMED', 'DECLINED');
 
 -- CreateTable
 CREATE TABLE "Coach" (
@@ -69,21 +76,28 @@ CREATE TABLE "Coach" (
 );
 
 -- CreateTable
-CREATE TABLE "CoachService" (
+CREATE TABLE "Training" (
     "id" TEXT NOT NULL,
-    "coachId" TEXT NOT NULL,
+    "author" "TrainingAuthor" NOT NULL,
+    "coachId" TEXT,
+    "clubId" TEXT,
+    "link" "TrainingLink" NOT NULL DEFAULT 'NONE',
+    "linkAt" TIMESTAMP(3),
     "kind" "TrainingKind" NOT NULL,
     "audiences" "TrainingAudience"[],
     "kidsFromAge" INTEGER,
     "place" "TrainingPlace" NOT NULL,
+    "venueName" TEXT,
+    "venueAddress" TEXT,
     "title" TEXT NOT NULL,
     "schedule" TEXT,
     "priceKzt" INTEGER,
     "unit" "PriceUnit" NOT NULL,
     "note" TEXT,
     "sortOrder" INTEGER NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT "CoachService_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "Training_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -144,7 +158,13 @@ CREATE INDEX "Coach_cityId_idx" ON "Coach"("cityId");
 CREATE INDEX "Coach_userId_idx" ON "Coach"("userId");
 
 -- CreateIndex
-CREATE INDEX "CoachService_coachId_sortOrder_idx" ON "CoachService"("coachId", "sortOrder");
+CREATE INDEX "Training_coachId_sortOrder_idx" ON "Training"("coachId", "sortOrder");
+
+-- CreateIndex
+CREATE INDEX "Training_clubId_sortOrder_idx" ON "Training"("clubId", "sortOrder");
+
+-- CreateIndex
+CREATE INDEX "Training_place_link_idx" ON "Training"("place", "link");
 
 -- CreateIndex
 CREATE INDEX "CoachCredential_coachId_sortOrder_idx" ON "CoachCredential"("coachId", "sortOrder");
@@ -162,7 +182,10 @@ ALTER TABLE "Coach" ADD CONSTRAINT "Coach_userId_fkey" FOREIGN KEY ("userId") RE
 ALTER TABLE "Coach" ADD CONSTRAINT "Coach_cityId_fkey" FOREIGN KEY ("cityId") REFERENCES "City"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "CoachService" ADD CONSTRAINT "CoachService_coachId_fkey" FOREIGN KEY ("coachId") REFERENCES "Coach"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "Training" ADD CONSTRAINT "Training_coachId_fkey" FOREIGN KEY ("coachId") REFERENCES "Coach"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Training" ADD CONSTRAINT "Training_clubId_fkey" FOREIGN KEY ("clubId") REFERENCES "Club"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "CoachCredential" ADD CONSTRAINT "CoachCredential_coachId_fkey" FOREIGN KEY ("coachId") REFERENCES "Coach"("id") ON DELETE CASCADE ON UPDATE CASCADE;

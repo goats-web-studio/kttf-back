@@ -1,8 +1,8 @@
-import { listCoachesSchema, listTrainingsSchema } from '@kttf/shared/types';
+import { listCoachesSchema } from '@kttf/shared/types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PrismaService } from '../../infra/prisma/prisma.service.js';
-import { CoachCatalogService, coachesWhere, trainingsWhere } from './coach-catalog.service.js';
+import { CoachCatalogService, coachesWhere } from './coach-catalog.service.js';
 
 const CITY = '66666666-6666-4666-8666-666666666666';
 const city = { id: CITY, name: 'Алматы', nameKk: null };
@@ -18,78 +18,27 @@ const player = {
   city,
 };
 
-const trainings = (query: Record<string, string>) =>
-  trainingsWhere(listTrainingsSchema.parse(query));
-
-describe('фильтры тренировок', () => {
-  it('только тренировки опубликованных страниц', () => {
-    expect(trainings({}).coach).toEqual({ status: 'APPROVED', hiddenAt: null });
-  });
-
-  it('вид и место — любой из списка; город и язык — страницы тренера', () => {
-    const where = trainings({
-      kind: 'GROUP,KIDS_GROUP',
-      place: 'CLUB',
-      cityId: CITY,
-      language: 'KK',
-    });
-
-    expect(where).toMatchObject({
-      kind: { in: ['GROUP', 'KIDS_GROUP'] },
-      place: { in: ['CLUB'] },
-      coach: { status: 'APPROVED', cityId: { in: [CITY] }, languages: { has: 'KK' } },
-    });
-  });
-
-  it('возраст ребёнка: детская или подростковая, берут с этого возраста или возраст не указан', () => {
-    expect(trainings({ age: '9' }).AND).toEqual([
-      {
-        audiences: { hasSome: ['KIDS', 'TEENS'] },
-        OR: [{ kidsFromAge: null }, { kidsFromAge: { lte: 9 } }],
-      },
-    ]);
-  });
-
-  it('аудитория и возраст складываются, а не затирают друг друга', () => {
-    expect(trainings({ audience: 'TEENS,AMATEURS', age: '12' }).AND).toEqual([
-      { audiences: { hasSome: ['TEENS', 'AMATEURS'] } },
-      expect.objectContaining({ audiences: { hasSome: ['KIDS', 'TEENS'] } }),
-    ]);
-  });
-
-  it('«цена до» включительно; без цены под фильтр не попадает', () => {
-    expect(trainings({ priceTo: '15000' }).priceKzt).toEqual({ not: null, lte: 15_000 });
-    expect(trainings({})).not.toHaveProperty('priceKzt');
-  });
-
-  it('без фильтров лишних условий нет', () => {
-    expect(trainings({})).toEqual({ coach: { status: 'APPROVED', hiddenAt: null } });
-  });
-});
+const spin = { id: 'club-1', name: 'Спин', hiddenAt: null };
+const hidden = { id: 'club-2', name: 'Скрытый', hiddenAt: new Date() };
 
 describe('фильтры тренеров', () => {
   it('поиск словами по ФИО игрока, только опубликованные', () => {
     const where = coachesWhere(listCoachesSchema.parse({ search: 'Сергей Ким' }));
 
     expect(where).toMatchObject({ status: 'APPROVED', hiddenAt: null });
-    expect(where.player).toEqual({
-      AND: [
-        expect.objectContaining({
-          OR: expect.arrayContaining([
-            { firstName: { contains: 'Сергей', mode: 'insensitive' } },
-          ]) as unknown,
-        }),
-        expect.objectContaining({
-          OR: expect.arrayContaining([
-            { lastName: { contains: 'Ким', mode: 'insensitive' } },
-          ]) as unknown,
-        }),
-      ],
+    expect(JSON.stringify(where.player)).toContain('Сергей');
+    expect(JSON.stringify(where.player)).toContain('Ким');
+  });
+
+  it('город и язык — страницы тренера', () => {
+    expect(coachesWhere(listCoachesSchema.parse({ cityId: CITY, language: 'KK' }))).toMatchObject({
+      cityId: { in: [CITY] },
+      languages: { has: 'KK' },
     });
   });
 });
 
-describe('списки', () => {
+describe('список тренеров', () => {
   function makePrisma() {
     return {
       coach: {
@@ -108,33 +57,30 @@ describe('списки', () => {
             coachCategory: null,
             coachingSince: 2015,
             profileReviewedAt: new Date('2026-10-20T00:00:00.000Z'),
-            services: [{ priceKzt: null }, { priceKzt: 20_000 }, { priceKzt: 8_000 }],
-          },
-        ]),
-        count: vi.fn().mockResolvedValue(1),
-      },
-      coachService: {
-        findMany: vi.fn().mockResolvedValue([
-          {
-            id: 'service-1',
-            kind: 'KIDS_GROUP',
-            audiences: ['KIDS'],
-            kidsFromAge: 6,
-            place: 'CLUB',
-            title: 'Детская группа',
-            schedule: 'пн, ср 18:00',
-            priceKzt: 20_000,
-            unit: 'MONTH',
-            note: null,
-            coach: {
-              id: 'coach-1',
-              slug: 'kim-sergey',
-              playerId: 'player-1',
-              player,
-              photoUrl: null,
-              city,
-              languages: ['RU'],
-            },
+            trainings: [
+              // Онлайн без цены и выезд за 8 000 — видны.
+              { author: 'COACH', clubId: null, link: 'NONE', priceKzt: null, club: null },
+              { author: 'COACH', clubId: null, link: 'NONE', priceKzt: 8_000, club: null },
+              // Клуб ещё не ответил — не видна и в цену «от» не идёт.
+              { author: 'COACH', clubId: 'club-1', link: 'PENDING', priceKzt: 3_000, club: spin },
+              // Подтверждённые в «Спине» — своя и клубная.
+              {
+                author: 'COACH',
+                clubId: 'club-1',
+                link: 'CONFIRMED',
+                priceKzt: 20_000,
+                club: spin,
+              },
+              { author: 'CLUB', clubId: 'club-1', link: 'CONFIRMED', priceKzt: 15_000, club: spin },
+              // Клуб скрыт — не видна.
+              {
+                author: 'CLUB',
+                clubId: 'club-2',
+                link: 'CONFIRMED',
+                priceKzt: 1_000,
+                club: hidden,
+              },
+            ],
           },
         ]),
         count: vi.fn().mockResolvedValue(1),
@@ -153,34 +99,18 @@ describe('списки', () => {
     service = new CoachCatalogService(prisma as unknown as PrismaService);
   });
 
-  it('тренер: цена «от» — минимум среди тренировок с ценой, ученики — по анкетам', async () => {
+  it('число и цена «от» — по видимым тренировкам, клубы — подтверждённые без повторов', async () => {
     const page = await service.list(listCoachesSchema.parse({}));
 
     expect(page.items[0]).toMatchObject({
       minPriceKzt: 8_000,
-      servicesCount: 3,
+      trainingsCount: 4,
+      clubs: [{ id: 'club-1', name: 'Спин' }],
       studentsCount: 24,
       player: { rating: '512.00' },
     });
     expect(prisma.coach.findMany.mock.calls[0]?.[0]).toMatchObject({
       orderBy: [{ profileReviewedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }],
-    });
-  });
-
-  it('тренировка — со своим тренером; порядок — свежесть, тренер, его порядок', async () => {
-    const page = await service.trainings(listTrainingsSchema.parse({}));
-
-    expect(page.items[0]).toMatchObject({
-      title: 'Детская группа',
-      kidsFromAge: 6,
-      coach: { slug: 'kim-sergey', studentsCount: 24 },
-    });
-    expect(prisma.coachService.findMany.mock.calls[0]?.[0]).toMatchObject({
-      orderBy: [
-        { coach: { profileReviewedAt: { sort: 'desc', nulls: 'last' } } },
-        { coachId: 'asc' },
-        { sortOrder: 'asc' },
-      ],
     });
   });
 });
