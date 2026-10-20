@@ -18,6 +18,11 @@ function makeClub(overrides: Record<string, unknown> = {}) {
     logoUrl: null,
     address: 'Абая 10',
     city,
+    twoGisUrl: 'https://2gis.kz/almaty/firm/1',
+    phone: '+77270000000',
+    whatsapp: '+77010000001',
+    telegram: 'spin_club',
+    primaryContact: 'WHATSAPP',
     hiddenAt: null,
     profileReviewedAt: null,
     ...overrides,
@@ -30,6 +35,10 @@ function makeCoach(overrides: Record<string, unknown> = {}) {
     slug: 'kim-sergey',
     userId: 'user-coach',
     photoUrl: null,
+    phone: '+77010000000',
+    whatsapp: '+77010000000',
+    telegram: 'kim_coach',
+    primaryContact: 'TELEGRAM',
     status: 'APPROVED',
     hiddenAt: null,
     player: {
@@ -66,6 +75,7 @@ function makeTraining(overrides: Record<string, unknown> = {}): TrainingRecord {
     priceKzt: null,
     unit: 'MONTH',
     note: null,
+    description: null,
     sortOrder: 0,
     createdAt: new Date('2026-10-20T00:00:00.000Z'),
     club: null,
@@ -327,6 +337,132 @@ let service: TrainingsService;
 beforeEach(() => {
   prisma = makePrisma();
   service = new TrainingsService(prisma as unknown as PrismaService);
+});
+
+describe('контакты в ссылках', () => {
+  it('у клуба и тренера — контакты для «Записаться», у тренировки — описание', () => {
+    const view = toTrainingView(
+      inClub({ author: 'CLUB', link: 'CONFIRMED', description: 'Возьмите сменную обувь' }),
+      false,
+    );
+
+    expect(view.description).toBe('Возьмите сменную обувь');
+    expect(view.club).toEqual({
+      id: CLUB_ID,
+      name: 'Спин',
+      logoUrl: null,
+      address: 'Абая 10',
+      city,
+      twoGisUrl: 'https://2gis.kz/almaty/firm/1',
+      phone: '+77270000000',
+      whatsapp: '+77010000001',
+      telegram: 'spin_club',
+      primaryContact: 'WHATSAPP',
+    });
+    expect(view.coach).toMatchObject({
+      phone: '+77010000000',
+      whatsapp: '+77010000000',
+      telegram: 'kim_coach',
+      primaryContact: 'TELEGRAM',
+    });
+  });
+});
+
+describe('страница тренировки', () => {
+  it('публичную видит любой; «ещё» — публичные того же тренера без неё самой', async () => {
+    prisma.training.findUnique.mockResolvedValue(makeTraining({ id: 'training-1' }));
+    prisma.training.findMany.mockResolvedValue([
+      makeTraining({ id: 'other' }),
+      inClub({ id: 'club-declined', link: 'DECLINED' }),
+    ]);
+
+    const view = await service.detail('training-1', undefined);
+
+    expect(view.id).toBe('training-1');
+    expect(prisma.training.findMany.mock.calls[0]?.[0]).toMatchObject({
+      where: {
+        AND: [
+          expect.anything() as unknown,
+          { author: 'COACH', coachId: COACH_ID },
+          { id: { not: 'training-1' } },
+        ],
+      },
+      take: 6,
+    });
+    // «Ещё» — витрина: маскировка как для всех.
+    expect(view.more[1]).toMatchObject({ link: 'NONE', club: null });
+    expect(prisma.user.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('у клубной владелец — клуб: «ещё» — тренировки клуба', async () => {
+    prisma.training.findUnique.mockResolvedValue(inClub({ author: 'CLUB' }));
+
+    await service.detail('training-1', undefined);
+
+    expect(prisma.training.findMany.mock.calls[0]?.[0]).toMatchObject({
+      where: {
+        AND: [
+          expect.anything() as unknown,
+          { author: 'CLUB', clubId: CLUB_ID },
+          { id: { not: 'training-1' } },
+        ],
+      },
+    });
+  });
+
+  it('непубличная постороннему — NOT_FOUND, как несуществующая', async () => {
+    prisma.training.findUnique.mockResolvedValue(inClub({ link: 'PENDING' }));
+
+    await expect(service.detail('training-1', undefined)).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+    await expect(service.detail('training-1', 'user-stranger')).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+
+    prisma.training.findUnique.mockResolvedValue(null);
+
+    await expect(service.detail('training-9', undefined)).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+  });
+
+  it('автор, вторая сторона и администратор видят непубличную как есть', async () => {
+    prisma.training.findUnique.mockResolvedValue(inClub({ link: 'PENDING' }));
+
+    // Автор — тренер.
+    await expect(service.detail('training-1', 'user-coach')).resolves.toMatchObject({
+      link: 'PENDING',
+      club: { id: CLUB_ID },
+    });
+
+    // Вторая сторона — организатор клуба.
+    prisma.clubMember.findUnique.mockResolvedValueOnce({ role: 'ORGANIZER' });
+    await expect(service.detail('training-1', 'user-club')).resolves.toMatchObject({
+      link: 'PENDING',
+    });
+
+    // Судья клуба — не сторона.
+    prisma.clubMember.findUnique.mockResolvedValueOnce({ role: 'REFEREE' });
+    await expect(service.detail('training-1', 'user-referee')).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+
+    prisma.user.findUnique.mockResolvedValueOnce({ isAdmin: true });
+    await expect(service.detail('training-1', 'user-admin')).resolves.toMatchObject({
+      link: 'PENDING',
+    });
+  });
+
+  it('публичная тренировка постороннему — с маскировкой второй стороны', async () => {
+    prisma.training.findUnique.mockResolvedValue(inClub({ author: 'CLUB', link: 'PENDING' }));
+
+    await expect(service.detail('training-1', 'user-stranger')).resolves.toMatchObject({
+      link: 'NONE',
+      coach: null,
+      club: { id: CLUB_ID },
+    });
+  });
 });
 
 describe('список блоками', () => {

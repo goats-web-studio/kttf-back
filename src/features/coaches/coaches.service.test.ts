@@ -100,6 +100,7 @@ function makeTraining(overrides: Record<string, unknown> = {}) {
     priceKzt: null,
     unit: 'MONTH',
     note: null,
+    description: null,
     sortOrder: 0,
     createdAt: new Date('2026-10-20T00:00:00.000Z'),
     club: null,
@@ -108,6 +109,10 @@ function makeTraining(overrides: Record<string, unknown> = {}) {
       slug: 'kim-sergey',
       userId: OWNER_ID,
       photoUrl: null,
+      phone: null,
+      whatsapp: null,
+      telegram: null,
+      primaryContact: null,
       status: 'APPROVED',
       hiddenAt: null,
       player: {

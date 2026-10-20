@@ -326,8 +326,11 @@ model ClubPrice {
   @@index([clubId, sortOrder])
 }
 
+// TRAINING и KIDS — прежние строки: тренировки теперь отдельной сущностью
+// (ADR-059), новые строки прайса этих видов не принимаются и не отдаются.
 enum PriceKind {
   TABLE_RENT
+  HALL_RENT
   MEMBERSHIP
   TRAINING
   KIDS
@@ -743,6 +746,8 @@ model Training {
   priceKzt     Int?
   unit         PriceUnit
   note         String?
+  // «Подробнее» — простой текст
+  description  String?
   sortOrder    Int
   createdAt    DateTime           @default(now())
 

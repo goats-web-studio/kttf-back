@@ -362,3 +362,15 @@ describe('исключение из состава', () => {
     });
   });
 });
+
+describe('прайс клуба (ADR-059)', () => {
+  it('тренировки и детские группы в прайс не попадают — они отдельной сущностью', async () => {
+    await service.findById('club-1');
+
+    const select = (
+      prisma.club.findUnique.mock.calls[0]?.[0] as { select: { prices: { where: unknown } } }
+    ).select;
+
+    expect(select.prices.where).toEqual({ kind: { notIn: ['TRAINING', 'KIDS'] } });
+  });
+});

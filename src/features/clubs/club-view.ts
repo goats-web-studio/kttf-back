@@ -43,6 +43,9 @@ export const clubFields = {
     orderBy: [{ weekday: 'asc' }, { opensMin: 'asc' }],
   },
   prices: {
+    // Тренировки и детские группы — отдельной сущностью (ADR-059): прежние
+    // строки этих видов в базе остаются, но в прайс не попадают.
+    where: { kind: { notIn: ['TRAINING', 'KIDS'] } },
     select: { id: true, kind: true, title: true, priceKzt: true, unit: true, note: true },
     orderBy: { sortOrder: 'asc' },
   },

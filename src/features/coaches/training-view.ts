@@ -57,6 +57,11 @@ export const trainingClubFields = {
   logoUrl: true,
   address: true,
   city: { select: cityRefFields },
+  twoGisUrl: true,
+  phone: true,
+  whatsapp: true,
+  telegram: true,
+  primaryContact: true,
   hiddenAt: true,
   profileReviewedAt: true,
 } as const satisfies Prisma.ClubSelect;
@@ -66,6 +71,10 @@ export const trainingCoachFields = {
   slug: true,
   userId: true,
   photoUrl: true,
+  phone: true,
+  whatsapp: true,
+  telegram: true,
+  primaryContact: true,
   status: true,
   hiddenAt: true,
   player: { select: coachPlayerFields },
@@ -89,6 +98,7 @@ export const trainingFields = {
   priceKzt: true,
   unit: true,
   note: true,
+  description: true,
   sortOrder: true,
   createdAt: true,
   club: { select: trainingClubFields },
@@ -120,6 +130,11 @@ export function toClubRef(club: ClubRecord): TrainingClubRef {
     logoUrl: club.logoUrl,
     address: club.address,
     city: club.city,
+    twoGisUrl: club.twoGisUrl,
+    phone: club.phone,
+    whatsapp: club.whatsapp,
+    telegram: club.telegram,
+    primaryContact: club.primaryContact,
   };
 }
 
@@ -174,6 +189,10 @@ export function toTrainingView(training: TrainingRecord, reveal: boolean): Train
           slug: coach.slug,
           player: toPlayerRef(coach.player),
           photoUrl: coach.photoUrl,
+          phone: coach.phone,
+          whatsapp: coach.whatsapp,
+          telegram: coach.telegram,
+          primaryContact: coach.primaryContact,
         }
       : null,
     link: masked ? 'NONE' : training.link,
@@ -182,5 +201,6 @@ export function toTrainingView(training: TrainingRecord, reveal: boolean): Train
     priceKzt: training.priceKzt,
     unit: training.unit,
     note: training.note,
+    description: training.description,
   };
 }

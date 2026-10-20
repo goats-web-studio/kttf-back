@@ -221,6 +221,7 @@ export class CoachesService {
         priceKzt: row.priceKzt ?? null,
         unit: row.unit,
         note: row.note ?? null,
+        description: row.description ?? null,
         sortOrder: index,
       };
 

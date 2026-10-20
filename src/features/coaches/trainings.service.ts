@@ -1,10 +1,12 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import {
   CHILD_AUDIENCES,
+  TRAINING_MORE_MAX,
   type ClubTrainingsManageView,
   type ListTrainingsQuery,
   type Page,
   type SetClubTrainingsInput,
+  type TrainingDetailView,
   type TrainingGroupView,
   type TrainingLink,
   type TrainingView,
@@ -19,6 +21,7 @@ import {
   PUBLIC_COACH,
   PUBLIC_TRAINING,
   TRAINING_ORDER,
+  isTrainingPublic,
   toTrainingView,
   trainingFields,
   type TrainingRecord,
@@ -110,6 +113,44 @@ export class TrainingsService {
     const skip = skipOf(query);
 
     return pageOf(groups.slice(skip, skip + query.limit), groups.length, query);
+  }
+
+  /**
+   * Страница тренировки — «Подробнее». Видимость и маскировка — как в
+   * списке; автор, вторая сторона и администратор видят её и непубличной,
+   * как есть. Остальным непубличная не существует — как чужой адрес.
+   *
+   * `more` — другие публичные тренировки того же владельца (`trainingOwner`):
+   * у клубной — тренировки клуба, у тренерской — тренера. Публичные и
+   * замаскированные для всех: это витрина, а не кабинет.
+   */
+  async detail(id: string, viewerId: string | undefined): Promise<TrainingDetailView> {
+    const training = await this.prisma.training.findUnique({
+      where: { id },
+      select: trainingFields,
+    });
+
+    if (training === null) throw trainingNotFound(id);
+
+    const party = viewerId !== undefined && (await this.isParty(training, viewerId));
+
+    if (!party && !isTrainingPublic(training)) throw trainingNotFound(id);
+
+    const owner: Prisma.TrainingWhereInput =
+      training.author === 'CLUB'
+        ? { author: 'CLUB', clubId: training.clubId }
+        : { author: 'COACH', coachId: training.coachId };
+    const more = await this.prisma.training.findMany({
+      where: { AND: [PUBLIC_TRAINING, owner, { id: { not: id } }] },
+      select: trainingFields,
+      orderBy: [...TRAINING_ORDER],
+      take: TRAINING_MORE_MAX,
+    });
+
+    return {
+      ...toTrainingView(training, party),
+      more: more.map((row) => toTrainingView(row, false)),
+    };
   }
 
   /** «Тренировки в клубе» на странице клуба: свои и подтверждённые тренерские. */
@@ -213,6 +254,7 @@ export class TrainingsService {
         priceKzt: row.priceKzt ?? null,
         unit: row.unit,
         note: row.note ?? null,
+        description: row.description ?? null,
         sortOrder: index,
       };
 
@@ -302,16 +344,38 @@ export class TrainingsService {
     throw new AppError(ERROR_CODES.FORBIDDEN, 'Only the other side answers', { id: training.id });
   }
 
+  /**
+   * Сторона тренировки — автор или вторая сторона: владелец страницы
+   * тренера, OWNER или ORGANIZER клуба. Либо администратор.
+   */
+  private async isParty(training: TrainingRecord, userId: string): Promise<boolean> {
+    if (training.coach?.userId === userId) return true;
+
+    const [user, member] = await Promise.all([
+      this.prisma.user.findUnique({ where: { id: userId }, select: { isAdmin: true } }),
+      training.clubId === null
+        ? Promise.resolve(null)
+        : this.prisma.clubMember.findUnique({
+            where: { clubId_userId: { clubId: training.clubId, userId } },
+            select: { role: true },
+          }),
+    ]);
+
+    return user?.isAdmin === true || member?.role === 'OWNER' || member?.role === 'ORGANIZER';
+  }
+
   private async load(id: string): Promise<TrainingRecord> {
     const training = await this.prisma.training.findUnique({
       where: { id },
       select: trainingFields,
     });
 
-    if (training === null) {
-      throw new AppError(ERROR_CODES.NOT_FOUND, 'Training not found', { id });
-    }
+    if (training === null) throw trainingNotFound(id);
 
     return training;
   }
+}
+
+function trainingNotFound(id: string): AppError {
+  return new AppError(ERROR_CODES.NOT_FOUND, 'Training not found', { id });
 }

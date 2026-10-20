@@ -45,6 +45,7 @@ import {
   type SetClubTrainingsInput,
   type SetCoachTrainingsInput,
   type ClubTrainingsManageView,
+  type TrainingDetailView,
   type TrainingGroupView,
   type TrainingView,
   type UpdateCoachInput,
@@ -229,6 +230,16 @@ export class TrainingsController {
     @Query(new ZodValidationPipe(listTrainingsSchema)) query: ListTrainingsQuery,
   ): Promise<Page<TrainingGroupView>> {
     return this.trainings.list(query);
+  }
+
+  /** «Подробнее»: непубличную видят только её стороны и администратор. */
+  @Get(':id')
+  @UseGuards(OptionalJwtGuard)
+  async findOne(
+    @Param('id', uuidParam) id: string,
+    @OptionalUserId() viewerId: string | undefined,
+  ): Promise<TrainingDetailView> {
+    return this.trainings.detail(id, viewerId);
   }
 
   /** Подтвердить связь — клуб у тренировки тренера, тренер у клубной. */

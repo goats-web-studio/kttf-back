@@ -1,6 +1,6 @@
 -- Страница тренера — ADR-059, docs/11 4: тренер и заявка, тренировки тренера и клуба
 -- со связью «вторая сторона подтверждает», документы, заслуги, дневная
--- статистика. Только добавляет.
+-- статистика; в прайсе клуба — аренда зала. Только добавляет.
 -- CreateEnum
 CREATE TYPE "CoachStatus" AS ENUM ('DRAFT', 'PENDING', 'APPROVED', 'REJECTED');
 
@@ -36,6 +36,9 @@ CREATE TYPE "TrainingAuthor" AS ENUM ('COACH', 'CLUB');
 
 -- CreateEnum
 CREATE TYPE "TrainingLink" AS ENUM ('NONE', 'PENDING', 'CONFIRMED', 'DECLINED');
+
+-- AlterEnum
+ALTER TYPE "PriceKind" ADD VALUE 'HALL_RENT';
 
 -- CreateTable
 CREATE TABLE "Coach" (
@@ -94,6 +97,7 @@ CREATE TABLE "Training" (
     "priceKzt" INTEGER,
     "unit" "PriceUnit" NOT NULL,
     "note" TEXT,
+    "description" TEXT,
     "sortOrder" INTEGER NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
