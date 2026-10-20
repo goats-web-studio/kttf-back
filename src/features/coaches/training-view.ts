@@ -144,12 +144,17 @@ export function isTrainingPublic(training: TrainingRecord): boolean {
  */
 export function toTrainingView(training: TrainingRecord, reveal: boolean): TrainingView {
   const coach = training.coach;
+  // Постороннему незачем знать, что приглашение ждёт ответа или отклонено:
+  // для него такая связь выглядит как её отсутствие.
+  const masked = !reveal && (training.link === 'PENDING' || training.link === 'DECLINED');
   const showCoach =
     coach !== null &&
     (training.author === 'COACH' ||
       reveal ||
       (training.link === 'CONFIRMED' &&
         isCoachPublic({ status: coach.status, hidden: coach.hiddenAt !== null })));
+  // Клуб — вторая сторона только у тренировки тренера; у клубной это место.
+  const showClub = training.club !== null && !(masked && training.author === 'COACH');
 
   return {
     id: training.id,
@@ -158,7 +163,7 @@ export function toTrainingView(training: TrainingRecord, reveal: boolean): Train
     audiences: training.audiences,
     kidsFromAge: training.kidsFromAge,
     place: training.place,
-    club: training.club === null ? null : toClubRef(training.club),
+    club: showClub && training.club !== null ? toClubRef(training.club) : null,
     venue:
       training.venueName === null || training.venueAddress === null
         ? null
@@ -171,7 +176,7 @@ export function toTrainingView(training: TrainingRecord, reveal: boolean): Train
           photoUrl: coach.photoUrl,
         }
       : null,
-    link: training.link,
+    link: masked ? 'NONE' : training.link,
     title: training.title,
     schedule: training.schedule,
     priceKzt: training.priceKzt,

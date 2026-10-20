@@ -136,6 +136,7 @@ describe('публичность тренировки', () => {
 
     expect(toTrainingView(pending, false).coach).toBeNull();
     // Клубу и тренеру — как есть, со статусом связи.
+    expect(toTrainingView(pending, false).link).toBe('NONE');
     expect(toTrainingView(pending, true)).toMatchObject({
       coach: { id: COACH_ID },
       link: 'PENDING',
@@ -149,6 +150,30 @@ describe('публичность тренировки', () => {
         false,
       ).coach,
     ).toBeNull();
+  });
+
+  it('постороннему ожидание и отказ выглядят как отсутствие связи', () => {
+    for (const link of ['PENDING', 'DECLINED'] as const) {
+      const fromClub = toTrainingView(inClub({ author: 'CLUB', link }), false);
+      const fromCoach = toTrainingView(inClub({ link }), false);
+
+      expect(fromClub).toMatchObject({ link: 'NONE', coach: null, club: { id: CLUB_ID } });
+      expect(fromCoach).toMatchObject({ link: 'NONE', club: null, coach: { id: COACH_ID } });
+      // Автору, второй стороне и администратору — как есть.
+      expect(toTrainingView(inClub({ author: 'CLUB', link }), true)).toMatchObject({
+        link,
+        coach: { id: COACH_ID },
+      });
+      expect(toTrainingView(inClub({ link }), true)).toMatchObject({
+        link,
+        club: { id: CLUB_ID },
+      });
+    }
+
+    expect(toTrainingView(inClub({ link: 'CONFIRMED' }), false)).toMatchObject({
+      link: 'CONFIRMED',
+      club: { id: CLUB_ID },
+    });
   });
 
   it('зал вне KTTF — названием и адресом', () => {
@@ -494,7 +519,7 @@ describe('тренировки клуба', () => {
 
     expect(list.map((training) => training.id)).toEqual(['own', 'coach']);
     // Тренер клубной тренировки без подтверждения публично не показывается.
-    expect(list[0]?.coach).toBeNull();
+    expect(list[0]).toMatchObject({ coach: null, link: 'NONE' });
 
     prisma.club.findUnique.mockResolvedValueOnce({ hiddenAt: new Date() });
     await expect(service.forClub(CLUB_ID)).resolves.toEqual([]);
