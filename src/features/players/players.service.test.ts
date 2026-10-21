@@ -37,6 +37,7 @@ const player = {
   birthYearOnly: true,
   // Игрок без аккаунта: посещения нет.
   user: null,
+  coachTenures: [],
 };
 
 const newcomer = {
@@ -48,14 +49,17 @@ const newcomer = {
 };
 
 function makePrisma() {
-  return {
+  const prisma = {
     player: {
       findMany: vi.fn().mockResolvedValue([player]),
       count: vi.fn().mockResolvedValue(1),
       findUnique: vi.fn().mockResolvedValue(player),
+      findUniqueOrThrow: vi.fn().mockResolvedValue(player),
       create: vi.fn().mockResolvedValue(player),
       update: vi.fn().mockResolvedValue(player),
     },
+    coachTenure: { create: vi.fn(), updateMany: vi.fn() },
+    $transaction: vi.fn(),
     club: { findUnique: vi.fn().mockResolvedValue({ id: 'club-1' }) },
     clubMember: { findUnique: vi.fn().mockResolvedValue(null) },
     city: { findFirst: vi.fn().mockResolvedValue({ id: 'city-1' }) },
@@ -63,6 +67,10 @@ function makePrisma() {
     product: { findMany: vi.fn().mockResolvedValue([]) },
     $queryRaw: vi.fn().mockResolvedValue([]),
   };
+
+  prisma.$transaction.mockImplementation((run: (tx: typeof prisma) => unknown) => run(prisma));
+
+  return prisma;
 }
 
 let prisma: ReturnType<typeof makePrisma>;
@@ -396,6 +404,90 @@ describe('анкета игрока', () => {
     const data = (prisma.player.update.mock.calls[0]?.[0] as { data: { birthDate: Date } }).data;
 
     expect(data.birthDate.toISOString()).toBe('2001-04-12T00:00:00.000Z');
+  });
+
+  it('смена тренера в анкете пишет историю той же транзакцией (ADR-059, T2)', async () => {
+    prisma.player.findUniqueOrThrow.mockResolvedValueOnce({ coachPlayerId: 'coach-a' });
+    prisma.player.update.mockResolvedValueOnce({ coachPlayerId: 'coach-b' });
+
+    await service.update('player-1', { coachPlayerId: '99999999-9999-4999-8999-999999999999' });
+
+    expect(prisma.$transaction).toHaveBeenCalled();
+    expect(prisma.coachTenure.updateMany.mock.calls[0]?.[0]).toMatchObject({
+      where: { playerId: 'player-1', coachPlayerId: 'coach-a', to: null },
+    });
+    expect(prisma.coachTenure.create.mock.calls[0]?.[0]).toMatchObject({
+      data: { playerId: 'player-1', coachPlayerId: 'coach-b' },
+    });
+  });
+
+  it('правка без смены тренера историю не трогает', async () => {
+    prisma.player.findUniqueOrThrow.mockResolvedValueOnce({ coachPlayerId: 'coach-a' });
+    prisma.player.update.mockResolvedValueOnce({ coachPlayerId: 'coach-a' });
+
+    await service.update('player-1', { bio: 'Играю с детства' });
+
+    expect(prisma.coachTenure.updateMany).not.toHaveBeenCalled();
+    expect(prisma.coachTenure.create).not.toHaveBeenCalled();
+  });
+
+  it('заведение игрока с тренером открывает период', async () => {
+    // Тренер есть, своего профиля у вошедшего ещё нет.
+    prisma.player.findUnique.mockResolvedValueOnce(player).mockResolvedValueOnce(null);
+    prisma.player.create.mockResolvedValueOnce({ id: 'player-2', coachPlayerId: 'coach-a' });
+
+    await service.create({ ...newcomer, coachPlayerId: 'coach-a' }, 'user-1');
+
+    expect(prisma.coachTenure.create.mock.calls[0]?.[0]).toMatchObject({
+      data: { playerId: 'player-2', coachPlayerId: 'coach-a' },
+    });
+  });
+
+  it('«с какого дня» текущий тренер и прежние — последние первыми', async () => {
+    const tenure = (coach: string, from: string, to: string | null) => ({
+      coachPlayerId: coach,
+      from: new Date(from),
+      to: to === null ? null : new Date(to),
+      coachPlayer: {
+        lastName: `Тренер-${coach}`,
+        firstName: 'Имя',
+        coachPage:
+          coach === 'coach-b'
+            ? { slug: 'trener-b', status: 'APPROVED', hiddenAt: null }
+            : { slug: 'trener-c', status: 'DRAFT', hiddenAt: null },
+      },
+    });
+    prisma.player.findUnique.mockResolvedValue({
+      ...player,
+      coachPlayerId: 'coach-a',
+      coach: { lastName: 'Тренер-coach-a', firstName: 'Имя', coachPage: null },
+      coachTenures: [
+        tenure('coach-a', '2025-01-01T00:00:00.000Z', null),
+        tenure('coach-b', '2022-01-01T00:00:00.000Z', '2024-12-31T00:00:00.000Z'),
+        tenure('coach-c', '2020-01-01T00:00:00.000Z', '2021-12-31T00:00:00.000Z'),
+      ],
+    });
+
+    const view = await service.findById('player-1');
+
+    expect(view.coachSince).toBe('2025-01-01T00:00:00.000Z');
+    expect(view.coachHistory).toEqual([
+      {
+        coachPlayerId: 'coach-b',
+        name: 'Тренер-coach-b Имя',
+        slug: 'trener-b',
+        from: '2022-01-01T00:00:00.000Z',
+        to: '2024-12-31T00:00:00.000Z',
+      },
+      {
+        coachPlayerId: 'coach-c',
+        name: 'Тренер-coach-c Имя',
+        // Страница не опубликована — без ссылки.
+        slug: null,
+        from: '2020-01-01T00:00:00.000Z',
+        to: '2021-12-31T00:00:00.000Z',
+      },
+    ]);
   });
 
   it('null очищает дату, а не отменяет правку', async () => {

@@ -37,6 +37,7 @@ import {
   toListItemView,
   type ListItemRecord,
 } from '../catalog/catalog-views.js';
+import { switchCoach } from './coach-tenure.js';
 import { buildRatingPoints, summarize, toPlayerMatch } from './history.js';
 import { ratingBounds } from './rating-band.js';
 
@@ -92,6 +93,22 @@ const profileFields = {
   },
   // «В сети» и последнее посещение — с аккаунта, а не с игрока (ADR-050).
   user: { select: { lastSeenAt: true } },
+  // История тренеров — T2 (ADR-059): открытый период текущего и прежние.
+  coachTenures: {
+    select: {
+      coachPlayerId: true,
+      from: true,
+      to: true,
+      coachPlayer: {
+        select: {
+          lastName: true,
+          firstName: true,
+          coachPage: { select: { slug: true, status: true, hiddenAt: true } },
+        },
+      },
+    },
+    orderBy: { from: 'desc' },
+  },
 } as const;
 
 /** Товар в строке списка: подпись и адрес, без фото и характеристик. */
@@ -419,16 +436,23 @@ export class PlayersService {
       await this.assertClubStaff(input.clubId, actorId);
     }
 
-    return this.profileView(
-      await this.prisma.player.create({
+    // Тренер из анкеты открывает период истории — той же транзакцией (ADR-059).
+    const created = await this.prisma.$transaction(async (tx) => {
+      const player = await tx.player.create({
         data: {
           ...defined(input),
           ...toBirthDate(input.birthDate),
           ...(own === null ? { userId: actorId } : {}),
         },
-        select: profileFields,
-      }),
-    );
+        select: { id: true, coachPlayerId: true },
+      });
+
+      await switchCoach(tx, player.id, null, player.coachPlayerId);
+
+      return tx.player.findUniqueOrThrow({ where: { id: player.id }, select: profileFields });
+    });
+
+    return this.profileView(created);
   }
 
   async update(id: string, input: UpdatePlayerInput): Promise<PlayerProfileView> {
@@ -448,13 +472,24 @@ export class PlayersService {
       }),
     );
 
-    return this.profileView(
-      await this.prisma.player.update({
+    // Смена тренера пишет историю той же транзакцией (ADR-059).
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const before = await tx.player.findUniqueOrThrow({
+        where: { id },
+        select: { coachPlayerId: true },
+      });
+      const after = await tx.player.update({
         where: { id },
         data: { ...defined(input), ...toBirthDate(input.birthDate) },
-        select: profileFields,
-      }),
-    );
+        select: { coachPlayerId: true },
+      });
+
+      await switchCoach(tx, id, before.coachPlayerId, after.coachPlayerId);
+
+      return tx.player.findUniqueOrThrow({ where: { id }, select: profileFields });
+    });
+
+    return this.profileView(updated);
   }
 
   /**
@@ -646,6 +681,18 @@ interface ProfileRecord extends PlayerRecord {
     coachPage: { slug: string; status: CoachStatus; hiddenAt: Date | null } | null;
   } | null;
   user: { lastSeenAt: Date | null } | null;
+  coachTenures: TenureRecord[];
+}
+
+interface TenureRecord {
+  coachPlayerId: string;
+  from: Date;
+  to: Date | null;
+  coachPlayer: {
+    lastName: string;
+    firstName: string;
+    coachPage: { slug: string; status: CoachStatus; hiddenAt: Date | null } | null;
+  };
 }
 
 /**
@@ -718,6 +765,21 @@ function toProfileView(
         ? player.coachName
         : `${player.coach.lastName} ${player.coach.firstName}`,
     coachSlug: publicCoachSlug(player.coach?.coachPage ?? null),
+    coachSince:
+      player.coachTenures
+        .find((tenure) => tenure.to === null && tenure.coachPlayerId === player.coachPlayerId)
+        ?.from.toISOString() ?? null,
+    // Прежние тренеры, последние первыми.
+    coachHistory: player.coachTenures
+      .flatMap((tenure) => (tenure.to === null ? [] : [{ ...tenure, to: tenure.to }]))
+      .sort((a, b) => b.to.getTime() - a.to.getTime())
+      .map((tenure) => ({
+        coachPlayerId: tenure.coachPlayerId,
+        name: `${tenure.coachPlayer.lastName} ${tenure.coachPlayer.firstName}`,
+        slug: publicCoachSlug(tenure.coachPlayer.coachPage),
+        from: tenure.from.toISOString(),
+        to: tenure.to.toISOString(),
+      })),
     lastSeenAt: lastSeenAt?.toISOString() ?? null,
     online: isOnline(lastSeenAt, now),
   };

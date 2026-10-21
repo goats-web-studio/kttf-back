@@ -119,9 +119,15 @@ function makePrisma() {
         coachName: null,
         coach: null,
         birthYearOnly: true,
+        coachTenures: [],
       }),
       update: vi.fn().mockResolvedValue({}),
+      // Профиль после записи перечитывается целиком — тот же, что заведён.
+      findUniqueOrThrow: vi.fn(),
     },
+    coachTenure: { create: vi.fn(), updateMany: vi.fn() },
+    clubCoach: { groupBy: vi.fn().mockResolvedValue([]) },
+    training: { findMany: vi.fn().mockResolvedValue([]) },
     user: { findUnique: vi.fn().mockResolvedValue({ id: USER_ID }) },
     city: { findFirst: vi.fn().mockResolvedValue({ id: CITY_ID }) },
     product: { findMany: vi.fn().mockResolvedValue([{ id: TABLE_ID }]) },
@@ -130,6 +136,9 @@ function makePrisma() {
   };
 
   prisma.$transaction.mockImplementation((run: (tx: typeof prisma) => unknown) => run(prisma));
+  prisma.player.findUniqueOrThrow.mockImplementation(
+    () => prisma.player.create.mock.results.at(-1)?.value as unknown,
+  );
 
   return prisma;
 }
