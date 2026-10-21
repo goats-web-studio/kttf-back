@@ -47,6 +47,7 @@ export const mediaFields = {
   caption: true,
   createdAt: true,
   hiddenAt: true,
+  hiddenReason: true,
 } as const satisfies Prisma.ClubMediaSelect;
 
 type MediaRecord = Prisma.ClubMediaGetPayload<{ select: typeof mediaFields }>;

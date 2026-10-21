@@ -16,6 +16,7 @@ const row = {
   caption: null,
   createdAt: new Date('2026-10-20T10:00:00.000Z'),
   hiddenAt: null,
+  hiddenReason: null,
 };
 
 const processed = {
@@ -141,6 +142,16 @@ describe('галерея', () => {
     expect(deps.prisma.clubMedia.findMany.mock.calls[1]?.[0]).toMatchObject({
       where: { clubId: 'club-1' },
     });
+  });
+
+  it('скрытое кабинет видит с причиной', async () => {
+    deps.prisma.clubMedia.findMany.mockResolvedValue([
+      { ...row, hiddenAt: new Date('2026-10-21T10:00:00.000Z'), hiddenReason: 'Чужая реклама' },
+    ]);
+
+    const [media] = await service.list('club-1', true);
+
+    expect(media).toMatchObject({ hidden: true, hiddenReason: 'Чужая реклама' });
   });
 
   it('порядок — только своё и всё сразу', async () => {
