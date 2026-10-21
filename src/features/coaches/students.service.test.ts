@@ -50,7 +50,13 @@ function makePrisma() {
       create: vi.fn(),
       updateMany: vi.fn(),
     },
-    tournament: { findMany: vi.fn().mockResolvedValue([{ id: 't-1' }]) },
+    // Без `take` — турниры с медалями за окно, с `take` — последние турниры
+    // учеников (T3).
+    tournament: {
+      findMany: vi.fn((args: { take?: number }) =>
+        Promise.resolve(args.take === undefined ? [{ id: 't-1' }] : []),
+      ),
+    },
     registration: {
       findMany: vi.fn().mockResolvedValue([]),
       updateMany: vi.fn().mockResolvedValue({ count: 0 }),
@@ -108,9 +114,11 @@ describe('ученики на странице тренера', () => {
       startsAt: new Date('2026-10-10T00:00:00.000Z'),
       finishedAt: new Date('2026-10-10T12:00:00.000Z'),
     };
+    // Бывший ученик заявился с этим тренером — медаль его (T3).
+    const formerStudent = student('former', 1999, '480.00');
     prisma.registration.findMany.mockResolvedValue([
-      { playerId: 'child', place: 1, tournament },
-      { playerId: 'adult', place: 2, tournament },
+      { player: child, place: 1, tournament },
+      { player: formerStudent, place: 2, tournament },
     ]);
 
     const view = await service.view(COACH_ID, undefined, NOW);
@@ -118,13 +126,86 @@ describe('ученики на странице тренера', () => {
     expect(view.medals.total).toBe(2);
     expect(view.medals.recent).toEqual([
       {
-        player: expect.objectContaining({ id: 'adult' }) as unknown,
+        player: expect.objectContaining({ id: 'former' }) as unknown,
         place: 2,
         tournament: { id: 't-1', name: 'Кубок', startsAt: '2026-10-10T00:00:00.000Z' },
       },
     ]);
     // Турниры до ADR-048 мест не записали — досчитываются.
     expect(tournaments.ensurePlaces).toHaveBeenCalledWith(['t-1']);
+  });
+
+  it('медали — по тренеру в записи на турнир, а не по нынешним ученикам (T3)', async () => {
+    await service.view(COACH_ID, undefined, NOW);
+
+    expect(prisma.tournament.findMany.mock.calls[0]?.[0]).toMatchObject({
+      where: { registrations: { some: { coachPlayerId: COACH_PLAYER } } },
+    });
+    expect(prisma.registration.findMany.mock.calls[0]?.[0]).toMatchObject({
+      where: { coachPlayerId: COACH_PLAYER, place: { gte: 1, lte: 3 } },
+    });
+  });
+
+  it('турниры учеников: сыгравшие и места 1–3 по каждому, новые первыми (T3)', async () => {
+    const recent = [
+      { id: 't-2', name: 'Осенний', startsAt: new Date('2026-10-18T00:00:00.000Z') },
+      { id: 't-1', name: 'Кубок', startsAt: new Date('2026-10-10T00:00:00.000Z') },
+    ];
+    prisma.tournament.findMany.mockImplementation((args: { take?: number }) =>
+      Promise.resolve(args.take === undefined ? [] : recent),
+    );
+    prisma.registration.findMany.mockImplementation((args: { where: { place?: unknown } }) =>
+      Promise.resolve(
+        args.where.place === undefined
+          ? [
+              { tournamentId: 't-2', place: 1 },
+              { tournamentId: 't-2', place: 3 },
+              { tournamentId: 't-2', place: 3 },
+              { tournamentId: 't-2', place: null },
+              { tournamentId: 't-1', place: 5 },
+            ]
+          : [],
+      ),
+    );
+
+    const view = await service.view(COACH_ID, undefined, NOW);
+
+    expect(view.tournaments).toEqual([
+      {
+        tournament: { id: 't-2', name: 'Осенний', startsAt: '2026-10-18T00:00:00.000Z' },
+        students: 4,
+        gold: 1,
+        silver: 0,
+        bronze: 2,
+      },
+      {
+        tournament: { id: 't-1', name: 'Кубок', startsAt: '2026-10-10T00:00:00.000Z' },
+        students: 1,
+        gold: 0,
+        silver: 0,
+        bronze: 0,
+      },
+    ]);
+    const played = {
+      coachPlayerId: COACH_PLAYER,
+      status: { in: ['REGISTERED', 'CONFIRMED', 'PLAYING'] },
+    };
+    expect(prisma.tournament.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { status: { in: ['FINISHED', 'RATED'] }, registrations: { some: played } },
+        take: 5,
+      }),
+    );
+    expect(prisma.registration.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { ...played, tournamentId: { in: ['t-2', 't-1'] } } }),
+    );
+    expect(tournaments.ensurePlaces).toHaveBeenCalledWith(['t-2', 't-1']);
+  });
+
+  it('без сыгранных турниров — пустой список', async () => {
+    const view = await service.view(COACH_ID, undefined, NOW);
+
+    expect(view.tournaments).toEqual([]);
   });
 
   it('рост — только у названных, в Decimal, только прирост', async () => {

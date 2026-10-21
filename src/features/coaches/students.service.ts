@@ -5,6 +5,7 @@ import {
   COACH_MEDALS_DAYS,
   COACH_MEDALS_RECENT,
   COACH_STUDENTS_TOP,
+  COACH_TOURNAMENTS_RECENT,
   isCoachPublic,
   isNamedStudent,
   type CoachStudentRow,
@@ -12,6 +13,7 @@ import {
   type ListCoachStudentsQuery,
   type Page,
   type StudentRef,
+  type StudentTournament,
 } from '@kttf/shared/types';
 import { Injectable } from '@nestjs/common';
 
@@ -20,9 +22,19 @@ import { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { cityRefFields } from '../places/place.fields.js';
 import { followProfileCoach, switchCoach } from '../players/coach-tenure.js';
+import { OCCUPYING_STATUSES } from '../tournaments/tournaments.select.js';
 import { TournamentsService } from '../tournaments/tournaments.service.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Сыгравший на турнире — запись, оставшаяся в составе. На старте такие
+ * записи переходят в PLAYING и после завершения в нём остаются; REGISTERED
+ * и CONFIRMED — на случай записей, не прошедших через старт (перенос
+ * данных). Снятые и не явившиеся не считаются, даже если успели сыграть
+ * часть встреч; отклонённые, лист ожидания и заявки не играли вовсе.
+ */
+const PLAYED_STATUSES = [...OCCUPYING_STATUSES];
 
 const studentFields = {
   id: true,
@@ -113,7 +125,7 @@ export class StudentsService {
         distinct: ['playerId'],
         select: { playerId: true },
       }),
-      this.medals(currentIds, now),
+      this.medals(coach.playerId, now),
       this.prisma.ratingEvent.groupBy({
         by: ['playerId'],
         where: {
@@ -123,6 +135,9 @@ export class StudentsService {
         _sum: { delta: true },
       }),
     ]);
+    // После медалей, а не параллельно: обе выборки досчитывают места одних и
+    // тех же турниров, и вдвоём они записали бы их дважды.
+    const tournaments = await this.tournamentsOf(coach.playerId);
 
     const top = [...named]
       .sort((a, b) => b.rating.comparedTo(a.rating) || a.lastName.localeCompare(b.lastName, 'ru'))
@@ -136,19 +151,19 @@ export class StudentsService {
       medals: {
         total: medals.length,
         recent: medals
-          .flatMap((medal) => {
-            const player = namedById.get(medal.playerId);
-
-            return player === undefined || medal.place === null ? [] : [{ medal, player }];
-          })
+          .flatMap(({ player, place, tournament }) =>
+            place === null || !isNamedStudent(player.birthYear, now)
+              ? []
+              : [{ player, place, tournament }],
+          )
           .slice(0, COACH_MEDALS_RECENT)
-          .map(({ medal, player }) => ({
+          .map(({ player, place, tournament }) => ({
             player: toStudentRef(player),
-            place: medal.place ?? 1,
+            place,
             tournament: {
-              id: medal.tournament.id,
-              name: medal.tournament.name,
-              startsAt: medal.tournament.startsAt.toISOString(),
+              id: tournament.id,
+              name: tournament.name,
+              startsAt: tournament.startsAt.toISOString(),
             },
           })),
       },
@@ -161,6 +176,7 @@ export class StudentsService {
           ? []
           : [{ player: toStudentRef(player), delta: signedDelta(delta) }];
       }),
+      tournaments,
     };
   }
 
@@ -240,35 +256,70 @@ export class StudentsService {
   }
 
   /**
-   * Места 1–3 у текущих учеников в турнирах, завершённых за окно, — новые
-   * первыми. Турниры до ADR-048 мест не записали — досчитываются здесь.
+   * Места 1–3 учеников в турнирах, завершённых за окно, — новые первыми.
+   * Учеником на турнире считается заявившийся с этим тренером (T3), а не
+   * тот, кого он тренирует сегодня. Турниры до ADR-048 мест не записали —
+   * досчитываются здесь.
    */
-  private async medals(playerIds: readonly string[], now: Date) {
-    if (playerIds.length === 0) return [];
-
+  private async medals(coachPlayerId: string, now: Date) {
     const finished = {
       status: { in: ['FINISHED' as const, 'RATED' as const] },
       finishedAt: { gte: new Date(now.getTime() - COACH_MEDALS_DAYS * DAY_MS) },
     };
     const tournaments = await this.prisma.tournament.findMany({
-      where: { ...finished, registrations: { some: { playerId: { in: [...playerIds] } } } },
+      where: { ...finished, registrations: { some: { coachPlayerId } } },
       select: { id: true },
     });
 
     await this.tournaments.ensurePlaces(tournaments.map((tournament) => tournament.id));
 
     return this.prisma.registration.findMany({
-      where: {
-        playerId: { in: [...playerIds] },
-        place: { gte: 1, lte: 3 },
-        tournament: finished,
-      },
+      where: { coachPlayerId, place: { gte: 1, lte: 3 }, tournament: finished },
       select: {
-        playerId: true,
         place: true,
+        player: { select: studentFields },
         tournament: { select: { id: true, name: true, startsAt: true, finishedAt: true } },
       },
       orderBy: [{ tournament: { finishedAt: 'desc' } }, { place: 'asc' }],
+    });
+  }
+
+  /**
+   * Последние завершённые турниры, где играли ученики этого тренера (T3), —
+   * сколько их было и сколько мест 1–3 они взяли. Делённое место считается
+   * по верхней границе (`place`), как в медалях.
+   */
+  private async tournamentsOf(coachPlayerId: string): Promise<StudentTournament[]> {
+    const played = { coachPlayerId, status: { in: PLAYED_STATUSES } };
+    const rows = await this.prisma.tournament.findMany({
+      where: { status: { in: ['FINISHED', 'RATED'] }, registrations: { some: played } },
+      select: { id: true, name: true, startsAt: true },
+      orderBy: [{ finishedAt: { sort: 'desc', nulls: 'last' } }, { id: 'desc' }],
+      take: COACH_TOURNAMENTS_RECENT,
+    });
+
+    if (rows.length === 0) return [];
+
+    const ids = rows.map((row) => row.id);
+
+    await this.tournaments.ensurePlaces(ids);
+
+    const entries = await this.prisma.registration.findMany({
+      where: { ...played, tournamentId: { in: ids } },
+      select: { tournamentId: true, place: true },
+    });
+
+    return rows.map((row) => {
+      const own = entries.filter((entry) => entry.tournamentId === row.id);
+      const placed = (place: number) => own.filter((entry) => entry.place === place).length;
+
+      return {
+        tournament: { id: row.id, name: row.name, startsAt: row.startsAt.toISOString() },
+        students: own.length,
+        gold: placed(1),
+        silver: placed(2),
+        bronze: placed(3),
+      };
     });
   }
 
