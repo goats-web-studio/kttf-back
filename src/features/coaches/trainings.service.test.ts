@@ -77,6 +77,8 @@ function makeTraining(overrides: Record<string, unknown> = {}): TrainingRecord {
     unit: 'MONTH',
     note: null,
     description: null,
+    enrollment: null,
+    slots: [],
     sortOrder: 0,
     createdAt: new Date('2026-10-20T00:00:00.000Z'),
     club: null,
@@ -274,6 +276,106 @@ describe('блоки раздела «Тренировки»', () => {
   });
 });
 
+describe('расписание по дням (T3)', () => {
+  const where = (query: Record<string, string>) => trainingsWhere(listTrainingsSchema.parse(query));
+
+  it('день — есть занятие в любой из дней', () => {
+    expect(where({ day: '1,3' }).AND).toContainEqual({
+      slots: { some: { AND: [{ weekday: { in: [1, 3] } }] } },
+    });
+  });
+
+  it('время суток — по началу занятия в границах любого из значений', () => {
+    expect(where({ time: 'MORNING,EVENING' }).AND).toContainEqual({
+      slots: {
+        some: {
+          AND: [
+            {
+              OR: [{ startMin: { gte: 0, lt: 720 } }, { startMin: { gte: 1020, lt: 1440 } }],
+            },
+          ],
+        },
+      },
+    });
+  });
+
+  it('день и время — у одного и того же занятия', () => {
+    expect(where({ day: '6', time: 'DAY' }).AND).toContainEqual({
+      slots: {
+        some: {
+          AND: [{ weekday: { in: [6] } }, { OR: [{ startMin: { gte: 720, lt: 1020 } }] }],
+        },
+      },
+    });
+  });
+
+  it('без дня и времени — условия на занятия нет: тренировки без расписания не теряются', () => {
+    expect(JSON.stringify(where({}))).not.toContain('slots');
+  });
+
+  it('идёт набор — есть места или мало мест', () => {
+    expect(where({ open: 'true' }).AND).toContainEqual({ enrollment: { in: ['OPEN', 'FEW'] } });
+    expect(JSON.stringify(where({ open: 'false' }))).not.toContain('enrollment');
+  });
+
+  it('занятия в ответе — как пришли из выборки, набор — как сохранён', () => {
+    const slots = [
+      { weekday: 1, startMin: 1080, endMin: 1170 },
+      { weekday: 3, startMin: 600, endMin: 690 },
+    ];
+
+    expect(toTrainingView(makeTraining({ slots, enrollment: 'OPEN' }), false)).toMatchObject({
+      slots,
+      enrollment: 'OPEN',
+    });
+  });
+
+  it('выборка тренировки упорядочивает занятия по дню, затем по началу', async () => {
+    prisma.training.findUnique.mockResolvedValue(makeTraining());
+
+    await service.detail('training-1', undefined);
+
+    const select = (
+      prisma.training.findUnique.mock.calls[0]?.[0] as {
+        select: { slots: unknown };
+      }
+    ).select;
+
+    expect(select.slots).toEqual({
+      select: { weekday: true, startMin: true, endMin: true },
+      orderBy: [{ weekday: 'asc' }, { startMin: 'asc' }],
+    });
+  });
+
+  it('список клуба пишет занятия строк целиком; не переданы — пусто', async () => {
+    await service.setClubTrainings(CLUB_ID, {
+      trainings: [
+        {
+          kind: 'GROUP',
+          audiences: ['AMATEURS'],
+          title: 'Вечерняя группа',
+          unit: 'MONTH',
+          enrollment: 'OPEN',
+          slots: [{ weekday: 2, startMin: 1140, endMin: 1230 }],
+        },
+        { kind: 'SPARRING', audiences: ['ATHLETES'], title: 'Спарринги', unit: 'VISIT' },
+      ],
+    });
+
+    const rows = (
+      prisma.training.createMany.mock.calls[0]?.[0] as {
+        data: { id: string; enrollment: unknown }[];
+      }
+    ).data;
+
+    expect(rows.map((row) => row.enrollment)).toEqual(['OPEN', null]);
+    expect(prisma.trainingSlot.createMany).toHaveBeenCalledWith({
+      data: [{ trainingId: rows[0]?.id, weekday: 2, startMin: 1140, endMin: 1230 }],
+    });
+    expect(prisma.$transaction.mock.calls[0]?.[0]).toContain('slots');
+  });
+});
+
 describe('фильтры раздела', () => {
   const where = (query: Record<string, string>) => trainingsWhere(listTrainingsSchema.parse(query));
 
@@ -338,6 +440,7 @@ function makePrisma() {
     coach: { findMany: vi.fn().mockResolvedValue([{ id: COACH_ID }]) },
     clubMember: { findUnique: vi.fn().mockResolvedValue(null) },
     user: { findUnique: vi.fn().mockResolvedValue({ isAdmin: false }) },
+    trainingSlot: { createMany: vi.fn().mockReturnValue('slots') },
     clubCoach: {
       createMany: vi.fn().mockReturnValue('staff-create'),
       updateMany: vi.fn().mockReturnValue('staff-update'),

@@ -1,6 +1,7 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import {
   CHILD_AUDIENCES,
+  TIME_OF_DAY_BOUNDS,
   TRAINING_MORE_MAX,
   type ClubTrainingsManageView,
   type ListTrainingsQuery,
@@ -17,7 +18,7 @@ import { pageOf, skipOf } from '../../common/pagination.js';
 import type { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { staffFromTrainings } from './club-staff.service.js';
-import { groupTrainings, keptLink } from './training-rules.js';
+import { groupTrainings, keptLink, rowId, slotRows } from './training-rules.js';
 import {
   PUBLIC_COACH,
   PUBLIC_TRAINING,
@@ -59,6 +60,27 @@ export function trainingsWhere(query: ListTrainingsQuery): Prisma.TrainingWhereI
       ],
     });
   }
+
+  // Расписание по дням (T3): день и время суток — у одного и того же
+  // занятия. Тренировка без занятий под такие фильтры не попадает.
+  const slot: Prisma.TrainingSlotWhereInput[] = [];
+
+  if (query.day !== undefined) slot.push({ weekday: { in: query.day } });
+
+  if (query.time !== undefined) {
+    slot.push({
+      OR: query.time.map((time) => {
+        const [from, to] = TIME_OF_DAY_BOUNDS[time];
+
+        return { startMin: { gte: from, lt: to } };
+      }),
+    });
+  }
+
+  if (slot.length > 0) and.push({ slots: { some: { AND: slot } } });
+
+  // Идёт набор: есть места или мало мест.
+  if (query.open === true) and.push({ enrollment: { in: ['OPEN', 'FEW'] } });
 
   // Язык — тренера. У клубной тренировки — только подтверждённого и
   // опубликованного: без него язык не проверить, и она не проходит.
@@ -257,11 +279,12 @@ export class TrainingsService {
         unit: row.unit,
         note: row.note ?? null,
         description: row.description ?? null,
+        enrollment: row.enrollment ?? null,
         sortOrder: index,
       };
 
       return previous === undefined
-        ? fields
+        ? { ...fields, id: rowId(previous) }
         : { ...fields, id: previous.id, createdAt: previous.createdAt };
     });
 
@@ -275,6 +298,7 @@ export class TrainingsService {
       this.prisma.training.createMany({ data }),
       // Свежесть страницы клуба — как при правке цен (ADR-055).
       this.prisma.club.update({ where: { id: clubId }, data: { profileReviewedAt: new Date() } }),
+      this.prisma.trainingSlot.createMany({ data: slotRows(data, input.trainings) }),
       ...staffFromTrainings(this.prisma, staff),
     ]);
 
