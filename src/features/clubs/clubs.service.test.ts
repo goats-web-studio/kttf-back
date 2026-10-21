@@ -116,12 +116,12 @@ describe('список клубов', () => {
   });
 
   it('города и удобства — списком, удобства все сразу', async () => {
-    await service.list({ page: 1, limit: 20, cityId: ['c1', 'c2'], amenities: ['KIDS', 'WIFI'] });
+    await service.list({ page: 1, limit: 20, cityId: ['c1', 'c2'], amenities: ['SHOP', 'WIFI'] });
 
     expect((prisma.club.findMany.mock.calls[0]?.[0] as { where: object }).where).toEqual({
       hiddenAt: null,
       cityId: { in: ['c1', 'c2'] },
-      amenities: { hasEvery: ['KIDS', 'WIFI'] },
+      amenities: { hasEvery: ['SHOP', 'WIFI'] },
     });
   });
 
@@ -403,6 +403,14 @@ describe('штаб и детские тренировки в списке (ADR-0
         ],
       },
     });
+  });
+});
+
+describe('удобства клуба (ADR-059)', () => {
+  it('прежняя «Детская секция» в базе наружу не отдаётся', async () => {
+    prisma.club.findUnique.mockResolvedValueOnce({ ...club, amenities: ['WIFI', 'KIDS', 'SHOP'] });
+
+    expect((await service.findById('club-1')).amenities).toEqual(['WIFI', 'SHOP']);
   });
 });
 

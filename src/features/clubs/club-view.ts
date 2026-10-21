@@ -1,4 +1,4 @@
-import type { ClubView } from '@kttf/shared/types';
+import { CLUB_AMENITIES, type ClubAmenity, type ClubView } from '@kttf/shared/types';
 
 import type { Prisma } from '../../generated/prisma/client.js';
 import { isVisible, listItemFields, toListItemView } from '../catalog/catalog-views.js';
@@ -58,11 +58,18 @@ export const clubFields = {
 
 export type ClubRecord = Prisma.ClubGetPayload<{ select: typeof clubFields }>;
 
+function isClubAmenity(value: string): value is ClubAmenity {
+  return (CLUB_AMENITIES as readonly string[]).includes(value);
+}
+
 export function toClubView(club: ClubRecord): ClubView {
-  const { hiddenAt, profileReviewedAt, createdAt, tables, ...rest } = club;
+  const { hiddenAt, profileReviewedAt, createdAt, tables, amenities, ...rest } = club;
 
   return {
     ...rest,
+    // «Детская секция» больше не удобство (ADR-059): прежняя отметка в базе
+    // остаётся, наружу не отдаётся — детей ищут по «Детским тренировкам».
+    amenities: amenities.filter(isClubAmenity),
     // Скрытая модель со страницы уходит. Игроков у стола не бывает: в анкету
     // игрока ставятся только основания и накладки, поэтому без подсчёта.
     tables: tables
