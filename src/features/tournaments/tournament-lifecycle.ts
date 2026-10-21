@@ -64,6 +64,17 @@ export function acceptsRegistrations(status: TournamentStatus): boolean {
   return status === 'REG_OPEN';
 }
 
+/** Статусы до старта турнира. */
+export const BEFORE_START = ['DRAFT', 'PUBLISHED', 'REG_OPEN', 'REG_CLOSED'] as const;
+
+/**
+ * Правится ли тренер участника (ADR-059, T3). После старта запись — история:
+ * по ней считаются медали учеников. В отменённом турнире править нечего.
+ */
+export function isCoachEditable(status: TournamentStatus): boolean {
+  return (BEFORE_START as readonly TournamentStatus[]).includes(status);
+}
+
 /** Виден ли турнир тем, кто не управляет клубом. Черновик — нет. */
 export function isPublic(status: TournamentStatus): boolean {
   return status !== 'DRAFT';

@@ -51,7 +51,10 @@ function makePrisma() {
       updateMany: vi.fn(),
     },
     tournament: { findMany: vi.fn().mockResolvedValue([{ id: 't-1' }]) },
-    registration: { findMany: vi.fn().mockResolvedValue([]) },
+    registration: {
+      findMany: vi.fn().mockResolvedValue([]),
+      updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+    },
     ratingEvent: { groupBy: vi.fn().mockResolvedValue([]) },
     user: { findUnique: vi.fn().mockResolvedValue({ isAdmin: false }) },
     $transaction: vi.fn(),
@@ -205,6 +208,11 @@ describe('кабинет тренера', () => {
     expect(prisma.coachTenure.updateMany.mock.calls[0]?.[0]).toMatchObject({
       where: { playerId: 'adult', coachPlayerId: COACH_PLAYER, to: null },
     });
+    // Записи на турниры до старта остаются без тренера (T3).
+    expect(prisma.registration.updateMany.mock.calls[0]?.[0]).toMatchObject({
+      where: { playerId: 'adult', coachManual: false },
+      data: { coachPlayerId: null, coachName: null },
+    });
   });
 
   it('не его ученик — NOT_FOUND, история не трогается', async () => {
@@ -232,6 +240,10 @@ describe('«Я ученик»', () => {
     });
     expect(prisma.coachTenure.create.mock.calls[0]?.[0]).toMatchObject({
       data: { playerId: 'me', coachPlayerId: COACH_PLAYER },
+    });
+    expect(prisma.registration.updateMany.mock.calls[0]?.[0]).toMatchObject({
+      where: { playerId: 'me', coachManual: false },
+      data: { coachPlayerId: COACH_PLAYER, coachName: null },
     });
   });
 

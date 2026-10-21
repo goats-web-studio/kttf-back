@@ -4,6 +4,7 @@ import {
   duplicateTournamentSchema,
   listTournamentsSchema,
   registerSchema,
+  setRegistrationCoachSchema,
   tieDecisionSchema,
   updateRegistrationSchema,
   updateTournamentSchema,
@@ -13,6 +14,7 @@ import {
   type Page,
   type RegisterInput,
   type RegistrationView,
+  type SetRegistrationCoachInput,
   type TieDecisionInput,
   type TieDecisionResult,
   type TournamentListItemView,
@@ -34,6 +36,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
   UseGuards,
 } from '@nestjs/common';
@@ -262,6 +265,18 @@ export class TournamentsController {
     @CurrentUserId() userId: string,
   ): Promise<RegistrationView> {
     return this.tournaments.updateRegistration(id, registrationId, body, userId);
+  }
+
+  /** Тренер участника на турнире — ADR-059, T3. */
+  @Put(':id/registrations/:registrationId/coach')
+  @UseGuards(JwtAuthGuard)
+  async setRegistrationCoach(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @Param('registrationId', new ZodValidationPipe(uuidParam)) registrationId: string,
+    @Body(new ZodValidationPipe(setRegistrationCoachSchema)) body: SetRegistrationCoachInput,
+    @CurrentUserId() userId: string,
+  ): Promise<RegistrationView> {
+    return this.tournaments.setRegistrationCoach(id, registrationId, body, userId);
   }
 
   @Delete(':id/registrations/:registrationId')

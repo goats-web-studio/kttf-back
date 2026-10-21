@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Prisma } from '../../generated/prisma/client.js';
-import { switchCoach } from './coach-tenure.js';
+import { followProfileCoach, switchCoach } from './coach-tenure.js';
 
 const NOW = new Date('2026-10-21T10:00:00.000Z');
 
@@ -52,6 +52,55 @@ describe('история тренера (ADR-059, T2)', () => {
 
     expect(tx.coachTenure.updateMany).not.toHaveBeenCalled();
     expect(tx.coachTenure.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('тренер в записях на турниры идёт за анкетой (ADR-059, T3)', () => {
+  it('только до старта и только не поправленный руками', async () => {
+    const registration = { updateMany: vi.fn() };
+
+    await followProfileCoach({ registration } as unknown as Prisma.TransactionClient, 'player-1', {
+      coachPlayerId: 'coach-b',
+      coachName: null,
+    });
+
+    expect(registration.updateMany).toHaveBeenCalledWith({
+      where: {
+        playerId: 'player-1',
+        coachManual: false,
+        tournament: { status: { in: ['DRAFT', 'PUBLISHED', 'REG_OPEN', 'REG_CLOSED'] } },
+      },
+      data: { coachPlayerId: 'coach-b', coachName: null },
+    });
+  });
+});
+
+describe('миграция 20261026100000_registration_coach', () => {
+  const sql = readFileSync(
+    new URL(
+      '../../../prisma/migrations/20261026100000_registration_coach/migration.sql',
+      import.meta.url,
+    ),
+    'utf8',
+  );
+  const [started = '', unstarted = ''] = sql.split('UPDATE "Registration"').slice(1);
+
+  it('ссылка на тренера стирается вместе с игроком, записи не удаляются', () => {
+    expect(sql).toMatch(/"Registration_coachPlayerId_fkey"[\s\S]+ON DELETE SET NULL/);
+    expect(sql).toMatch(/"coachManual" BOOLEAN NOT NULL DEFAULT false/);
+  });
+
+  it('начатые турниры — тренер из истории на дату старта, поздний период первым', () => {
+    expect(started).toMatch(/'RUNNING', 'FINISHED', 'RATED'/);
+    expect(started).toMatch(/ct\."from" <= COALESCE\(t\."startedAt", t\."startsAt"\)/);
+    expect(started).toMatch(/ct\."to" IS NULL OR ct\."to" > COALESCE/);
+    expect(started).toMatch(/ORDER BY ct\."from" DESC\s+LIMIT 1/);
+  });
+
+  it('не начатые — тренер из анкеты как есть; отменённые не трогаются', () => {
+    expect(unstarted).toMatch(/"coachName" = p\."coachName"/);
+    expect(unstarted).toMatch(/'DRAFT', 'PUBLISHED', 'REG_OPEN', 'REG_CLOSED'/);
+    expect(sql).not.toMatch(/'CANCELLED'/);
   });
 });
 

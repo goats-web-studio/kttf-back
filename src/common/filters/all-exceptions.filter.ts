@@ -70,6 +70,8 @@ const STATUS_BY_CODE: Readonly<Record<ErrorCode, number>> = {
   CLUB_COACH_INVALID: HttpStatus.CONFLICT,
   // Фото, видео и записи тренера — T2.2: предел тарифа, как у клуба.
   COACH_PLAN_LIMIT: HttpStatus.CONFLICT,
+  // Тренер участника после старта турнира — T3: запрос верный, турнир уже идёт.
+  REGISTRATION_COACH_LOCKED: HttpStatus.CONFLICT,
 };
 
 const CODE_BY_STATUS: Readonly<Record<number, ErrorCode>> = {

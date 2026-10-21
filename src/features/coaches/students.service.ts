@@ -19,7 +19,7 @@ import { pageOf, skipOf } from '../../common/pagination.js';
 import { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { cityRefFields } from '../places/place.fields.js';
-import { switchCoach } from '../players/coach-tenure.js';
+import { followProfileCoach, switchCoach } from '../players/coach-tenure.js';
 import { TournamentsService } from '../tournaments/tournaments.service.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -228,6 +228,7 @@ export class StudentsService {
         data: { coachPlayerId: coach.playerId, coachName: null },
       });
       await switchCoach(tx, player.id, player.coachPlayerId, coach.playerId);
+      await followProfileCoach(tx, player.id, { coachPlayerId: coach.playerId, coachName: null });
     });
   }
 
@@ -284,6 +285,7 @@ export class StudentsService {
       }
 
       await switchCoach(tx, playerId, coachPlayerId, null);
+      await followProfileCoach(tx, playerId, { coachPlayerId: null, coachName: null });
     });
   }
 

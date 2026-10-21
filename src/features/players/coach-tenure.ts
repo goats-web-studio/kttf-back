@@ -1,4 +1,5 @@
 import type { Prisma } from '../../generated/prisma/client.js';
+import { BEFORE_START } from '../tournaments/tournament-lifecycle.js';
 
 /**
  * История тренера — T2 (ADR-059). Смена `Player.coachPlayerId` закрывает
@@ -27,4 +28,27 @@ export async function switchCoach(
   if (next !== null) {
     await tx.coachTenure.create({ data: { playerId, coachPlayerId: next, from: now } });
   }
+}
+
+/** Тренер в анкете: из списка или строкой. */
+export interface ProfileCoach {
+  coachPlayerId: string | null;
+  coachName: string | null;
+}
+
+/**
+ * Тренер в записях на турниры идёт за анкетой — T3 (ADR-059). Только до
+ * старта и только там, где его не правили руками: после старта запись —
+ * история, а поправленное руками игрок или организатор указали осознанно.
+ * Вызывается в той же транзакции, что меняет анкету.
+ */
+export async function followProfileCoach(
+  tx: Prisma.TransactionClient,
+  playerId: string,
+  coach: ProfileCoach,
+): Promise<void> {
+  await tx.registration.updateMany({
+    where: { playerId, coachManual: false, tournament: { status: { in: [...BEFORE_START] } } },
+    data: { coachPlayerId: coach.coachPlayerId, coachName: coach.coachName },
+  });
 }

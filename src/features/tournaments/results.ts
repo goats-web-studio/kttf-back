@@ -18,7 +18,7 @@ import type {
 import { Prisma } from '../../generated/prisma/client.js';
 
 import { byBracketPosition } from './finish.js';
-import { toStageView, toTournamentView } from './tournaments.mapper.js';
+import { toRegistrationCoach, toStageView, toTournamentView } from './tournaments.mapper.js';
 import type {
   MatchRecord,
   RegistrationRecord,
@@ -169,6 +169,7 @@ function participants(
       status: registration.status,
       isRated: registration.isRated,
       seed: registration.seed,
+      coach: toRegistrationCoach(registration),
     };
   });
 

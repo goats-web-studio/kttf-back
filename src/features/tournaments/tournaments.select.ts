@@ -2,6 +2,7 @@ import type { RegistrationStatus } from '@kttf/shared/types';
 
 import type { Prisma } from '../../generated/prisma/client.js';
 import { cityRefFields } from '../places/place.fields.js';
+import { coachPageFields } from '../players/coach-ref.js';
 
 /**
  * Наборы полей для выборок.
@@ -80,6 +81,12 @@ export const registrationFields = {
   matchesAtStart: true,
   createdAt: true,
   player: { select: playerFields },
+  // Тренер на турнире (T3): имя и страница выбранного из списка — по связи.
+  coachPlayerId: true,
+  coachName: true,
+  coachPlayer: {
+    select: { lastName: true, firstName: true, coachPage: { select: coachPageFields } },
+  },
 } as const;
 
 export const matchFields = {

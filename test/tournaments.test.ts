@@ -97,6 +97,9 @@ const registration = {
   matchesAtStart: null,
   createdAt: new Date('2026-08-29T00:00:00.000Z'),
   player,
+  coachPlayerId: null,
+  coachName: null,
+  coachPlayer: null,
 };
 
 function makePrisma() {
@@ -789,6 +792,9 @@ describe('завершение и рейтинг — ТЗ 4.1, ТЗ 7.3', () => 
       matchesAtStart: 25,
       createdAt: new Date('2026-08-30T00:00:00.000Z'),
       player: { ...player, id, rating: { toString: () => '300.00' }, ratedMatches: 25 },
+      coachPlayerId: null,
+      coachName: null,
+      coachPlayer: null,
     };
   }
 
@@ -1056,5 +1062,143 @@ describe('решение судьи по равенству — ADR-008', () => 
     });
 
     expect(result.status).toBe(403);
+  });
+});
+
+describe('тренер участника — ADR-059, T3', () => {
+  const COACH_ID = '99999999-9999-4999-8999-999999999999';
+  const path = `/tournaments/${TOURNAMENT_ID}/registrations/${REGISTRATION_ID}/coach`;
+
+  beforeEach(() => {
+    prisma.registration.findUnique.mockResolvedValue({
+      id: REGISTRATION_ID,
+      status: 'CONFIRMED',
+      playerId: PLAYER_ID,
+      tournamentId: TOURNAMENT_ID,
+    });
+  });
+
+  function updatedData(): unknown {
+    const args = prisma.registration.update.mock.calls[0]?.[0] as { data?: unknown } | undefined;
+
+    return args?.data;
+  }
+
+  it('при записи тренер копируется из анкеты', async () => {
+    prisma.registration.findUnique.mockResolvedValue(null);
+    prisma.player.findUnique.mockResolvedValue({
+      ...player,
+      coachPlayerId: COACH_ID,
+      coachName: null,
+    });
+
+    await call('POST', `/tournaments/${TOURNAMENT_ID}/registrations`, { auth: true, body: {} });
+
+    expect(prisma.registration.create.mock.calls[0]?.[0]).toMatchObject({
+      data: { coachPlayerId: COACH_ID, coachName: null },
+    });
+  });
+
+  it('состав отдаёт тренера: имя по связи, ссылка на опубликованную страницу', async () => {
+    prisma.registration.findMany.mockResolvedValue([
+      {
+        ...registration,
+        coachPlayerId: COACH_ID,
+        coachPlayer: {
+          lastName: 'Петров',
+          firstName: 'Иван',
+          coachPage: { slug: 'ivan-petrov', status: 'APPROVED', hiddenAt: null },
+        },
+      },
+    ]);
+
+    const result = await call('GET', `/tournaments/${TOURNAMENT_ID}/registrations`);
+
+    expect(result.body).toMatchObject([
+      { coach: { playerId: COACH_ID, name: 'Петров Иван', slug: 'ivan-petrov' } },
+    ]);
+  });
+
+  it('игрок правит своего тренера — запись больше не идёт за анкетой', async () => {
+    const result = await call('PUT', path, {
+      auth: true,
+      body: { coachPlayerId: null, coachName: 'Сидоров' },
+    });
+
+    expect(result.status).toBe(200);
+    expect(updatedData()).toEqual({ coachPlayerId: null, coachName: 'Сидоров', coachManual: true });
+  });
+
+  it('организатор правит тренера чужого игрока, тренер из списка обязан существовать', async () => {
+    prisma.player.findUnique.mockResolvedValue({ ...player, userId: null });
+
+    const result = await call('PUT', path, {
+      auth: true,
+      body: { coachPlayerId: COACH_ID, coachName: null },
+    });
+
+    expect(result.status).toBe(200);
+    expect(updatedData()).toEqual({ coachPlayerId: COACH_ID, coachName: null, coachManual: true });
+
+    prisma.player.findUnique.mockResolvedValueOnce({ userId: null }).mockResolvedValueOnce(null);
+
+    const missing = await call('PUT', path, {
+      auth: true,
+      body: { coachPlayerId: COACH_ID, coachName: null },
+    });
+
+    expect(missing.status).toBe(404);
+  });
+
+  it('посторонний тренера не правит', async () => {
+    prisma.player.findUnique.mockResolvedValue({ ...player, userId: null });
+    prisma.clubMember.findUnique.mockResolvedValue(null);
+
+    const result = await call('PUT', path, {
+      auth: true,
+      body: { coachPlayerId: null, coachName: null },
+    });
+
+    expect(result.status).toBe(403);
+    expect(prisma.registration.update).not.toHaveBeenCalled();
+  });
+
+  it('после старта тренер не правится — REGISTRATION_COACH_LOCKED', async () => {
+    for (const status of ['RUNNING', 'FINISHED', 'RATED', 'CANCELLED']) {
+      prisma.tournament.findUnique.mockResolvedValue(makeTournament({ status }));
+
+      const result = await call('PUT', path, {
+        auth: true,
+        body: { coachPlayerId: null, coachName: null },
+      });
+
+      expect(result.status).toBe(409);
+      expect(result.body).toMatchObject({ error: { code: 'REGISTRATION_COACH_LOCKED' } });
+    }
+
+    expect(prisma.registration.update).not.toHaveBeenCalled();
+  });
+
+  it('из списка и строкой разом — отказ схемой; сам себе тренером — тоже', async () => {
+    const both = await call('PUT', path, {
+      auth: true,
+      body: { coachPlayerId: COACH_ID, coachName: 'Сидоров' },
+    });
+
+    expect(both.status).toBe(400);
+
+    const self = await call('PUT', path, {
+      auth: true,
+      body: { coachPlayerId: PLAYER_ID, coachName: null },
+    });
+
+    expect(self.status).toBe(400);
+    expect(prisma.registration.update).not.toHaveBeenCalled();
+  });
+
+  it('без токена не правится', async () => {
+    expect(
+      (await call('PUT', path, { body: { coachPlayerId: null, coachName: null } })).status,
+    ).toBe(401);
   });
 });

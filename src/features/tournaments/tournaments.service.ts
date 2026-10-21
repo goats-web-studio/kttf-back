@@ -23,6 +23,7 @@ import type {
   Page,
   RegisterInput,
   RegistrationView,
+  SetRegistrationCoachInput,
   TournamentListItemView,
   TournamentView,
   UpdateRegistrationInput,
@@ -34,6 +35,7 @@ import { defined } from '../../common/objects.js';
 import { pageOf, skipOf } from '../../common/pagination.js';
 import { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
+import { assertCoachExists } from '../players/coach-ref.js';
 import { ScreenEventsService } from '../screen/screen-events.service.js';
 
 import { advanceAfterGroups } from './advance.js';
@@ -52,6 +54,7 @@ import { bumpVersion } from './tournament-state.js';
 import { writeStage } from './stage-writer.js';
 import {
   acceptsRegistrations,
+  isCoachEditable,
   isDeletable,
   nextStatus,
   type TournamentAction,
@@ -445,7 +448,7 @@ export class TournamentsService {
 
     const player = await this.prisma.player.findUnique({
       where: { id: playerId },
-      select: playerFields,
+      select: { ...playerFields, coachPlayerId: true, coachName: true },
     });
 
     if (player === null) {
@@ -514,6 +517,9 @@ export class TournamentsService {
           tournamentId: id,
           playerId,
           status: pending ? 'PENDING' : full ? 'WAITLIST' : 'CONFIRMED',
+          // Тренер — снимок анкеты на момент записи (ADR-059, T3).
+          coachPlayerId: player.coachPlayerId,
+          coachName: player.coachName,
         },
         select: registrationFields,
       });
@@ -593,6 +599,46 @@ export class TournamentsService {
       await bumpVersion(tx, id);
 
       return result;
+    });
+
+    return toRegistrationView(updated);
+  }
+
+  /**
+   * Тренер участника на турнире — ADR-059, T3.
+   *
+   * Правят сам игрок и организатор, только до старта: после него запись —
+   * история, по ней считаются медали учеников. Поправленный руками тренер
+   * больше не идёт за анкетой. Версия турнира не растёт: консоли тренер не
+   * нужен, а до старта снимок всё равно обновится при старте.
+   */
+  async setRegistrationCoach(
+    id: string,
+    registrationId: string,
+    input: SetRegistrationCoachInput,
+    userId: string,
+  ): Promise<RegistrationView> {
+    const tournament = await this.load(id);
+    const registration = await this.loadRegistration(id, registrationId);
+
+    if (!(await this.isOwnPlayer(registration.playerId, userId))) {
+      await this.assertClubStaff(tournament.clubId, userId);
+    }
+
+    if (!isCoachEditable(tournament.status)) {
+      throw new AppError(
+        ERROR_CODES.REGISTRATION_COACH_LOCKED,
+        'Coach is fixed once the tournament has started',
+        { id, registrationId, status: tournament.status },
+      );
+    }
+
+    await assertCoachExists(this.prisma, input.coachPlayerId ?? undefined, registration.playerId);
+
+    const updated = await this.prisma.registration.update({
+      where: { id: registrationId },
+      data: { coachPlayerId: input.coachPlayerId, coachName: input.coachName, coachManual: true },
+      select: registrationFields,
     });
 
     return toRegistrationView(updated);

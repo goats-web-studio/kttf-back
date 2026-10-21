@@ -59,6 +59,7 @@ function makePrisma() {
       update: vi.fn().mockResolvedValue(player),
     },
     coachTenure: { create: vi.fn(), updateMany: vi.fn() },
+    registration: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
     $transaction: vi.fn(),
     club: { findUnique: vi.fn().mockResolvedValue({ id: 'club-1' }) },
     clubMember: { findUnique: vi.fn().mockResolvedValue(null) },
@@ -407,8 +408,11 @@ describe('анкета игрока', () => {
   });
 
   it('смена тренера в анкете пишет историю той же транзакцией (ADR-059, T2)', async () => {
-    prisma.player.findUniqueOrThrow.mockResolvedValueOnce({ coachPlayerId: 'coach-a' });
-    prisma.player.update.mockResolvedValueOnce({ coachPlayerId: 'coach-b' });
+    prisma.player.findUniqueOrThrow.mockResolvedValueOnce({
+      coachPlayerId: 'coach-a',
+      coachName: null,
+    });
+    prisma.player.update.mockResolvedValueOnce({ coachPlayerId: 'coach-b', coachName: null });
 
     await service.update('player-1', { coachPlayerId: '99999999-9999-4999-8999-999999999999' });
 
@@ -419,16 +423,37 @@ describe('анкета игрока', () => {
     expect(prisma.coachTenure.create.mock.calls[0]?.[0]).toMatchObject({
       data: { playerId: 'player-1', coachPlayerId: 'coach-b' },
     });
+    // И записи на турниры до старта идут за анкетой (T3).
+    expect(prisma.registration.updateMany.mock.calls[0]?.[0]).toMatchObject({
+      where: { playerId: 'player-1', coachManual: false },
+      data: { coachPlayerId: 'coach-b', coachName: null },
+    });
   });
 
-  it('правка без смены тренера историю не трогает', async () => {
-    prisma.player.findUniqueOrThrow.mockResolvedValueOnce({ coachPlayerId: 'coach-a' });
-    prisma.player.update.mockResolvedValueOnce({ coachPlayerId: 'coach-a' });
+  it('тренер, вписанный строкой, тоже переходит в записи на турниры (T3)', async () => {
+    prisma.player.findUniqueOrThrow.mockResolvedValueOnce({ coachPlayerId: null, coachName: null });
+    prisma.player.update.mockResolvedValueOnce({ coachPlayerId: null, coachName: 'Петров' });
+
+    await service.update('player-1', { coachName: 'Петров' });
+
+    expect(prisma.coachTenure.create).not.toHaveBeenCalled();
+    expect(prisma.registration.updateMany.mock.calls[0]?.[0]).toMatchObject({
+      data: { coachPlayerId: null, coachName: 'Петров' },
+    });
+  });
+
+  it('правка без смены тренера историю и записи не трогает', async () => {
+    prisma.player.findUniqueOrThrow.mockResolvedValueOnce({
+      coachPlayerId: 'coach-a',
+      coachName: null,
+    });
+    prisma.player.update.mockResolvedValueOnce({ coachPlayerId: 'coach-a', coachName: null });
 
     await service.update('player-1', { bio: 'Играю с детства' });
 
     expect(prisma.coachTenure.updateMany).not.toHaveBeenCalled();
     expect(prisma.coachTenure.create).not.toHaveBeenCalled();
+    expect(prisma.registration.updateMany).not.toHaveBeenCalled();
   });
 
   it('заведение игрока с тренером открывает период', async () => {

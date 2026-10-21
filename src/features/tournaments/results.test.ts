@@ -102,6 +102,9 @@ function registration(playerId: string, lastName: string, overrides = {}): Regis
       isProvisional: true,
       createdAt: new Date('2026-09-01T08:00:00.000Z'),
     },
+    coachPlayerId: null,
+    coachName: null,
+    coachPlayer: null,
     ...overrides,
   } as unknown as RegistrationRecord;
 }
@@ -408,5 +411,19 @@ describe('состав участников', () => {
     ]);
 
     expect(results.participants.find((row) => row.player.id === 'b')?.isRated).toBe(false);
+  });
+
+  it('тренер на турнире — из записи, а не из нынешней анкеты (ADR-059, T3)', () => {
+    const results = build(stages, [
+      registration('a', 'Ахметов', { coachName: 'Сидоров' }),
+      registration('b', 'Сериков'),
+    ]);
+
+    expect(results.participants.find((row) => row.player.id === 'a')?.coach).toEqual({
+      playerId: null,
+      name: 'Сидоров',
+      slug: null,
+    });
+    expect(results.participants.find((row) => row.player.id === 'b')?.coach).toBeNull();
   });
 });

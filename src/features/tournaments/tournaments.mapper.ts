@@ -5,12 +5,14 @@ import {
   type BracketSourceView,
   type MatchView,
   type PlayerView,
+  type RegistrationCoach,
   type RegistrationView,
   type StageView,
   type TournamentView,
 } from '@kttf/shared/types';
 
 import type { Prisma } from '../../generated/prisma/client.js';
+import { publicCoachSlug } from '../players/coach-ref.js';
 
 import type {
   MatchRecord,
@@ -107,7 +109,30 @@ export function toRegistrationView(registration: RegistrationRecord): Registrati
     matchesAtStart: registration.matchesAtStart,
     createdAt: registration.createdAt.toISOString(),
     player: toPlayerView(registration.player),
+    coach: toRegistrationCoach(registration),
   };
+}
+
+/**
+ * Тренер участника на турнире — T3. Выбранный из списка подписывается по
+ * связи, как в анкете; вписанный строкой отдаётся как есть.
+ */
+export function toRegistrationCoach(
+  registration: Pick<RegistrationRecord, 'coachPlayerId' | 'coachName' | 'coachPlayer'>,
+): RegistrationCoach | null {
+  const { coachPlayerId, coachPlayer } = registration;
+
+  if (coachPlayerId !== null && coachPlayer !== null) {
+    return {
+      playerId: coachPlayerId,
+      name: `${coachPlayer.lastName} ${coachPlayer.firstName}`,
+      slug: publicCoachSlug(coachPlayer.coachPage),
+    };
+  }
+
+  return registration.coachName === null
+    ? null
+    : { playerId: null, name: registration.coachName, slug: null };
 }
 
 /** Источник участника лежит в колонке `Json` и типа не имеет — ADR-019. */

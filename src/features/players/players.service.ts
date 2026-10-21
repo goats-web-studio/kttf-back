@@ -1,7 +1,6 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import {
   ONLINE_WINDOW_MS,
-  isCoachPublic,
   type CityRef,
   type CoachStatus,
   type CreatePlayerInput,
@@ -37,7 +36,8 @@ import {
   toListItemView,
   type ListItemRecord,
 } from '../catalog/catalog-views.js';
-import { switchCoach } from './coach-tenure.js';
+import { assertCoachExists, publicCoachSlug } from './coach-ref.js';
+import { followProfileCoach, switchCoach } from './coach-tenure.js';
 import { buildRatingPoints, summarize, toPlayerMatch } from './history.js';
 import { ratingBounds } from './rating-band.js';
 
@@ -472,19 +472,24 @@ export class PlayersService {
       }),
     );
 
-    // Смена тренера пишет историю той же транзакцией (ADR-059).
+    // Смена тренера пишет историю и правит записи на турниры до старта той
+    // же транзакцией (ADR-059, T3).
     const updated = await this.prisma.$transaction(async (tx) => {
       const before = await tx.player.findUniqueOrThrow({
         where: { id },
-        select: { coachPlayerId: true },
+        select: { coachPlayerId: true, coachName: true },
       });
       const after = await tx.player.update({
         where: { id },
         data: { ...defined(input), ...toBirthDate(input.birthDate) },
-        select: { coachPlayerId: true },
+        select: { coachPlayerId: true, coachName: true },
       });
 
       await switchCoach(tx, id, before.coachPlayerId, after.coachPlayerId);
+
+      if (before.coachPlayerId !== after.coachPlayerId || before.coachName !== after.coachName) {
+        await followProfileCoach(tx, id, after);
+      }
 
       return tx.player.findUniqueOrThrow({ where: { id }, select: profileFields });
     });
@@ -537,29 +542,8 @@ export class PlayersService {
     }
   }
 
-  /**
-   * Тренер обязан существовать и не быть самим игроком.
-   *
-   * Ссылка на себя — не опечатка в данных, а замкнутая ветка: список учеников
-   * такого игрока включает его самого, и всякий обход дерева по нему зациклится.
-   */
   private async assertCoachExists(coachId: string | undefined, playerId?: string): Promise<void> {
-    if (coachId === undefined) return;
-
-    if (coachId === playerId) {
-      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Player cannot be their own coach', {
-        coachId,
-      });
-    }
-
-    const coach = await this.prisma.player.findUnique({
-      where: { id: coachId },
-      select: { id: true },
-    });
-
-    if (coach === null) {
-      throw new AppError(ERROR_CODES.NOT_FOUND, 'Coach not found', { coachId });
-    }
+    await assertCoachExists(this.prisma, coachId, playerId);
   }
 
   /**
@@ -783,15 +767,6 @@ function toProfileView(
     lastSeenAt: lastSeenAt?.toISOString() ?? null,
     online: isOnline(lastSeenAt, now),
   };
-}
-
-/** Адрес страницы тренера — только опубликованной: черновик по ссылке не откроется. */
-function publicCoachSlug(
-  page: { slug: string; status: CoachStatus; hiddenAt: Date | null } | null,
-): string | null {
-  return page !== null && isCoachPublic({ status: page.status, hidden: page.hiddenAt !== null })
-    ? page.slug
-    : null;
 }
 
 /**
