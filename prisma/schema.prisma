@@ -735,16 +735,16 @@ enum CoachPlan {
 // тренера со страницей — подтверждает тренер. link — связь со второй
 // стороной; разорвать её может любая сторона.
 model Training {
-  id           String             @id @default(uuid())
+  id           String              @id @default(uuid())
   author       TrainingAuthor
   coachId      String?
-  coach        Coach?             @relation(fields: [coachId], references: [id], onDelete: Cascade)
+  coach        Coach?              @relation(fields: [coachId], references: [id], onDelete: Cascade)
   clubId       String?
-  club         Club?              @relation(fields: [clubId], references: [id], onDelete: Cascade)
-  link         TrainingLink       @default(NONE)
+  club         Club?               @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  link         TrainingLink        @default(NONE)
   // Кто записывает и принимает оплату. У своей тренировки тренера в клубе
   // KTTF — тренер лично или клуб; у клубной и без клуба — как задано сервером
-  booking      TrainingBooking    @default(COACH)
+  booking      TrainingBooking     @default(COACH)
   // Когда вторая сторона подтвердила, отказала или разорвала связь
   linkAt       DateTime?
   kind         TrainingKind
@@ -762,8 +762,12 @@ model Training {
   note         String?
   // «Подробнее» — простой текст
   description  String?
+  // Набор в группу — T3 (ADR-059): есть места, мало мест, закрыт; null — не указан
+  enrollment   TrainingEnrollment?
+  // Занятия по дням недели — T3; строка schedule остаётся примечанием
+  slots        TrainingSlot[]
   sortOrder    Int
-  createdAt    DateTime           @default(now())
+  createdAt    DateTime            @default(now())
 
   @@index([coachId, sortOrder])
   @@index([clubId, sortOrder])
@@ -774,6 +778,27 @@ model Training {
 enum TrainingAuthor {
   COACH
   CLUB
+}
+
+// Занятие тренировки — день недели и время по UTC+5, как часы клуба (ADR-055).
+// Правится вместе со строкой тренировки целиком.
+model TrainingSlot {
+  id         String   @id @default(uuid())
+  trainingId String
+  weekday    Int // 1 — понедельник … 7 — воскресенье
+  startMin   Int
+  endMin     Int
+  training   Training @relation(fields: [trainingId], references: [id], onDelete: Cascade)
+
+  @@index([trainingId])
+  // Фильтры раздела «Тренировки»: день недели и время суток
+  @@index([weekday, startMin])
+}
+
+enum TrainingEnrollment {
+  OPEN
+  FEW
+  CLOSED
 }
 
 enum TrainingBooking {
