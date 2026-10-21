@@ -48,6 +48,8 @@ model User {
   clubRoles        ClubMember[]
   clubPosts        ClubPost[]
   clubMedia        ClubMedia[]
+  coachPosts       CoachPost[]
+  coachMedia       CoachMedia[]
   sessions         Session[]
   clubApplications ClubApplication[]
   products         Product[]
@@ -642,6 +644,8 @@ model Coach {
   achievements CoachAchievement[]
   stats        CoachStatDaily[]
   clubLinks    ClubCoach[]
+  posts        CoachPost[]
+  media        CoachMedia[]
 
   // Публичный список: одобренные, не скрытые, свежие сверху.
   @@index([status, hiddenAt, profileReviewedAt])
@@ -782,6 +786,51 @@ enum TrainingLink {
   PENDING
   CONFIRMED
   DECLINED
+}
+
+// Новости и акции тренера — T2.2 (ADR-059, docs/11 3.2.2): механика ClubPost
+// один в один. Публикуются сразу, администратор скрывает с причиной
+model CoachPost {
+  id           String    @id @default(uuid())
+  coachId      String
+  kind         PostKind
+  title        String
+  body         String // простой текст, без HTML
+  imageUrl     String?
+  validUntil   DateTime? @db.Date // последний день акции
+  pinnedAt     DateTime?
+  publishedAt  DateTime  @default(now())
+  editedAt     DateTime?
+  authorId     String?
+  hiddenAt     DateTime?
+  hiddenReason String?
+  coach        Coach     @relation(fields: [coachId], references: [id], onDelete: Cascade)
+  author       User?     @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([coachId, publishedAt(sort: Desc)])
+  @@index([publishedAt(sort: Desc)])
+}
+
+// Фото и видео тренера — как ClubMedia. У видео imageUrl — его обложка у нас
+model CoachMedia {
+  id           String    @id @default(uuid())
+  coachId      String
+  kind         MediaKind
+  imageUrl     String
+  youtubeId    String?
+  width        Int
+  height       Int
+  caption      String?
+  sortOrder    Int
+  createdById  String?
+  createdAt    DateTime  @default(now())
+  hiddenAt     DateTime?
+  hiddenReason String?
+  coach        Coach     @relation(fields: [coachId], references: [id], onDelete: Cascade)
+  createdBy    User?     @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([coachId, sortOrder])
+  @@index([createdAt(sort: Desc)])
 }
 
 // Тренерский штаб клуба — T2 (ADR-059, решение владельца от 21.10.2026).
