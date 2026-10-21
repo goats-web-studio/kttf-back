@@ -238,11 +238,12 @@ export class CoachesService {
     const staff = data.flatMap((row) =>
       row.link === 'CONFIRMED' && row.clubId !== null ? [{ clubId: row.clubId, coachId: id }] : [],
     );
-    const [, , coach] = await this.prisma.$transaction([
+    // Страница читается последней операцией перед штабом — уже с занятиями.
+    const [, , , coach] = await this.prisma.$transaction([
       this.prisma.training.deleteMany({ where: { coachId: id, author: 'COACH' } }),
       this.prisma.training.createMany({ data }),
-      this.touch(id),
       this.prisma.trainingSlot.createMany({ data: slotRows(data, input.trainings) }),
+      this.touch(id),
       ...staffFromTrainings(this.prisma, staff),
     ]);
 

@@ -174,12 +174,8 @@ function makePrisma() {
     },
     user: { findUnique: vi.fn().mockResolvedValue({ isAdmin: false }) },
     city: { findFirst: vi.fn().mockResolvedValue({ id: 'city-2' }) },
-    // Третья операция списка — свежесть страницы: её результат — страница.
-    $transaction: vi.fn((operations: unknown[]) =>
-      Promise.resolve(
-        operations.map((operation, index) => (index === 2 ? makeCoach() : operation)),
-      ),
-    ),
+    // Операции списка — как вернула бы база: свежесть страницы отдаёт страницу.
+    $transaction: vi.fn((operations: unknown[]) => Promise.all(operations)),
   };
 }
 
@@ -497,8 +493,12 @@ describe('свои тренировки тренера', () => {
         { trainingId: id, weekday: 1, startMin: 1080, endMin: 1170 },
       ],
     });
-    // Старые занятия уходят со строками каскадом, новые — в той же транзакции.
-    expect(prisma.$transaction.mock.calls[0]?.[0]).toContain('slots');
+    // Старые занятия уходят со строками каскадом, новые — в той же транзакции,
+    // до чтения страницы: ответ уже с занятиями.
+    const operations: unknown[] = prisma.$transaction.mock.calls[0]?.[0] ?? [];
+
+    expect(operations.indexOf('slots')).toBe(2);
+    expect(prisma.coach.update).toHaveBeenCalledOnce();
   });
 
   it('скрытый или неизвестный клуб — VALIDATION_FAILED с полем', async () => {
