@@ -76,6 +76,7 @@ function makeCoach(overrides: Record<string, unknown> = {}) {
       { ...credential, id: 'doc-empty', fileKey: null },
     ],
     achievements: [],
+    clubLinks: [],
     ...overrides,
   };
 }
@@ -145,6 +146,10 @@ function makePrisma() {
       createMany: vi.fn().mockReturnValue('createMany'),
     },
     club: { findMany: vi.fn().mockResolvedValue([{ id: CLUB_ID }]) },
+    clubCoach: {
+      createMany: vi.fn().mockReturnValue('staff-create'),
+      updateMany: vi.fn().mockReturnValue('staff-update'),
+    },
     coachCredential: {
       deleteMany: vi.fn().mockReturnValue('deleteMany'),
       createMany: vi.fn().mockReturnValue('createMany'),
@@ -166,8 +171,11 @@ function makePrisma() {
     },
     user: { findUnique: vi.fn().mockResolvedValue({ isAdmin: false }) },
     city: { findFirst: vi.fn().mockResolvedValue({ id: 'city-2' }) },
+    // Третья операция списка — свежесть страницы: её результат — страница.
     $transaction: vi.fn((operations: unknown[]) =>
-      Promise.resolve([...operations.slice(0, -1), makeCoach()]),
+      Promise.resolve(
+        operations.map((operation, index) => (index === 2 ? makeCoach() : operation)),
+      ),
     ),
   };
 }
@@ -610,6 +618,88 @@ describe('отправка на проверку', () => {
     await expect(service.submit(COACH_ID)).rejects.toMatchObject({
       code: 'COACH_INCOMPLETE',
       details: { missing: ['trainings'] },
+    });
+  });
+});
+
+describe('штаб на странице тренера (T2)', () => {
+  const clubRef = (overrides: Record<string, unknown> = {}) => ({
+    id: CLUB_ID,
+    name: 'Спин',
+    logoUrl: null,
+    address: null,
+    city,
+    twoGisUrl: null,
+    phone: null,
+    whatsapp: null,
+    telegram: null,
+    primaryContact: null,
+    hiddenAt: null,
+    profileReviewedAt: null,
+    ...overrides,
+  });
+  const link = (status: string, club = clubRef()) => ({
+    clubId: club.id,
+    coachId: COACH_ID,
+    status,
+    position: status === 'ACTIVE' ? 'Старший тренер' : null,
+    requestedAt: new Date('2026-10-20T00:00:00.000Z'),
+    confirmedAt: status === 'ACTIVE' ? new Date('2026-10-20T00:00:00.000Z') : null,
+    club,
+    coach: makeTraining().coach,
+  });
+  const clubLinks = [
+    link('ACTIVE'),
+    link('ACTIVE', clubRef({ id: 'hidden-club', hiddenAt: new Date() })),
+    link('INVITED_BY_CLUB', clubRef({ id: 'club-invites' })),
+    link('REQUESTED_BY_COACH', clubRef({ id: 'club-requested' })),
+  ];
+
+  it('посторонний видит клубы штаба без скрытых, без приглашений и запросов', async () => {
+    prisma.coach.findUnique.mockResolvedValue(makeCoach({ clubLinks }));
+
+    const view = await service.findBySlug('kim-sergey', undefined);
+
+    expect(view.clubs.map((item) => [item.club.id, item.position])).toEqual([
+      [CLUB_ID, 'Старший тренер'],
+    ]);
+    expect(view.clubInvites).toEqual([]);
+    expect(view.clubRequests).toEqual([]);
+  });
+
+  it('владелец видит приглашения клубов и свои запросы', async () => {
+    prisma.coach.findUnique.mockResolvedValue(makeCoach({ clubLinks }));
+
+    const view = await service.findBySlug('kim-sergey', OWNER_ID);
+
+    expect(view.clubInvites.map((item) => item.club.id)).toEqual(['club-invites']);
+    expect(view.clubRequests.map((item) => item.club.id)).toEqual(['club-requested']);
+  });
+
+  it('сохранение своих тренировок: связь с клубом осталась подтверждённой — тренер в штабе', async () => {
+    const id = '88888888-8888-4888-8888-888888888888';
+    prisma.coach.findUnique.mockResolvedValue({
+      plan: 'FREE',
+      trainings: [{ id, clubId: CLUB_ID, link: 'CONFIRMED', linkAt: null, createdAt: new Date() }],
+    });
+
+    await service.setTrainings(COACH_ID, {
+      trainings: [
+        {
+          id,
+          kind: 'GROUP',
+          audiences: ['AMATEURS'],
+          title: 'Группа',
+          unit: 'MONTH',
+          place: 'CLUB',
+          clubId: CLUB_ID,
+        },
+      ],
+    });
+
+    expect(prisma.$transaction.mock.calls[0]?.[0]).toContain('staff-create');
+    expect(prisma.clubCoach.createMany.mock.calls[0]?.[0]).toMatchObject({
+      data: [{ clubId: CLUB_ID, coachId: COACH_ID, status: 'ACTIVE' }],
     });
   });
 });

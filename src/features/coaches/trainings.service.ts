@@ -16,6 +16,7 @@ import { Injectable } from '@nestjs/common';
 import { pageOf, skipOf } from '../../common/pagination.js';
 import type { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
+import { staffFromTrainings } from './club-staff.service.js';
 import { groupTrainings, keptLink } from './training-rules.js';
 import {
   PUBLIC_COACH,
@@ -264,11 +265,17 @@ export class TrainingsService {
         : { ...fields, id: previous.id, createdAt: previous.createdAt };
     });
 
+    // Тренер подтвердил группу и остался в ней — он в штабе клуба (T2).
+    const staff = data.flatMap((row) =>
+      row.link === 'CONFIRMED' && row.coachId !== null ? [{ clubId, coachId: row.coachId }] : [],
+    );
+
     await this.prisma.$transaction([
       this.prisma.training.deleteMany({ where: { clubId, author: 'CLUB' } }),
       this.prisma.training.createMany({ data }),
       // Свежесть страницы клуба — как при правке цен (ADR-055).
       this.prisma.club.update({ where: { id: clubId }, data: { profileReviewedAt: new Date() } }),
+      ...staffFromTrainings(this.prisma, staff),
     ]);
 
     return this.manage(clubId);
@@ -298,9 +305,28 @@ export class TrainingsService {
 
     await this.assertSecondSide(training, userId);
 
-    const { count } = await this.prisma.training.updateMany({
-      where: { id, link: { in: [...from] } },
-      data,
+    // Подтверждённая связь добавляет тренера в штаб клуба — той же
+    // транзакцией (ADR-059, T2). Разрыв связи штаб не трогает.
+    const count = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.training.updateMany({
+        where: { id, link: { in: [...from] } },
+        data,
+      });
+
+      if (
+        updated.count > 0 &&
+        data.link === 'CONFIRMED' &&
+        training.clubId !== null &&
+        training.coachId !== null
+      ) {
+        for (const operation of staffFromTrainings(tx, [
+          { clubId: training.clubId, coachId: training.coachId },
+        ])) {
+          await operation;
+        }
+      }
+
+      return updated.count;
     });
 
     if (count === 0) {

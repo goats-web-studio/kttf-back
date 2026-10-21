@@ -88,6 +88,7 @@ describe('AllExceptionsFilter', () => {
       COACH_INCOMPLETE: 409,
       COACH_STATUS_INVALID: 409,
       TRAINING_LINK_INVALID: 409,
+      CLUB_COACH_INVALID: 409,
     };
 
     for (const code of Object.values(ERROR_CODES)) {

@@ -16,6 +16,7 @@ import { defined } from '../../common/objects.js';
 import { pageOf, skipOf } from '../../common/pagination.js';
 import type { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
+import { PUBLIC_COACH } from '../coaches/training-view.js';
 import { PlacesService } from '../places/places.service.js';
 import { clubFields, toClubView } from './club-view.js';
 import { nextTournaments } from './next-tournaments.js';
@@ -29,6 +30,17 @@ import { nextTournaments } from './next-tournaments.js';
  * и режется на страницы после сортировки. Потолок — страховка, а не план.
  */
 const LIST_SCAN_MAX = 2000;
+
+/**
+ * Опубликованная тренировка клуба для детей или подростков — метка и фильтр
+ * «Детские тренировки» (ADR-059, T2): своя клубная или тренерская,
+ * подтверждённая клубом, у опубликованного тренера. Клуб не скрыт — это
+ * условие самого каталога.
+ */
+export const KIDS_TRAINING = {
+  audiences: { hasSome: ['KIDS', 'TEENS'] },
+  OR: [{ author: 'CLUB' }, { author: 'COACH', link: 'CONFIRMED', coach: { is: PUBLIC_COACH } }],
+} as const satisfies Prisma.TrainingWhereInput;
 
 @Injectable()
 export class ClubsService {
@@ -57,6 +69,7 @@ export class ClubsService {
       ...(query.tableProductId === undefined
         ? {}
         : { tables: { some: { productId: query.tableProductId } } }),
+      ...(query.kids === true ? { trainings: { some: KIDS_TRAINING } } : {}),
     };
 
     const candidates = await this.prisma.club.findMany({
@@ -89,18 +102,37 @@ export class ClubsService {
     const pageIds = ordered
       .slice(skipOf(query), skipOf(query) + query.limit)
       .map((club) => club.id);
-    const rows = await this.prisma.club.findMany({
-      where: { id: { in: pageIds } },
-      select: clubFields,
-    });
+    const [rows, staff, kids] = await Promise.all([
+      this.prisma.club.findMany({ where: { id: { in: pageIds } }, select: clubFields }),
+      // Тренеров штаба — с опубликованной страницей (ADR-059, T2).
+      this.prisma.clubCoach.groupBy({
+        by: ['clubId'],
+        where: { clubId: { in: pageIds }, status: 'ACTIVE', coach: { is: PUBLIC_COACH } },
+        _count: { _all: true },
+      }),
+      this.prisma.training.findMany({
+        where: { clubId: { in: pageIds }, ...KIDS_TRAINING },
+        select: { clubId: true },
+        distinct: ['clubId'],
+      }),
+    ]);
     const byId = new Map(rows.map((row) => [row.id, row]));
+    const coaches = new Map(staff.map((group) => [group.clubId, group._count._all]));
+    const withKids = new Set(kids.map((training) => training.clubId));
 
     const items = pageIds.flatMap((id) => {
       const row = byId.get(id);
 
       return row === undefined
         ? []
-        : [{ ...toClubView(row), nextTournamentAt: next.get(id)?.toISOString() ?? null }];
+        : [
+            {
+              ...toClubView(row),
+              nextTournamentAt: next.get(id)?.toISOString() ?? null,
+              coachesCount: coaches.get(id) ?? 0,
+              kidsTrainings: withKids.has(id),
+            },
+          ];
     });
 
     return pageOf(items, ordered.length, query);

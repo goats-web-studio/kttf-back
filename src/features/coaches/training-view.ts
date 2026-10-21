@@ -1,7 +1,9 @@
 import {
   isCoachPublic,
+  type ClubCoachView,
   type CoachPlayerRef,
   type TrainingClubRef,
+  type TrainingCoachRef,
   type TrainingView,
 } from '@kttf/shared/types';
 
@@ -109,6 +111,27 @@ export const trainingFields = {
 export type TrainingRecord = Prisma.TrainingGetPayload<{ select: typeof trainingFields }>;
 type PlayerRecord = Prisma.PlayerGetPayload<{ select: typeof coachPlayerFields }>;
 type ClubRecord = NonNullable<TrainingRecord['club']>;
+type CoachRefRecord = NonNullable<TrainingRecord['coach']>;
+
+/** Связь штаба с обеими сторонами — для ответов о штабе (T2, ADR-059). */
+export const clubCoachFields = {
+  clubId: true,
+  coachId: true,
+  status: true,
+  position: true,
+  requestedAt: true,
+  confirmedAt: true,
+  club: { select: trainingClubFields },
+  coach: { select: trainingCoachFields },
+} as const satisfies Prisma.ClubCoachSelect;
+
+export type ClubCoachRecord = Prisma.ClubCoachGetPayload<{ select: typeof clubCoachFields }>;
+
+/** Штаб: сначала давние, должность правит клуб. */
+export const CLUB_COACH_ORDER = [
+  { confirmedAt: 'asc' },
+  { requestedAt: 'asc' },
+] as const satisfies Prisma.ClubCoachOrderByWithRelationInput[];
 
 export function toPlayerRef(player: PlayerRecord): CoachPlayerRef {
   return {
@@ -136,6 +159,30 @@ export function toClubRef(club: ClubRecord): TrainingClubRef {
     whatsapp: club.whatsapp,
     telegram: club.telegram,
     primaryContact: club.primaryContact,
+  };
+}
+
+export function toCoachRef(coach: CoachRefRecord): TrainingCoachRef {
+  return {
+    id: coach.id,
+    slug: coach.slug,
+    player: toPlayerRef(coach.player),
+    photoUrl: coach.photoUrl,
+    phone: coach.phone,
+    whatsapp: coach.whatsapp,
+    telegram: coach.telegram,
+    primaryContact: coach.primaryContact,
+  };
+}
+
+export function toClubCoachView(link: ClubCoachRecord): ClubCoachView {
+  return {
+    club: toClubRef(link.club),
+    coach: toCoachRef(link.coach),
+    status: link.status,
+    position: link.position,
+    requestedAt: link.requestedAt.toISOString(),
+    confirmedAt: link.confirmedAt?.toISOString() ?? null,
   };
 }
 
@@ -186,18 +233,7 @@ export function toTrainingView(training: TrainingRecord, reveal: boolean): Train
       training.venueName === null || training.venueAddress === null
         ? null
         : { name: training.venueName, address: training.venueAddress },
-    coach: showCoach
-      ? {
-          id: coach.id,
-          slug: coach.slug,
-          player: toPlayerRef(coach.player),
-          photoUrl: coach.photoUrl,
-          phone: coach.phone,
-          whatsapp: coach.whatsapp,
-          telegram: coach.telegram,
-          primaryContact: coach.primaryContact,
-        }
-      : null,
+    coach: showCoach ? toCoachRef(coach) : null,
     link: masked ? 'NONE' : training.link,
     title: training.title,
     schedule: training.schedule,

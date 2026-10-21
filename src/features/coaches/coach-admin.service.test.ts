@@ -63,6 +63,7 @@ const coach = {
     },
   ],
   achievements: [],
+  clubLinks: [],
 };
 
 function makePrisma() {

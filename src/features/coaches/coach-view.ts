@@ -10,8 +10,11 @@ import {
 import type { Prisma } from '../../generated/prisma/client.js';
 import { cityRefFields } from '../places/place.fields.js';
 import {
+  CLUB_COACH_ORDER,
   TRAINING_ORDER,
+  clubCoachFields,
   coachPlayerFields,
+  toClubCoachView,
   toPlayerRef,
   toTrainingView,
   trainingFields,
@@ -75,6 +78,8 @@ export const coachFields = {
   createdAt: true,
   // Все тренировки с этим тренером: свои и клубные, где он указан.
   trainings: { select: trainingFields, orderBy: [...TRAINING_ORDER] },
+  // Штаб клубов — T2: состав, приглашения клубов и свои запросы.
+  clubLinks: { select: clubCoachFields, orderBy: [...CLUB_COACH_ORDER] },
   credentials: { select: credentialFields, orderBy: { sortOrder: 'asc' } },
   achievements: {
     select: { id: true, role: true, year: true, title: true },
@@ -212,6 +217,16 @@ export function toCoachView(
       ? coach.trainings
           .filter((training) => training.author === 'CLUB' && training.link === 'PENDING')
           .map((training) => toTrainingView(training, true))
+      : [],
+    // Штаб: публично — только клубы, которые не скрыты.
+    clubs: coach.clubLinks
+      .filter((link) => link.status === 'ACTIVE' && link.club.hiddenAt === null)
+      .map(toClubCoachView),
+    clubInvites: viewer.privileged
+      ? coach.clubLinks.filter((link) => link.status === 'INVITED_BY_CLUB').map(toClubCoachView)
+      : [],
+    clubRequests: viewer.privileged
+      ? coach.clubLinks.filter((link) => link.status === 'REQUESTED_BY_COACH').map(toClubCoachView)
       : [],
     credentials: coach.credentials.map((credential) =>
       toCredentialView(coach.id, credential, viewer),

@@ -338,7 +338,11 @@ function makePrisma() {
     coach: { findMany: vi.fn().mockResolvedValue([{ id: COACH_ID }]) },
     clubMember: { findUnique: vi.fn().mockResolvedValue(null) },
     user: { findUnique: vi.fn().mockResolvedValue({ isAdmin: false }) },
-    $transaction: vi.fn((operations: unknown[]) => Promise.resolve(operations)),
+    clubCoach: {
+      createMany: vi.fn().mockReturnValue('staff-create'),
+      updateMany: vi.fn().mockReturnValue('staff-update'),
+    },
+    $transaction: vi.fn(),
   };
 }
 
@@ -347,6 +351,12 @@ let service: TrainingsService;
 
 beforeEach(() => {
   prisma = makePrisma();
+  // Массив операций — как есть; функция — транзакция на том же клиенте.
+  prisma.$transaction.mockImplementation((arg: unknown) =>
+    typeof arg === 'function'
+      ? (arg as (tx: typeof prisma) => unknown)(prisma)
+      : Promise.resolve(arg),
+  );
   service = new TrainingsService(prisma as unknown as PrismaService);
 });
 
@@ -488,6 +498,84 @@ describe('список блоками', () => {
 
     expect(page.total).toBe(2);
     expect(page.items.map((group) => group.kind)).toEqual(['ANYWHERE']);
+  });
+});
+
+describe('штаб из подтверждённых тренировок (T2)', () => {
+  it('подтверждение тренировки в клубе добавляет тренера в штаб', async () => {
+    prisma.clubMember.findUnique.mockResolvedValue({ role: 'OWNER' });
+
+    await service.confirm('training-1', 'user-club');
+
+    expect(prisma.clubCoach.createMany.mock.calls[0]?.[0]).toMatchObject({
+      data: [{ clubId: CLUB_ID, coachId: COACH_ID, status: 'ACTIVE' }],
+      skipDuplicates: true,
+    });
+  });
+
+  it('отказ и разрыв штаб не трогают', async () => {
+    prisma.clubMember.findUnique.mockResolvedValue({ role: 'OWNER' });
+
+    await service.decline('training-1', 'user-club');
+
+    expect(prisma.clubCoach.createMany).not.toHaveBeenCalled();
+    expect(prisma.clubCoach.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('связь не обновилась — штаб не трогается', async () => {
+    prisma.clubMember.findUnique.mockResolvedValue({ role: 'OWNER' });
+    prisma.training.updateMany.mockResolvedValue({ count: 0 });
+    prisma.training.findUnique
+      .mockResolvedValueOnce(inClub({ link: 'PENDING' }))
+      .mockResolvedValueOnce({ link: 'CONFIRMED' });
+
+    await expect(service.confirm('training-1', 'user-club')).rejects.toMatchObject({
+      code: 'TRAINING_LINK_INVALID',
+    });
+    expect(prisma.clubCoach.createMany).not.toHaveBeenCalled();
+  });
+
+  it('список клуба: подтверждённая группа с тем же тренером — тренер в штабе', async () => {
+    const id = '88888888-8888-4888-8888-888888888888';
+    prisma.training.findMany.mockResolvedValueOnce([
+      { id, coachId: COACH_ID, link: 'CONFIRMED', linkAt: null, createdAt: new Date() },
+    ]);
+
+    await service.setClubTrainings(CLUB_ID, {
+      trainings: [
+        {
+          id,
+          kind: 'GROUP',
+          audiences: ['AMATEURS'],
+          title: 'Группа',
+          unit: 'MONTH',
+          coachId: COACH_ID,
+        },
+      ],
+    });
+
+    const operations = prisma.$transaction.mock.calls[0]?.[0] as unknown[];
+
+    expect(operations).toContain('staff-create');
+    expect(prisma.clubCoach.createMany.mock.calls[0]?.[0]).toMatchObject({
+      data: [{ clubId: CLUB_ID, coachId: COACH_ID }],
+    });
+  });
+
+  it('список клуба без подтверждённых — штаб не трогается', async () => {
+    await service.setClubTrainings(CLUB_ID, {
+      trainings: [
+        {
+          kind: 'GROUP',
+          audiences: ['AMATEURS'],
+          title: 'Группа',
+          unit: 'MONTH',
+          coachId: COACH_ID,
+        },
+      ],
+    });
+
+    expect(prisma.clubCoach.createMany).not.toHaveBeenCalled();
   });
 });
 

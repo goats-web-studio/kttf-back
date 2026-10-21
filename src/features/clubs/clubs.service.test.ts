@@ -54,6 +54,8 @@ function makePrisma() {
       delete: vi.fn().mockResolvedValue({}),
     },
     tournament: { groupBy: vi.fn().mockResolvedValue([]) },
+    clubCoach: { groupBy: vi.fn().mockResolvedValue([]) },
+    training: { findMany: vi.fn().mockResolvedValue([]) },
     user: { findUnique: vi.fn().mockResolvedValue({ id: 'user-1' }) },
     city: { findFirst: vi.fn().mockResolvedValue({ id: 'city-1' }) },
     $transaction: vi.fn(),
@@ -359,6 +361,47 @@ describe('исключение из состава', () => {
 
     await expect(service.removeMember('club-1', 'user-1')).rejects.toMatchObject({
       code: 'NOT_FOUND',
+    });
+  });
+});
+
+describe('штаб и детские тренировки в списке (ADR-059, T2)', () => {
+  it('число тренеров штаба и метка детских тренировок — по клубу', async () => {
+    prisma.clubCoach.groupBy.mockResolvedValue([{ clubId: 'club-1', _count: { _all: 3 } }]);
+    prisma.training.findMany.mockResolvedValue([{ clubId: 'club-1' }]);
+
+    const page = await service.list({ page: 1, limit: 20 });
+
+    expect(page.items[0]).toMatchObject({ coachesCount: 3, kidsTrainings: true });
+    expect(prisma.clubCoach.groupBy.mock.calls[0]?.[0]).toMatchObject({
+      where: { status: 'ACTIVE', coach: { is: { status: 'APPROVED', hiddenAt: null } } },
+    });
+  });
+
+  it('без штаба и детских — ноль и нет метки', async () => {
+    const page = await service.list({ page: 1, limit: 20 });
+
+    expect(page.items[0]).toMatchObject({ coachesCount: 0, kidsTrainings: false });
+  });
+
+  it('фильтр kids — клубы с опубликованной тренировкой для детей или подростков', async () => {
+    await service.list({ page: 1, limit: 20, kids: true });
+
+    const where = (prisma.club.findMany.mock.calls[0]?.[0] as { where: { trainings: unknown } })
+      .where;
+
+    expect(where.trainings).toEqual({
+      some: {
+        audiences: { hasSome: ['KIDS', 'TEENS'] },
+        OR: [
+          { author: 'CLUB' },
+          {
+            author: 'COACH',
+            link: 'CONFIRMED',
+            coach: { is: { status: 'APPROVED', hiddenAt: null } },
+          },
+        ],
+      },
     });
   });
 });

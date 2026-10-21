@@ -19,6 +19,7 @@ import { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { pickSlug } from '../catalog/catalog-query.js';
 import { PlacesService } from '../places/places.service.js';
+import { staffFromTrainings } from './club-staff.service.js';
 import { countStudents } from './coach-students.js';
 import { keptLink } from './training-rules.js';
 import { coachFields, toCoachView, type CoachRecord, type CoachViewer } from './coach-view.js';
@@ -232,10 +233,15 @@ export class CoachesService {
         : { ...fields, id: previous.id, createdAt: previous.createdAt };
     });
 
+    // Связь с клубом осталась подтверждённой — тренер в штабе клуба (T2).
+    const staff = data.flatMap((row) =>
+      row.link === 'CONFIRMED' && row.clubId !== null ? [{ clubId: row.clubId, coachId: id }] : [],
+    );
     const [, , coach] = await this.prisma.$transaction([
       this.prisma.training.deleteMany({ where: { coachId: id, author: 'COACH' } }),
       this.prisma.training.createMany({ data }),
       this.touch(id),
+      ...staffFromTrainings(this.prisma, staff),
     ]);
 
     return this.view(coach, OWNER);
