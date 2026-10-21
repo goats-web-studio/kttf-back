@@ -68,6 +68,8 @@ const STATUS_BY_CODE: Readonly<Record<ErrorCode, number>> = {
   TRAINING_LINK_INVALID: HttpStatus.CONFLICT,
   // Штаб клуба — T2: подтверждение не той стороной, повтор приглашения.
   CLUB_COACH_INVALID: HttpStatus.CONFLICT,
+  // Фото, видео и записи тренера — T2.2: предел тарифа, как у клуба.
+  COACH_PLAN_LIMIT: HttpStatus.CONFLICT,
 };
 
 const CODE_BY_STATUS: Readonly<Record<number, ErrorCode>> = {
