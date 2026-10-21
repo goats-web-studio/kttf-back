@@ -38,6 +38,7 @@ const player = {
   // Игрок без аккаунта: посещения нет.
   user: null,
   coachTenures: [],
+  coachPage: null,
 };
 
 const newcomer = {
@@ -564,6 +565,22 @@ describe('анкета игрока', () => {
 
       expect((await service.findById('player-1')).coachSlug).toBeNull();
     }
+  });
+
+  it('своя опубликованная страница тренера — бейдж в шапке, черновик — нет (ADR-059)', async () => {
+    prisma.player.findUnique.mockResolvedValue({
+      ...player,
+      coachPage: { slug: 'amanbaev-arlan', status: 'APPROVED', hiddenAt: null },
+    });
+
+    expect((await service.findById('player-1')).ownCoachSlug).toBe('amanbaev-arlan');
+
+    prisma.player.findUnique.mockResolvedValue({
+      ...player,
+      coachPage: { slug: 'amanbaev-arlan', status: 'PENDING', hiddenAt: null },
+    });
+
+    expect((await service.findById('player-1')).ownCoachSlug).toBeNull();
   });
 
   it('вписанный руками тренер отдаётся как есть', async () => {

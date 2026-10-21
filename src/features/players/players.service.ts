@@ -91,6 +91,8 @@ const profileFields = {
       coachPage: { select: { slug: true, status: true, hiddenAt: true } },
     },
   },
+  // Своя страница тренера — бейдж «Тренер KTTF» в шапке профиля (ADR-059).
+  coachPage: { select: { slug: true, status: true, hiddenAt: true } },
   // «В сети» и последнее посещение — с аккаунта, а не с игрока (ADR-050).
   user: { select: { lastSeenAt: true } },
   // История тренеров — T2 (ADR-059): открытый период текущего и прежние.
@@ -664,6 +666,7 @@ interface ProfileRecord extends PlayerRecord {
     firstName: string;
     coachPage: { slug: string; status: CoachStatus; hiddenAt: Date | null } | null;
   } | null;
+  coachPage: { slug: string; status: CoachStatus; hiddenAt: Date | null } | null;
   user: { lastSeenAt: Date | null } | null;
   coachTenures: TenureRecord[];
 }
@@ -764,6 +767,7 @@ function toProfileView(
         from: tenure.from.toISOString(),
         to: tenure.to.toISOString(),
       })),
+    ownCoachSlug: publicCoachSlug(player.coachPage),
     lastSeenAt: lastSeenAt?.toISOString() ?? null,
     online: isOnline(lastSeenAt, now),
   };
