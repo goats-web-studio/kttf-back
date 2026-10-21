@@ -145,6 +145,8 @@ model Player {
   createdAt DateTime @default(now())
 
   registrations  Registration[]
+  // Записи на турниры, где игрок указан тренером участника (T3).
+  coachedEntries Registration[] @relation("RegistrationCoach")
   ratingEvents   RatingEvent[]
   // Страница тренера на этом профиле — ADR-059. Не путать с `coach`:
   // там тренер, которого игрок выбрал себе в анкете.
@@ -1044,6 +1046,15 @@ model Registration {
   place   Int?
   placeTo Int?
 
+  // Тренер участника на этом турнире — T3 (ADR-059). Снимок анкеты при
+  // записи; до старта идёт за анкетой, пока его не поправили руками
+  // (coachManual), после старта не меняется: по нему считаются медали
+  // учеников. Как в анкете — игрок из списка либо строка, не оба.
+  coachPlayerId String?
+  coachPlayer   Player? @relation("RegistrationCoach", fields: [coachPlayerId], references: [id], onDelete: SetNull)
+  coachName     String?
+  coachManual   Boolean @default(false)
+
   createdAt DateTime @default(now())
 
   tournament Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
@@ -1052,6 +1063,8 @@ model Registration {
   @@unique([tournamentId, playerId])
   @@index([tournamentId, status])
   @@index([playerId])
+  // Медали и турниры учеников на странице тренера (T3).
+  @@index([coachPlayerId])
 }
 
 enum RegistrationStatus {
