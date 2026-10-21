@@ -21,7 +21,7 @@ import { pickSlug } from '../catalog/catalog-query.js';
 import { PlacesService } from '../places/places.service.js';
 import { staffFromTrainings } from './club-staff.service.js';
 import { countStudents } from './coach-students.js';
-import { keptLink } from './training-rules.js';
+import { keptLink, rowId, slotRows } from './training-rules.js';
 import { coachFields, toCoachView, type CoachRecord, type CoachViewer } from './coach-view.js';
 
 /** Владелец страницы и администратор: маршруты под `RequireCoachOwner`. */
@@ -225,11 +225,12 @@ export class CoachesService {
         unit: row.unit,
         note: row.note ?? null,
         description: row.description ?? null,
+        enrollment: row.enrollment ?? null,
         sortOrder: index,
       };
 
       return previous === undefined
-        ? fields
+        ? { ...fields, id: rowId(previous) }
         : { ...fields, id: previous.id, createdAt: previous.createdAt };
     });
 
@@ -241,6 +242,7 @@ export class CoachesService {
       this.prisma.training.deleteMany({ where: { coachId: id, author: 'COACH' } }),
       this.prisma.training.createMany({ data }),
       this.touch(id),
+      this.prisma.trainingSlot.createMany({ data: slotRows(data, input.trainings) }),
       ...staffFromTrainings(this.prisma, staff),
     ]);
 

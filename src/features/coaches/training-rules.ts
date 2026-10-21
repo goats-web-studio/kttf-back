@@ -1,4 +1,11 @@
-import type { TrainingGroupView, TrainingLink, TrainingVenue } from '@kttf/shared/types';
+import { randomUUID } from 'node:crypto';
+
+import type {
+  TrainingGroupView,
+  TrainingLink,
+  TrainingSlot,
+  TrainingVenue,
+} from '@kttf/shared/types';
 
 import { toClubRef, toTrainingView, type TrainingRecord } from './training-view.js';
 
@@ -23,6 +30,33 @@ export function keptLink(
   if (previous?.partner === partner) return { link: previous.link, linkAt: previous.linkAt };
 
   return { link: 'PENDING', linkAt: null };
+}
+
+/**
+ * Идентификатор строки списка: прежний — у сохранённой, новый — у новой.
+ * Свой, а не из базы: занятия строки пишутся той же транзакцией, а
+ * `createMany` идентификаторов не возвращает.
+ */
+export function rowId(previous: { readonly id: string } | undefined): string {
+  return previous?.id ?? randomUUID();
+}
+
+/**
+ * Занятия строк списка целиком — T3 (ADR-059). Старые уходят вместе со
+ * строками (каскад), новые пишутся этим списком; не переданы — пусто.
+ */
+export function slotRows(
+  rows: readonly { readonly id: string }[],
+  inputs: readonly { readonly slots?: readonly TrainingSlot[] | undefined }[],
+): { trainingId: string; weekday: number; startMin: number; endMin: number }[] {
+  return rows.flatMap((row, index) =>
+    (inputs[index]?.slots ?? []).map((slot) => ({
+      trainingId: row.id,
+      weekday: slot.weekday,
+      startMin: slot.startMin,
+      endMin: slot.endMin,
+    })),
+  );
 }
 
 /** Зал вне KTTF — один и тот же при разнице в регистре и пробелах по краям. */

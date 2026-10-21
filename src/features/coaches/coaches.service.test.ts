@@ -103,6 +103,8 @@ function makeTraining(overrides: Record<string, unknown> = {}) {
     unit: 'MONTH',
     note: null,
     description: null,
+    enrollment: null,
+    slots: [],
     sortOrder: 0,
     createdAt: new Date('2026-10-20T00:00:00.000Z'),
     club: null,
@@ -145,6 +147,7 @@ function makePrisma() {
       deleteMany: vi.fn().mockReturnValue('deleteMany'),
       createMany: vi.fn().mockReturnValue('createMany'),
     },
+    trainingSlot: { createMany: vi.fn().mockReturnValue('slots') },
     club: { findMany: vi.fn().mockResolvedValue([{ id: CLUB_ID }]) },
     clubCoach: {
       createMany: vi.fn().mockReturnValue('staff-create'),
@@ -457,7 +460,45 @@ describe('свои тренировки тренера', () => {
 
     await service.setTrainings(COACH_ID, { trainings: [{ ...row, id, place: 'ONLINE' }] });
 
-    expect(written()[0]).not.toHaveProperty('id');
+    // Новая строка получает свой идентификатор — чужой не подхватывается.
+    expect(written()[0]?.id).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));
+    expect(written()[0]?.id).not.toBe(id);
+    expect(written()[0]).not.toHaveProperty('createdAt');
+  });
+
+  it('занятия строки пишутся целиком той же транзакцией; не переданы — пусто', async () => {
+    stored([{ id, clubId: null, link: 'NONE', linkAt: null, createdAt: new Date() }]);
+
+    await service.setTrainings(COACH_ID, {
+      trainings: [
+        {
+          ...row,
+          id,
+          place: 'ONLINE',
+          enrollment: 'FEW',
+          slots: [
+            { weekday: 3, startMin: 1080, endMin: 1170 },
+            { weekday: 1, startMin: 1080, endMin: 1170 },
+          ],
+        },
+        { ...row, place: 'VISIT' },
+      ],
+    });
+
+    const created = written();
+
+    expect(created.map((training) => training.enrollment)).toEqual(['FEW', null]);
+    expect(prisma.training.deleteMany).toHaveBeenCalledWith({
+      where: { coachId: COACH_ID, author: 'COACH' },
+    });
+    expect(prisma.trainingSlot.createMany).toHaveBeenCalledWith({
+      data: [
+        { trainingId: id, weekday: 3, startMin: 1080, endMin: 1170 },
+        { trainingId: id, weekday: 1, startMin: 1080, endMin: 1170 },
+      ],
+    });
+    // Старые занятия уходят со строками каскадом, новые — в той же транзакции.
+    expect(prisma.$transaction.mock.calls[0]?.[0]).toContain('slots');
   });
 
   it('скрытый или неизвестный клуб — VALIDATION_FAILED с полем', async () => {

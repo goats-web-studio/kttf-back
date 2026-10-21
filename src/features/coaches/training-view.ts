@@ -102,6 +102,12 @@ export const trainingFields = {
   unit: true,
   note: true,
   description: true,
+  enrollment: true,
+  // Занятия по порядку недели — во всех видах тренировки (T3).
+  slots: {
+    select: { weekday: true, startMin: true, endMin: true },
+    orderBy: [{ weekday: 'asc' }, { startMin: 'asc' }],
+  },
   sortOrder: true,
   createdAt: true,
   club: { select: trainingClubFields },
@@ -241,5 +247,7 @@ export function toTrainingView(training: TrainingRecord, reveal: boolean): Train
     unit: training.unit,
     note: training.note,
     description: training.description,
+    slots: training.slots,
+    enrollment: training.enrollment,
   };
 }
