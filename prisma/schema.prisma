@@ -142,11 +142,14 @@ model Player {
 
   createdAt DateTime @default(now())
 
-  registrations Registration[]
-  ratingEvents  RatingEvent[]
+  registrations  Registration[]
+  ratingEvents   RatingEvent[]
   // Страница тренера на этом профиле — ADR-059. Не путать с `coach`:
   // там тренер, которого игрок выбрал себе в анкете.
-  coachPage     Coach?
+  coachPage      Coach?
+  // История тренеров — T2 (ADR-059): свои периоды и периоды учеников
+  coachTenures   CoachTenure[]  @relation("TenurePlayer")
+  studentTenures CoachTenure[]  @relation("TenureCoach")
 
   @@index([rating(sort: Desc)])
   @@index([cityId, rating(sort: Desc)])
@@ -268,6 +271,7 @@ model Club {
   media        ClubMedia[]
   tables       ClubTable[]
   trainings    Training[]
+  coachLinks   ClubCoach[]
 
   @@index([cityId])
 }
@@ -637,6 +641,7 @@ model Coach {
   credentials  CoachCredential[]
   achievements CoachAchievement[]
   stats        CoachStatDaily[]
+  clubLinks    ClubCoach[]
 
   // Публичный список: одобренные, не скрытые, свежие сверху.
   @@index([status, hiddenAt, profileReviewedAt])
@@ -777,6 +782,47 @@ enum TrainingLink {
   PENDING
   CONFIRMED
   DECLINED
+}
+
+// Тренерский штаб клуба — T2 (ADR-059, решение владельца от 21.10.2026).
+// Заводит любая сторона, вторая подтверждает; разорвать может любая.
+// Подтверждённая тренировка в клубе добавляет тренера в штаб сама.
+model ClubCoach {
+  clubId      String
+  coachId     String
+  status      ClubCoachStatus
+  // Должность строкой: «старший тренер», «детский тренер»
+  position    String?
+  requestedAt DateTime        @default(now())
+  confirmedAt DateTime?
+  club        Club            @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  coach       Coach           @relation(fields: [coachId], references: [id], onDelete: Cascade)
+
+  @@id([clubId, coachId])
+  @@index([coachId])
+}
+
+enum ClubCoachStatus {
+  REQUESTED_BY_COACH
+  INVITED_BY_CLUB
+  ACTIVE
+}
+
+// История учеников — T2 (ADR-059). По игроку-тренеру, а не по странице:
+// тренер выбирается в анкете и без страницы (ADR-035). Каждая смена
+// Player.coachPlayerId закрывает открытый период и открывает новый.
+model CoachTenure {
+  playerId      String
+  coachPlayerId String
+  from          DateTime
+  // null — тренер сейчас
+  to            DateTime?
+  player        Player    @relation("TenurePlayer", fields: [playerId], references: [id], onDelete: Cascade)
+  coachPlayer   Player    @relation("TenureCoach", fields: [coachPlayerId], references: [id], onDelete: Cascade)
+
+  @@id([playerId, coachPlayerId, from])
+  @@index([coachPlayerId])
+  @@index([playerId])
 }
 
 // Документ тренера. fileKey — путь загрузки скана (/api/v1/files/coach-docs/…);
