@@ -178,7 +178,10 @@ function makePrisma() {
     },
     coachStatDaily: { upsert: vi.fn().mockResolvedValue({}) },
     clubStatDaily: { upsert: vi.fn().mockResolvedValue({}) },
-    notification: { createMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    notification: {
+      createMany: vi.fn().mockResolvedValue({ count: 1 }),
+      updateMany: vi.fn().mockResolvedValue({ count: 2 }),
+    },
     $executeRaw: vi.fn().mockResolvedValue(1),
     $transaction: vi.fn(),
   };
@@ -430,6 +433,14 @@ describe('отзыв заявки', () => {
       where: { id: REQUEST_ID, status: 'NEW' },
       data: { status: 'CANCELLED' },
     });
+    expect(prisma.notification.updateMany).toHaveBeenCalledWith({
+      where: {
+        type: 'TRIAL_REQUEST_NEW',
+        readAt: null,
+        data: { path: ['trialRequestId'], equals: REQUEST_ID },
+      },
+      data: { readAt: expect.any(Date) as Date },
+    });
     expect(notified()).toEqual([
       [
         {
@@ -513,6 +524,14 @@ describe('ответ на заявку', () => {
         answeredAt: answered,
         answeredById: 'user-coach',
       },
+    });
+    expect(prisma.notification.updateMany).toHaveBeenCalledWith({
+      where: {
+        type: 'TRIAL_REQUEST_NEW',
+        readAt: null,
+        data: { path: ['trialRequestId'], equals: REQUEST_ID },
+      },
+      data: { readAt: answered },
     });
     expect(notified()).toEqual([
       [

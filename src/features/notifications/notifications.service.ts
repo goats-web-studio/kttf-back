@@ -53,6 +53,26 @@ export class NotificationsService {
     });
   }
 
+  /**
+   * Заявка разобрана — ответ или отзыв: «новая заявка» у всех адресатов
+   * становится прочитанной. Иначе у второго сотрудника клуба висит
+   * уведомление о заявке, на которую уже ответил первый.
+   */
+  async settleTrialRequest(
+    tx: Pick<Prisma.TransactionClient, 'notification'>,
+    trialRequestId: string,
+    now = new Date(),
+  ): Promise<void> {
+    await tx.notification.updateMany({
+      where: {
+        type: 'TRIAL_REQUEST_NEW',
+        readAt: null,
+        data: { path: ['trialRequestId'], equals: trialRequestId },
+      },
+      data: { readAt: now },
+    });
+  }
+
   /** Свои уведомления, новые первыми. Строка, не прошедшая контракт, пропускается. */
   async list(
     userId: string,

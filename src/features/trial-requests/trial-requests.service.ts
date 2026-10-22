@@ -206,6 +206,7 @@ export class TrialRequestsService {
 
     await this.prisma.$transaction(async (tx) => {
       await this.move(tx, record, { status: 'CANCELLED' });
+      await this.notifications.settleTrialRequest(tx, record.id);
       await this.notifications.create(tx, recipients, 'TRIAL_REQUEST_CANCELLED', {
         trialRequestId: record.id,
         trainingTitle: record.training.title,
@@ -238,6 +239,7 @@ export class TrialRequestsService {
         answeredAt: now,
         answeredById: userId,
       });
+      await this.notifications.settleTrialRequest(tx, record.id, now);
       await this.notifications.create(tx, [record.userId], 'TRIAL_REQUEST_ANSWERED', {
         trialRequestId: record.id,
         trainingTitle: record.training.title,
