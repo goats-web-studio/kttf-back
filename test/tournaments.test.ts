@@ -1267,6 +1267,24 @@ describe('решение судьи по равенству — ADR-008', () => 
     expect(created?.data?.orderedIds).toEqual([PA, PB, PC]);
   });
 
+  it('встречи снявшихся в достроенной сетке закрываются и здесь — ADR-061', async () => {
+    // Решение равенства достраивает плей-офф. Снявшийся, вышедший из группы,
+    // раньше оставался в сетке без техпоражения, и встреча висела в очереди.
+    await call('POST', `/tournaments/${TOURNAMENT_ID}/tie-decisions`, {
+      body: { groupId: GROUP_ID, orderedIds: [PA, PB, PC] },
+      auth: true,
+    });
+
+    // Снявшихся читают трижды: таблица до решения и после (ответ маршрута)
+    // и проход по сетке в транзакции решения. Без прохода — дважды.
+    const reads = prisma.registration.findMany.mock.calls.filter(([args]) => {
+      const where = (args as { where?: { status?: { in?: string[] } } }).where;
+      return where?.status?.in?.includes('WITHDRAWN') === true;
+    });
+
+    expect(reads).toHaveLength(3);
+  });
+
   it('порядок, не отвечающий ни одному равенству, отклоняется', async () => {
     // Места — величина расчётная. Судья решает, кто выше внутри равенства,
     // а не переставляет таблицу как хочет.

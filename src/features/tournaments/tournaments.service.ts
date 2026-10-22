@@ -1417,6 +1417,8 @@ export class TournamentsService {
       });
 
       const advanced = await advanceAfterGroups(tx, id);
+      // Достроенная сетка могла посадить снявшегося напротив соперника (ADR-061).
+      await settleWithdrawals(tx, id);
 
       await bumpVersion(tx, id);
 
