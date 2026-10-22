@@ -656,6 +656,27 @@ describe('снявшийся в сетке — ADR-061', () => {
     });
   });
 
+  it('групповая встреча снявшегося освобождает стол: исход даёт таблица', async () => {
+    // Иначе стол висел бы занятым до конца турнира, а сервер отказывал бы
+    // в нём следующей паре (TABLE_BUSY).
+    await app?.close();
+    await boot({
+      withdrawn: [P2],
+      stages: [
+        { id: STAGE_ID, order: 0, type: 'GROUPS', name: 'Группы', config: { setsToWin: 3 } },
+      ],
+      matches: [
+        makeMatch({ id: M1, playerAId: P1, playerBId: P2, status: 'PLAYING', tableNumber: 2 }),
+        makeMatch({ id: M2, playerAId: P3, playerBId: P4, bracketSlot: 1 }),
+      ],
+      formatConfig: { type: 'ROUND_ROBIN', rounds: 1, setsToWin: 3 },
+    });
+
+    await call('POST', `/matches/${M2}/result`, { body: { setsA: 3, setsB: 0 }, auth: true });
+
+    expect(matchById(M1)).toMatchObject({ status: 'PENDING', tableNumber: null, setsA: null });
+  });
+
   it('пока соперник не известен, встречу снявшегося не трогают', async () => {
     await app?.close();
     await boot({ withdrawn: [P1] });

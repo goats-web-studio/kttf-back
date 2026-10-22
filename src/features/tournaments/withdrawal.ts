@@ -1,4 +1,4 @@
-import { bracketWalkover } from '@kttf/shared/brackets';
+import { bracketWalkover, isDecidedByWithdrawal } from '@kttf/shared/brackets';
 
 import { Prisma } from '../../generated/prisma/client.js';
 import { applyAdvancement } from '../matches/advancement.js';
@@ -24,6 +24,7 @@ export const WITHDRAWN_STATUSES = ['WITHDRAWN', 'NO_SHOW'] as const;
  *
  * Вызывается после всего, что может посадить снявшегося напротив известного
  * соперника: снятия, ввода и правки счёта, отмены, достройки плей-офф.
+ * Заодно освобождаются столы групповых встреч снявшегося (`releaseTables`).
  *
  * @returns Встречи, изменённые проходом: закрытые технически и пополненные.
  */
@@ -39,6 +40,8 @@ export async function settleWithdrawals(
   const changed: MatchRecord[] = [];
 
   if (withdrawn.size === 0) return changed;
+
+  changed.push(...(await releaseTables(tx, tournamentId, withdrawn)));
 
   for (;;) {
     const stages = await tx.stage.findMany({ where: { tournamentId }, select: stageFields });
@@ -80,4 +83,42 @@ export async function settleWithdrawals(
       changed.push(...(await applyAdvancement(tx, stageId)));
     }
   }
+}
+
+/**
+ * Групповая встреча снявшегося, которая шла за столом, возвращается в
+ * ожидание и освобождает стол.
+ *
+ * Её исход даёт таблица (ADR-009), и стола она больше не занимает: иначе он
+ * висел бы занятым до конца турнира, а сервер отказывал бы в нём следующей
+ * паре (`TABLE_BUSY`). Вернут игрока в игру — встреча снова в очереди.
+ */
+async function releaseTables(
+  tx: Prisma.TransactionClient,
+  tournamentId: string,
+  withdrawn: ReadonlySet<string>,
+): Promise<MatchRecord[]> {
+  const stages = await tx.stage.findMany({ where: { tournamentId }, select: stageFields });
+  const stuck = stages
+    .filter((stage) => stage.type !== 'KNOCKOUT' && stage.type !== 'CONSOLATION')
+    .flatMap((stage) => stage.matches)
+    .filter(
+      (match) =>
+        match.status === 'PLAYING' &&
+        match.setsA === null &&
+        isDecidedByWithdrawal({ a: match.playerAId, b: match.playerBId }, withdrawn),
+    );
+  const released: MatchRecord[] = [];
+
+  for (const match of stuck) {
+    released.push(
+      await tx.match.update({
+        where: { id: match.id },
+        data: { status: 'PENDING', tableNumber: null, startedAt: null },
+        select: matchFields,
+      }),
+    );
+  }
+
+  return released;
 }
