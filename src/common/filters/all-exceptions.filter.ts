@@ -42,6 +42,10 @@ const STATUS_BY_CODE: Readonly<Record<ErrorCode, number>> = {
   TABLE_OUT_OF_RANGE: HttpStatus.BAD_REQUEST,
   TABLE_BUSY: HttpStatus.CONFLICT,
   MATCH_LENGTH_LOCKED: HttpStatus.CONFLICT,
+  // Опоздавшему некуда встать, сыгравшего не заменить — положение дел в
+  // турнире, а не кривой запрос (ADR-062).
+  LATE_ENTRY_CLOSED: HttpStatus.CONFLICT,
+  REPLACEMENT_LOCKED: HttpStatus.CONFLICT,
 
   // Завершение турнира — ТС 7.5. Тоже конфликт состояния: запрос верный,
   // турнир к нему не готов. Отсутствие снимка — не вина запроса вовсе.

@@ -4,6 +4,7 @@ import {
   duplicateTournamentSchema,
   listTournamentsSchema,
   registerSchema,
+  replaceRegistrationSchema,
   setRegistrationCoachSchema,
   tieDecisionSchema,
   updateRegistrationSchema,
@@ -13,6 +14,7 @@ import {
   type ListTournamentsQuery,
   type Page,
   type RegisterInput,
+  type ReplaceRegistrationInput,
   type RegistrationView,
   type SetRegistrationCoachInput,
   type TieDecisionInput,
@@ -254,6 +256,18 @@ export class TournamentsController {
     @CurrentUserId() userId: string,
   ): Promise<RegistrationView> {
     return this.tournaments.register(id, body, userId);
+  }
+
+  /** Замена участника — ADR-062. */
+  @Post(':id/registrations/:registrationId/replace')
+  @UseGuards(JwtAuthGuard)
+  async replaceParticipant(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @Param('registrationId', new ZodValidationPipe(uuidParam)) registrationId: string,
+    @Body(new ZodValidationPipe(replaceRegistrationSchema)) body: ReplaceRegistrationInput,
+    @CurrentUserId() userId: string,
+  ): Promise<RegistrationView> {
+    return this.tournaments.replaceParticipant(id, registrationId, body, userId);
   }
 
   @Patch(':id/registrations/:registrationId')

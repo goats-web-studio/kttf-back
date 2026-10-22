@@ -152,6 +152,8 @@ function makePrisma() {
       createMany: vi.fn().mockResolvedValue({ count: 0 }),
       count: vi.fn().mockResolvedValue(0),
       findFirst: vi.fn().mockResolvedValue(null),
+      findMany: vi.fn().mockResolvedValue([]),
+      updateMany: vi.fn().mockResolvedValue({ count: 0 }),
     },
     clubMember: {
       findUnique: vi.fn().mockResolvedValue({ role: 'OWNER' }),
@@ -970,6 +972,231 @@ describe('отметка «Оплатил» — ADR-062', () => {
 
     expect((staff.body as unknown as { paid: unknown }[])[0]?.paid).toBe(true);
     expect((anonymous.body as unknown as { paid: unknown }[])[0]?.paid).toBeNull();
+  });
+});
+
+describe('поздняя запись и замена — ADR-062', () => {
+  const LATE_ID = '88888888-8888-4888-8888-888888888888';
+  const late = { ...player, id: LATE_ID, userId: null, rating: { toString: () => '400.00' } };
+  const STARTED = new Date('2026-08-30T10:00:00.000Z');
+
+  function groupMatch(id: string, groupId: string, a: string, b: string, round: number) {
+    return {
+      id,
+      stageId: STAGE_ID,
+      groupId,
+      playerAId: a,
+      playerBId: b,
+      sourceA: null,
+      sourceB: null,
+      status: 'PENDING',
+      tableNumber: null,
+      setsA: null,
+      setsB: null,
+      setScores: null,
+      resultType: null,
+      bracketRound: round,
+      bracketSlot: null,
+      startedAt: null,
+      finishedAt: null,
+    };
+  }
+
+  /** Две группы: A на троих, B на двоих. */
+  function groupStage() {
+    return {
+      id: STAGE_ID,
+      order: 0,
+      type: 'GROUPS',
+      name: 'Группы',
+      config: { setsToWin: 3, rounds: 1, advancePerGroup: 2 },
+      groups: [
+        { id: 'group-a', label: 'гр. 1', order: 0, tieDecisions: [] },
+        { id: 'group-b', label: 'гр. 2', order: 1, tieDecisions: [] },
+      ],
+      matches: [
+        groupMatch('a1', 'group-a', 'p1', 'p2', 1),
+        groupMatch('a2', 'group-a', 'p1', 'p3', 2),
+        groupMatch('a3', 'group-a', 'p2', 'p3', 3),
+        groupMatch('b1', 'group-b', 'p4', 'p5', 1),
+      ],
+    };
+  }
+
+  beforeEach(() => {
+    prisma.player.findUnique.mockResolvedValue(late);
+    prisma.registration.findMany.mockResolvedValue([]);
+  });
+
+  it('после закрытия записи организатор добавляет игрока — до жеребьёвки просто в состав', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(makeTournament({ status: 'REG_CLOSED' }));
+
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/registrations`, {
+      auth: true,
+      body: { playerId: LATE_ID },
+    });
+
+    expect(result.status).toBe(201);
+    expect(prisma.registration.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: 'CONFIRMED' }) as unknown,
+      }),
+    );
+    expect(prisma.match.createMany).not.toHaveBeenCalled();
+  });
+
+  it('после старта опоздавший встаёт в самую малую группу со встречами со всеми', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(
+      makeTournament({ status: 'RUNNING', startedAt: STARTED, maxParticipants: 5 }),
+    );
+    prisma.stage.findMany.mockResolvedValue([groupStage()]);
+    // Состав полон: организатор, добавляющий опоздавшего, решение уже принял.
+    prisma.registration.count.mockResolvedValue(5);
+
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/registrations`, {
+      auth: true,
+      body: { playerId: LATE_ID },
+    });
+
+    expect(result.status).toBe(201);
+    const created = (
+      prisma.registration.create.mock.calls[0]?.[0] as { data: Record<string, unknown> }
+    ).data;
+    expect(created.status).toBe('PLAYING');
+    expect(String(created.ratingAtStart)).toBe('400.00');
+
+    const matches = (
+      prisma.match.createMany.mock.calls[0]?.[0] as { data: Record<string, unknown>[] }
+    ).data;
+    expect(
+      matches.map((match) => [match.groupId, match.playerAId, match.playerBId, match.bracketRound]),
+    ).toEqual([
+      ['group-b', LATE_ID, 'p4', 2],
+      ['group-b', LATE_ID, 'p5', 3],
+    ]);
+  });
+
+  it('группу может выбрать организатор', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(
+      makeTournament({ status: 'RUNNING', startedAt: STARTED }),
+    );
+    prisma.stage.findMany.mockResolvedValue([groupStage()]);
+
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/registrations`, {
+      auth: true,
+      body: { playerId: LATE_ID, groupId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
+    });
+
+    // Чужая группа не находится.
+    expect(result.status).toBe(404);
+    expect(prisma.match.createMany).not.toHaveBeenCalled();
+  });
+
+  it('когда следующий этап построен, вставать некуда', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(
+      makeTournament({ status: 'RUNNING', startedAt: STARTED }),
+    );
+    prisma.stage.findMany.mockResolvedValue([
+      groupStage(),
+      { ...groupStage(), id: 'ko', order: 1, type: 'KNOCKOUT' },
+    ]);
+
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/registrations`, {
+      auth: true,
+      body: { playerId: LATE_ID },
+    });
+
+    expect(result.status).toBe(409);
+    expect(result.body?.error).toMatchObject({
+      code: 'LATE_ENTRY_CLOSED',
+      details: { reason: 'NEXT_STAGE_BUILT' },
+    });
+    expect(prisma.registration.create).not.toHaveBeenCalled();
+  });
+
+  it('сам игрок после закрытия записи не записывается', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(makeTournament({ status: 'REG_CLOSED' }));
+    prisma.player.findUnique.mockResolvedValue(player);
+
+    const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/registrations`, {
+      auth: true,
+      body: {},
+    });
+
+    expect(result.status).toBe(400);
+  });
+
+  it('замена переписывает встречи на нового, заменённый снят', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(
+      makeTournament({ status: 'RUNNING', startedAt: STARTED }),
+    );
+    prisma.stage.count.mockResolvedValue(1);
+    prisma.registration.findUnique
+      .mockResolvedValueOnce({
+        id: REGISTRATION_ID,
+        tournamentId: TOURNAMENT_ID,
+        status: 'NO_SHOW',
+        playerId: 'p4',
+        paidAt: null,
+        seed: 3,
+      })
+      .mockResolvedValue(null);
+    prisma.match.findMany.mockResolvedValue([groupMatch('b1', 'group-b', 'p4', 'p5', 1)]);
+
+    const result = await call(
+      'POST',
+      `/tournaments/${TOURNAMENT_ID}/registrations/${REGISTRATION_ID}/replace`,
+      { auth: true, body: { playerId: LATE_ID } },
+    );
+
+    expect(result.status).toBe(201);
+    expect(prisma.match.updateMany).toHaveBeenCalledWith({
+      where: { tournamentId: TOURNAMENT_ID, playerAId: 'p4' },
+      data: { playerAId: LATE_ID },
+    });
+    expect(prisma.match.updateMany).toHaveBeenCalledWith({
+      where: { tournamentId: TOURNAMENT_ID, playerBId: 'p4' },
+      data: { playerBId: LATE_ID },
+    });
+    expect(prisma.registration.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: REGISTRATION_ID }, data: { status: 'WITHDRAWN' } }),
+    );
+    expect(prisma.registration.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ playerId: LATE_ID, status: 'PLAYING', seed: 3 }) as unknown,
+      }),
+    );
+  });
+
+  it('сыгравшего не заменить', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(
+      makeTournament({ status: 'RUNNING', startedAt: STARTED }),
+    );
+    prisma.stage.count.mockResolvedValue(1);
+    prisma.registration.findUnique.mockResolvedValueOnce({
+      id: REGISTRATION_ID,
+      tournamentId: TOURNAMENT_ID,
+      status: 'PLAYING',
+      playerId: 'p4',
+      paidAt: null,
+      seed: null,
+    });
+    prisma.match.findMany.mockResolvedValue([
+      { ...groupMatch('b1', 'group-b', 'p4', 'p5', 1), setsA: 3, setsB: 0, status: 'FINISHED' },
+    ]);
+
+    const result = await call(
+      'POST',
+      `/tournaments/${TOURNAMENT_ID}/registrations/${REGISTRATION_ID}/replace`,
+      { auth: true, body: { playerId: LATE_ID } },
+    );
+
+    expect(result.status).toBe(409);
+    expect(result.body?.error).toMatchObject({
+      code: 'REPLACEMENT_LOCKED',
+      details: { matchIds: ['b1'] },
+    });
+    expect(prisma.match.updateMany).not.toHaveBeenCalled();
   });
 });
 

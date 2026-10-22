@@ -24,6 +24,7 @@ import type {
   Page,
   RegisterInput,
   RegistrationView,
+  ReplaceRegistrationInput,
   SetRegistrationCoachInput,
   TournamentListItemView,
   TournamentView,
@@ -62,6 +63,7 @@ import {
   type TournamentAction,
 } from './tournament-lifecycle.js';
 import { toRegistrationView, toStageView, toTournamentView } from './tournaments.mapper.js';
+import { placeLateEntry } from './late-entry.js';
 import { settleWithdrawals } from './withdrawal.js';
 import {
   OCCUPYING_STATUSES,
@@ -552,17 +554,24 @@ export class TournamentsService {
    */
   async register(id: string, input: RegisterInput, userId: string): Promise<RegistrationView> {
     const tournament = await this.load(id);
-
-    if (!acceptsRegistrations(tournament.status)) {
-      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Registration is not open', {
-        id,
-        status: tournament.status,
-      });
-    }
-
     const deadline = tournament.registrationEndsAt ?? tournament.startsAt;
+    const open = acceptsRegistrations(tournament.status) && deadline.getTime() > Date.now();
+    // Поздняя запись (ADR-062): чужого игрока после закрытия записи и после
+    // старта добавляет организатор. Себя после закрытия записать нельзя.
+    const late =
+      !open &&
+      LATE_ENTRY_STATUSES.includes(tournament.status) &&
+      input.playerId !== undefined &&
+      !(await this.isOwnPlayer(input.playerId, userId));
 
-    if (deadline.getTime() <= Date.now()) {
+    if (!open && !late) {
+      if (!acceptsRegistrations(tournament.status)) {
+        throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Registration is not open', {
+          id,
+          status: tournament.status,
+        });
+      }
+
       throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Registration deadline has passed', {
         id,
         deadline: deadline.toISOString(),
@@ -628,6 +637,8 @@ export class TournamentsService {
       });
     }
 
+    if (late) return this.registerLate(tournament, playerId, player, input.groupId);
+
     const created = await this.prisma.$transaction(async (tx) => {
       const taken = await tx.registration.count({
         where: { tournamentId: id, status: { in: OCCUPYING_STATUSES } },
@@ -651,6 +662,162 @@ export class TournamentsService {
     });
 
     return toRegistrationView(created);
+  }
+
+  /**
+   * Поздняя запись — ADR-062.
+   *
+   * Организатор игрока уже допустил: ни листа ожидания, ни решения по заявке.
+   * После старта — сразу «играет» со снимком рейтинга (ТС 5.4), и встаёт в
+   * группу текущего этапа (`placeLateEntry`).
+   */
+  private async registerLate(
+    tournament: TournamentRecord,
+    playerId: string,
+    player: { readonly rating: Prisma.Decimal; readonly ratedMatches: number } & {
+      readonly coachPlayerId: string | null;
+      readonly coachName: string | null;
+    },
+    groupId: string | undefined,
+  ): Promise<RegistrationView> {
+    const started = tournament.startedAt !== null;
+
+    const created = await this.prisma.$transaction(async (tx) => {
+      await placeLateEntry(tx, tournament.id, playerId, groupId);
+
+      const registration = await tx.registration.create({
+        data: {
+          tournamentId: tournament.id,
+          playerId,
+          status: started ? 'PLAYING' : 'CONFIRMED',
+          ...(started ? { ratingAtStart: player.rating, matchesAtStart: player.ratedMatches } : {}),
+          coachPlayerId: player.coachPlayerId,
+          coachName: player.coachName,
+        },
+        select: registrationFields,
+      });
+
+      await bumpVersion(tx, tournament.id);
+
+      return registration;
+    });
+
+    this.screen.changed(tournament.id);
+
+    return toRegistrationView(created, { payment: true });
+  }
+
+  /**
+   * Замена участника — ADR-062.
+   *
+   * Пришёл резервный игрок вместо неявившегося: новый занимает его место в
+   * расстановке — все встречи заменённого переходят к нему, посев тоже.
+   * Заменённый снимается. Только пока заменённый не сыграл ни одной встречи:
+   * иначе его результаты пришлось бы либо отдать другому человеку, либо
+   * стереть.
+   */
+  async replaceParticipant(
+    id: string,
+    registrationId: string,
+    input: ReplaceRegistrationInput,
+    userId: string,
+  ): Promise<RegistrationView> {
+    const tournament = await this.load(id);
+
+    await this.assertClubStaff(tournament.clubId, userId);
+
+    const drawn = (await this.prisma.stage.count({ where: { tournamentId: id } })) > 0;
+
+    if (!LATE_ENTRY_STATUSES.includes(tournament.status) || !drawn) {
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Replacement needs a draw', {
+        id,
+        status: tournament.status,
+      });
+    }
+
+    const replaced = await this.loadRegistration(id, registrationId);
+    const player = await this.prisma.player.findUnique({
+      where: { id: input.playerId },
+      select: { id: true, rating: true, ratedMatches: true, coachPlayerId: true, coachName: true },
+    });
+
+    if (player === null) {
+      throw new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { playerId: input.playerId });
+    }
+
+    const existing = await this.prisma.registration.findUnique({
+      where: { tournamentId_playerId: { tournamentId: id, playerId: input.playerId } },
+      select: { id: true, status: true },
+    });
+
+    // Из листа ожидания замена берёт его же запись; записанный иначе уже
+    // стоит в составе, и место в расстановке ему не нужно.
+    if (existing !== null && existing.status !== 'WAITLIST') {
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Player is already registered', {
+        playerId: input.playerId,
+      });
+    }
+
+    const started = tournament.startedAt !== null;
+
+    const created = await this.prisma.$transaction(async (tx) => {
+      const matches = await tx.match.findMany({
+        where: {
+          tournamentId: id,
+          OR: [{ playerAId: replaced.playerId }, { playerBId: replaced.playerId }],
+        },
+        select: { id: true, setsA: true },
+      });
+      const played = matches.filter((match) => match.setsA !== null).map((match) => match.id);
+
+      if (played.length > 0) {
+        throw new AppError(ERROR_CODES.REPLACEMENT_LOCKED, 'The replaced player has played', {
+          matchIds: played,
+        });
+      }
+
+      await tx.match.updateMany({
+        where: { tournamentId: id, playerAId: replaced.playerId },
+        data: { playerAId: input.playerId },
+      });
+      await tx.match.updateMany({
+        where: { tournamentId: id, playerBId: replaced.playerId },
+        data: { playerBId: input.playerId },
+      });
+      await tx.registration.update({
+        where: { id: replaced.id },
+        data: { status: 'WITHDRAWN' },
+      });
+
+      const data = {
+        status: started ? ('PLAYING' as const) : ('CONFIRMED' as const),
+        seed: replaced.seed,
+        ...(started ? { ratingAtStart: player.rating, matchesAtStart: player.ratedMatches } : {}),
+        coachPlayerId: player.coachPlayerId,
+        coachName: player.coachName,
+      };
+      const registration =
+        existing === null
+          ? await tx.registration.create({
+              data: { tournamentId: id, playerId: input.playerId, ...data },
+              select: registrationFields,
+            })
+          : await tx.registration.update({
+              where: { id: existing.id },
+              data,
+              select: registrationFields,
+            });
+
+      // Встреча нового игрока могла стать решённой снятием и наоборот.
+      await settleWithdrawals(tx, id);
+      await bumpVersion(tx, id);
+
+      return registration;
+    });
+
+    this.screen.changed(id);
+
+    return toRegistrationView(created, { payment: true });
   }
 
   /** Правка участника: статус, вне зачёта, посев — ТС 7.5. */
@@ -1514,10 +1681,23 @@ export class TournamentsService {
   private async loadRegistration(
     tournamentId: string,
     registrationId: string,
-  ): Promise<{ id: string; status: string; playerId: string; paidAt: Date | null }> {
+  ): Promise<{
+    id: string;
+    status: string;
+    playerId: string;
+    paidAt: Date | null;
+    seed: number | null;
+  }> {
     const registration = await this.prisma.registration.findUnique({
       where: { id: registrationId },
-      select: { id: true, status: true, playerId: true, tournamentId: true, paidAt: true },
+      select: {
+        id: true,
+        status: true,
+        playerId: true,
+        tournamentId: true,
+        paidAt: true,
+        seed: true,
+      },
     });
 
     if (registration?.tournamentId !== tournamentId) {
@@ -1690,6 +1870,9 @@ function asRecord(value: unknown): Record<string, unknown> {
     ? (value as Record<string, unknown>)
     : {};
 }
+
+/** Когда организатор ещё может добавить опоздавшего или заменить игрока. */
+const LATE_ENTRY_STATUSES: readonly string[] = ['REG_OPEN', 'REG_CLOSED', 'RUNNING'];
 
 function isOccupying(status: string): boolean {
   return (OCCUPYING_STATUSES as readonly string[]).includes(status);
