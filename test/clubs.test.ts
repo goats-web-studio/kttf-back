@@ -120,12 +120,16 @@ function makePrisma() {
         coach: null,
         birthYearOnly: true,
         coachTenures: [],
+        // Своя страница тренера — профиль v3 (ADR-060). Без неё выборка не
+        // та, что у сервиса, и создание падало с 500.
+        coachPage: null,
       }),
       update: vi.fn().mockResolvedValue({}),
       // Профиль после записи перечитывается целиком — тот же, что заведён.
       findUniqueOrThrow: vi.fn(),
     },
     coachTenure: { create: vi.fn(), updateMany: vi.fn() },
+    ratingEvent: { create: vi.fn().mockResolvedValue({}) },
     clubCoach: { groupBy: vi.fn().mockResolvedValue([]) },
     training: { findMany: vi.fn().mockResolvedValue([]) },
     user: { findUnique: vi.fn().mockResolvedValue({ id: USER_ID }) },
@@ -478,6 +482,70 @@ describe('создание игрока', () => {
     });
 
     expect(result.status).toBe(400);
+  });
+
+  describe('стартовый рейтинг от организатора — ADR-062', () => {
+    const newcomer = {
+      lastName: 'Ахметов',
+      firstName: 'Арман',
+      birthYear: 1990,
+      gender: 'MALE',
+      cityId: CITY_ID,
+      clubId: CLUB_ID,
+      startRating: 400,
+    };
+
+    it('ложится в проекцию и в журнал событием INITIAL от 250', async () => {
+      prisma.clubMember.findUnique.mockResolvedValue({ role: 'ORGANIZER' });
+
+      const result = await call('POST', '/players', { body: newcomer, auth: true });
+
+      expect(result.status).toBe(201);
+      const data = (prisma.player.create.mock.calls[0]?.[0] as { data: Record<string, unknown> })
+        .data;
+      expect(String(data.rating)).toBe('400');
+      expect(data).not.toHaveProperty('startRating');
+      expect(data).not.toHaveProperty('userId');
+      expect(prisma.ratingEvent.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          type: 'INITIAL',
+          ratingBefore: 250,
+          delta: 150,
+          ratingAfter: 400,
+        }) as unknown,
+      });
+    });
+
+    it('даже у организатора без своего профиля игрок не становится им самим', async () => {
+      // Раньше первый заведённый профиль привязывался к заводящему.
+      prisma.clubMember.findUnique.mockResolvedValue({ role: 'OWNER' });
+      prisma.player.findUnique.mockResolvedValue(null);
+
+      await call('POST', '/players', { body: newcomer, auth: true });
+
+      const data = (prisma.player.create.mock.calls[0]?.[0] as { data: Record<string, unknown> })
+        .data;
+      expect(data).not.toHaveProperty('userId');
+    });
+
+    it('без клуба или без права в клубе — отказ', async () => {
+      const homeless = Object.fromEntries(
+        Object.entries(newcomer).filter(([key]) => key !== 'clubId'),
+      );
+
+      expect((await call('POST', '/players', { body: homeless, auth: true })).status).toBe(403);
+      expect((await call('POST', '/players', { body: newcomer, auth: true })).status).toBe(403);
+      expect(prisma.player.create).not.toHaveBeenCalled();
+    });
+
+    it('не кратный 25 отвергается схемой', async () => {
+      const result = await call('POST', '/players', {
+        body: { ...newcomer, startRating: 410 },
+        auth: true,
+      });
+
+      expect(result.status).toBe(400);
+    });
   });
 
   it('отчество не обязательно — бриф, запрет №6', async () => {

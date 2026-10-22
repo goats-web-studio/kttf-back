@@ -1,4 +1,5 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
+import { START_RATING } from '@kttf/shared/rating';
 import {
   ONLINE_WINDOW_MS,
   type CityRef,
@@ -417,17 +418,22 @@ export class PlayersService {
    * значении открыт (ОВ-2). До его решения действует умолчание схемы.
    */
   async create(input: CreatePlayerInput, actorId: string): Promise<PlayerProfileView> {
-    await this.places.assertCityAvailable(input.cityId);
-    await this.assertClubExists(input.clubId);
-    await this.assertCoachExists(input.coachPlayerId);
-    await this.assertEquipment(input);
+    const { startRating, ...profile } = input;
+
+    await this.places.assertCityAvailable(profile.cityId);
+    await this.assertClubExists(profile.clubId);
+    await this.assertCoachExists(profile.coachPlayerId);
+    await this.assertEquipment(profile);
 
     const own = await this.prisma.player.findUnique({
       where: { userId: actorId },
       select: { id: true },
     });
+    // Стартовый рейтинг задаёт организатор другому человеку (ADR-062):
+    // такой профиль не становится своим, даже если своего у него ещё нет.
+    const forSomeoneElse = own !== null || startRating !== undefined;
 
-    if (own !== null) {
+    if (forSomeoneElse) {
       if (input.clubId === undefined) {
         throw new AppError(
           ERROR_CODES.FORBIDDEN,
@@ -442,12 +448,28 @@ export class PlayersService {
     const created = await this.prisma.$transaction(async (tx) => {
       const player = await tx.player.create({
         data: {
-          ...defined(input),
-          ...toBirthDate(input.birthDate),
-          ...(own === null ? { userId: actorId } : {}),
+          ...defined(profile),
+          ...toBirthDate(profile.birthDate),
+          ...(forSomeoneElse ? {} : { userId: actorId }),
+          ...(startRating === undefined ? {} : { rating: startRating }),
         },
         select: { id: true, coachPlayerId: true },
       });
+
+      // Рейтинг меняется только через журнал (запрет №3 брифа): стартовая
+      // оценка — событие INITIAL от общего старта, и пересчёт истории даёт то
+      // же значение, что лежит в проекции.
+      if (startRating !== undefined) {
+        await tx.ratingEvent.create({
+          data: {
+            playerId: player.id,
+            type: 'INITIAL',
+            ratingBefore: START_RATING,
+            delta: startRating - START_RATING,
+            ratingAfter: startRating,
+          },
+        });
+      }
 
       await switchCoach(tx, player.id, null, player.coachPlayerId);
 
