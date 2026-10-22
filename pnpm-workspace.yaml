@@ -1,7 +1,7 @@
 allowBuilds:
   # Общий код: собирает dist при установке (ADR-010). Ключ содержит SHA,
   # обновляется скриптом scripts/bump-shared.mjs вместе с зависимостью.
-  "@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/4061d7102b2c649a9a1a5e32b77ada9ffa5a8de4": true
+  "@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/8d81ed4b9ba86c11096d9c0f55a4b927b99e5afa": true
   # Prisma скачивает движки постинсталлом — без этого CLI не работает.
   "@prisma/engines": true
   "prisma": true
