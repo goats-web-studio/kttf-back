@@ -9,6 +9,7 @@ import { CoachContentModule } from './features/coach-content/coach-content.modul
 import { CoachesModule } from './features/coaches/coaches.module.js';
 import { FilesModule } from './features/files/files.module.js';
 import { HealthModule } from './features/health/health.module.js';
+import { NotificationsModule } from './features/notifications/notifications.module.js';
 import { PlacesModule } from './features/places/places.module.js';
 import { PlayersModule } from './features/players/players.module.js';
 import { ScreenModule } from './features/screen/screen.module.js';
@@ -36,6 +37,7 @@ import { PrismaModule } from './infra/prisma/prisma.module.js';
     CatalogModule,
     CoachesModule,
     CoachContentModule,
+    NotificationsModule,
     FilesModule,
     PlacesModule,
     PlayersModule,
