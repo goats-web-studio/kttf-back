@@ -14,11 +14,12 @@ import {
 } from '@kttf/shared/types';
 import { Injectable } from '@nestjs/common';
 
-import { pageOf, skipOf } from '../../common/pagination.js';
+import { pageOf } from '../../common/pagination.js';
 import type { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { staffFromTrainings } from './club-staff.service.js';
 import { groupTrainings, keptLink, rowId, slotRows } from './training-rules.js';
+import { trainingBlocksSql, type TrainingBlockRow } from './trainings-sql.js';
 import {
   PUBLIC_COACH,
   PUBLIC_TRAINING,
@@ -36,6 +37,9 @@ import {
  *
  * Условия на одно поле (аудитория и возраст, город и язык с их `OR`)
  * складываются через `AND`: иначе второе затёрло бы первое.
+ *
+ * То же условие в SQL — `trainingsFilterSql` (`trainings-sql.ts`): по нему
+ * база считает страницу блоков. Правится одно — правится и другое.
  */
 export function trainingsWhere(query: ListTrainingsQuery): Prisma.TrainingWhereInput {
   const and: Prisma.TrainingWhereInput[] = [PUBLIC_TRAINING];
@@ -123,19 +127,35 @@ export class TrainingsService {
 
   /**
    * Раздел «Тренировки» блоками по месту. Страница считает блоки, а не
-   * тренировки: блок клуба не рвётся между страницами. Поэтому блоки
-   * собираются из всех подходящих тренировок разом — публичных тренировок
-   * десятки и сотни, а не миллионы; когда станет тесно, группировка уйдёт в SQL.
+   * тренировки: блок клуба не рвётся между страницами. Какие блоки на
+   * странице и сколько их всего, решает база (`trainingBlocksSql`); затем
+   * читаются тренировки только этих блоков — с тем же условием, так что
+   * ставшая за это время непубличной на страницу не попадёт. Блоки из них
+   * собирает `groupTrainings`, порядок — как у страницы из базы.
    */
   async list(query: ListTrainingsQuery): Promise<Page<TrainingGroupView>> {
-    const rows = await this.prisma.training.findMany({
-      where: trainingsWhere(query),
-      select: trainingFields,
-    });
-    const groups = groupTrainings(rows);
-    const skip = skipOf(query);
+    const blocks = await this.prisma.$queryRaw<TrainingBlockRow[]>(trainingBlocksSql(query));
+    const total = blocks[0]?.total ?? 0;
+    // Номер блока на странице — по любой его тренировке.
+    const position = new Map(
+      blocks.flatMap((block, index) => (block.ids ?? []).map((id) => [id, index] as const)),
+    );
 
-    return pageOf(groups.slice(skip, skip + query.limit), groups.length, query);
+    if (position.size === 0) return pageOf([], total, query);
+
+    const rows = await this.prisma.training.findMany({
+      where: { AND: [trainingsWhere(query), { id: { in: [...position.keys()] } }] },
+      select: trainingFields,
+      // Первое написание зала — у самой ранней тренировки, как в базе.
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+    const at = (group: TrainingGroupView) => position.get(group.trainings[0]?.id ?? '') ?? 0;
+
+    return pageOf(
+      groupTrainings(rows).sort((a, b) => at(a) - at(b)),
+      total,
+      query,
+    );
   }
 
   /**

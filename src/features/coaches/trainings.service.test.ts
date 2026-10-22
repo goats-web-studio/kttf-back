@@ -446,6 +446,7 @@ function makePrisma() {
       updateMany: vi.fn().mockReturnValue('staff-update'),
     },
     $transaction: vi.fn(),
+    $queryRaw: vi.fn().mockResolvedValue([{ total: 0, ids: null }]),
   };
 }
 
@@ -590,17 +591,77 @@ describe('страница тренировки', () => {
 });
 
 describe('список блоками', () => {
-  it('страница считает блоки, а не тренировки', async () => {
+  it('страница считает блоки, а не тренировки: страницу и число блоков решает база', async () => {
+    prisma.$queryRaw.mockResolvedValue([{ total: 2, ids: ['c'] }]);
+    prisma.training.findMany.mockResolvedValue([makeTraining({ id: 'c' })]);
+
+    const query = listTrainingsSchema.parse({ limit: '1', page: '2' });
+    const page = await service.list(query);
+
+    expect(page).toMatchObject({ total: 2, page: 2, limit: 1 });
+    expect(page.items.map((group) => group.kind)).toEqual(['ANYWHERE']);
+
+    const sql = prisma.$queryRaw.mock.calls[0]?.[0] as { values: unknown[] };
+
+    // Смещение и конец страницы — последними параметрами.
+    expect(sql.values.slice(-2)).toEqual([1, 2]);
+  });
+
+  it('тренировки — только блоков страницы, с тем же условием и по времени заведения', async () => {
+    prisma.$queryRaw.mockResolvedValue([
+      { total: 5, ids: ['a', 'b'] },
+      { total: 5, ids: ['c'] },
+    ]);
+    prisma.training.findMany.mockResolvedValue([]);
+
+    const query = listTrainingsSchema.parse({ language: 'KK', open: 'true' });
+
+    await service.list(query);
+
+    expect(prisma.training.findMany).toHaveBeenCalledWith({
+      where: { AND: [trainingsWhere(query), { id: { in: ['a', 'b', 'c'] } }] },
+      select: expect.objectContaining({ id: true, slots: expect.anything() as unknown }) as unknown,
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+  });
+
+  it('порядок блоков — как у страницы из базы', async () => {
+    const venue = { place: 'CLUB', venueName: 'Школа №5', venueAddress: 'Сатпаева 1' };
+
+    // База поставила зал раньше клуба — так и в ответе.
+    prisma.$queryRaw.mockResolvedValue([
+      { total: 3, ids: ['venue-1', 'venue-2'] },
+      { total: 3, ids: ['club'] },
+    ]);
     prisma.training.findMany.mockResolvedValue([
-      inClub({ id: 'a', author: 'CLUB' }),
-      inClub({ id: 'b', author: 'CLUB' }),
-      makeTraining({ id: 'c' }),
+      inClub({ id: 'club', author: 'CLUB' }),
+      makeTraining({ id: 'venue-2', ...venue, sortOrder: 1 }),
+      makeTraining({ id: 'venue-1', ...venue, venueName: 'школа №5 ' }),
     ]);
 
-    const page = await service.list(listTrainingsSchema.parse({ limit: '1', page: '2' }));
+    const page = await service.list(listTrainingsSchema.parse({}));
 
-    expect(page.total).toBe(2);
-    expect(page.items.map((group) => group.kind)).toEqual(['ANYWHERE']);
+    expect(page.items.map((group) => group.kind)).toEqual(['VENUE', 'CLUB']);
+    // Написание зала — первой пришедшей строки, тренировки — по порядку строк.
+    expect(page.items[0]?.venue).toEqual({ name: 'Школа №5', address: 'Сатпаева 1' });
+    expect(page.items[0]?.trainings.map((training) => training.id)).toEqual(['venue-1', 'venue-2']);
+    expect(page.total).toBe(3);
+  });
+
+  it('страница за последним блоком — пусто, но с числом блоков; тренировки не читаются', async () => {
+    prisma.$queryRaw.mockResolvedValue([{ total: 3, ids: null }]);
+
+    const page = await service.list(listTrainingsSchema.parse({ page: '9' }));
+
+    expect(page).toEqual({ items: [], total: 3, page: 9, limit: 20 });
+    expect(prisma.training.findMany).not.toHaveBeenCalled();
+  });
+
+  it('тренировок нет вовсе — пустая страница', async () => {
+    const page = await service.list(listTrainingsSchema.parse({}));
+
+    expect(page).toMatchObject({ items: [], total: 0 });
+    expect(prisma.training.findMany).not.toHaveBeenCalled();
   });
 });
 
