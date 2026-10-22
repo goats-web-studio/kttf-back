@@ -16,6 +16,7 @@ import { ScreenModule } from './features/screen/screen.module.js';
 import { SyncModule } from './features/sync/sync.module.js';
 import { MatchesModule } from './features/matches/matches.module.js';
 import { TournamentsModule } from './features/tournaments/tournaments.module.js';
+import { TrialRequestsModule } from './features/trial-requests/trial-requests.module.js';
 import { ConfigModule } from './infra/config/config.module.js';
 import { PrismaModule } from './infra/prisma/prisma.module.js';
 
@@ -37,6 +38,7 @@ import { PrismaModule } from './infra/prisma/prisma.module.js';
     CatalogModule,
     CoachesModule,
     CoachContentModule,
+    TrialRequestsModule,
     NotificationsModule,
     FilesModule,
     PlacesModule,
