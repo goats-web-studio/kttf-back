@@ -179,6 +179,7 @@ function makePrisma() {
     coachStatDaily: { upsert: vi.fn().mockResolvedValue({}) },
     clubStatDaily: { upsert: vi.fn().mockResolvedValue({}) },
     notification: { createMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    $executeRaw: vi.fn().mockResolvedValue(1),
     $transaction: vi.fn(),
   };
 
@@ -342,6 +343,18 @@ describe('отказы при отправке', () => {
     await expect(service.create(TRAINING_ID, 'user-organizer', input, NOW)).rejects.toMatchObject({
       code: 'FORBIDDEN',
     });
+    expect(prisma.trialRequest.create).not.toHaveBeenCalled();
+  });
+
+  it('двойное нажатие: вторая заявка под замком видит первую — TRIAL_REQUEST_EXISTS', async () => {
+    prisma.trialRequest.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: REQUEST_ID });
+
+    await expect(service.create(TRAINING_ID, 'user-player', input, NOW)).rejects.toMatchObject({
+      code: 'TRIAL_REQUEST_EXISTS',
+    });
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
     expect(prisma.trialRequest.create).not.toHaveBeenCalled();
   });
 

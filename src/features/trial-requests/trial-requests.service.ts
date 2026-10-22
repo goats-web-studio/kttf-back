@@ -115,6 +115,21 @@ export class TrialRequestsService {
 
     const date = clubDate(now);
     const created = await this.prisma.$transaction(async (tx) => {
+      // Двойное нажатие «Отправить»: заявки одного человека идут по очереди,
+      // и вторая видит первую. Частичный уникальный индекс схема Prisma не
+      // выражает — следующая миграция его бы сняла.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${userId}))`;
+      const duplicate = await tx.trialRequest.findFirst({
+        where: { trainingId, userId, status: 'NEW' },
+        select: { id: true },
+      });
+
+      if (duplicate !== null) {
+        throw new AppError(ERROR_CODES.TRIAL_REQUEST_EXISTS, 'Trial request already waits', {
+          id: duplicate.id,
+        });
+      }
+
       const record = await tx.trialRequest.create({
         data: {
           trainingId,
