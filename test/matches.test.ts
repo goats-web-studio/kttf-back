@@ -114,6 +114,8 @@ interface Db {
   formatConfig: unknown;
   status: string;
   role: string | null;
+  /** Столов в зале — ADR-061: номер стола сверяется с ним. */
+  tableCount: number;
   /** Версия турнира: растёт на каждое изменение — ТС 6.3. */
   version: number;
 }
@@ -128,6 +130,7 @@ function makeDb(over: Partial<Db> = {}): Db {
     formatConfig: KNOCKOUT,
     status: 'RUNNING',
     role: 'OWNER',
+    tableCount: 4,
     version: 0,
     ...over,
   };
@@ -164,7 +167,12 @@ function makePrisma(db: Db) {
         return Promise.resolve({
           ...match,
           stage: stageOf(match.stageId),
-          tournament: { id: TOURNAMENT_ID, clubId: CLUB_ID, status: db.status },
+          tournament: {
+            id: TOURNAMENT_ID,
+            clubId: CLUB_ID,
+            status: db.status,
+            tableCount: db.tableCount,
+          },
         });
       }),
       findMany: vi.fn(({ where }: { where: Record<string, unknown> }) => {
@@ -175,6 +183,17 @@ function makePrisma(db: Db) {
         if (where.NOT !== undefined) rows = rows.filter((match) => match.setsA !== null);
 
         return Promise.resolve(rows);
+      }),
+      findFirst: vi.fn(({ where }: { where: Record<string, unknown> }) => {
+        const not = where.id as { not?: string } | undefined;
+        const found = db.matches.find(
+          (match) =>
+            match.status === where.status &&
+            match.tableNumber === where.tableNumber &&
+            match.id !== not?.not,
+        );
+
+        return Promise.resolve(found === undefined ? null : { id: found.id });
       }),
       update: vi.fn(({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
         const match = db.matches.find((row) => row.id === where.id);
@@ -545,6 +564,107 @@ describe('назначение на стол — ТЗ 6.2', () => {
     });
 
     expect(result.status).toBe(409);
+  });
+});
+
+describe('стол проверяет сервер — ADR-061', () => {
+  it('номер больше числа столов отклоняется', async () => {
+    const result = await call('POST', `/matches/${M1}/assign`, {
+      body: { tableNumber: 5 },
+      auth: true,
+    });
+
+    expect(result.status).toBe(400);
+    expect(codeOf(result.body)).toBe('TABLE_OUT_OF_RANGE');
+    expect(matchById(M1).status).toBe('PENDING');
+  });
+
+  it('за стол, где идёт встреча, вторую не ставят', async () => {
+    // Раньше сервер принимал любой номер: две встречи оказывались на одном
+    // столе, если два судьи звали пары одновременно.
+    Object.assign(matchById(M2), { status: 'PLAYING', tableNumber: 3 });
+
+    const result = await call('POST', `/matches/${M1}/assign`, {
+      body: { tableNumber: 3 },
+      auth: true,
+    });
+
+    expect(result.status).toBe(409);
+    expect(codeOf(result.body)).toBe('TABLE_BUSY');
+    expect(matchById(M1).tableNumber).toBeNull();
+  });
+
+  it('стол с закрытой встречей свободен: следующая пара садится за него', async () => {
+    Object.assign(matchById(M2), { status: 'FINISHED', tableNumber: 3, setsA: 3, setsB: 0 });
+
+    const result = await call('POST', `/matches/${M1}/assign`, {
+      body: { tableNumber: 3 },
+      auth: true,
+    });
+
+    expect(result.status).toBe(201);
+  });
+
+  it('идущая встреча занятым столом сама себе не мешает', async () => {
+    Object.assign(matchById(M1), { status: 'PLAYING', tableNumber: 2 });
+
+    const result = await call('POST', `/matches/${M1}/assign`, {
+      body: { tableNumber: 2 },
+      auth: true,
+    });
+
+    expect(result.status).toBe(201);
+  });
+});
+
+describe('снявшийся в сетке — ADR-061', () => {
+  it('соперник снявшегося проходит дальше сам', async () => {
+    // Раньше судья вбивал техническую победу руками, иначе сетка стояла.
+    await app?.close();
+    await boot({ withdrawn: [P3] });
+
+    await call('POST', `/matches/${M1}/result`, { body: { setsA: 3, setsB: 0 }, auth: true });
+
+    expect(matchById(M2)).toMatchObject({
+      status: 'FINISHED',
+      resultType: 'WALKOVER',
+      setsA: 3,
+      setsB: 0,
+    });
+    expect(matchById(FINAL)).toMatchObject({ playerAId: P1, playerBId: P2 });
+  });
+
+  it('снявшийся, уже прошедший в следующий круг, проигрывает его технически', async () => {
+    await app?.close();
+    await boot({ withdrawn: [P1] });
+    Object.assign(matchById(M1), { status: 'FINISHED', setsA: 3, setsB: 1 });
+    matchById(FINAL).playerAId = P1;
+
+    const result = await call('POST', `/matches/${M2}/result`, {
+      body: { setsA: 3, setsB: 2 },
+      auth: true,
+    });
+
+    expect(result.status).toBe(201);
+    expect(matchById(FINAL)).toMatchObject({
+      playerAId: P1,
+      playerBId: P2,
+      status: 'FINISHED',
+      resultType: 'WALKOVER',
+      setsA: 0,
+      setsB: 3,
+    });
+  });
+
+  it('пока соперник не известен, встречу снявшегося не трогают', async () => {
+    await app?.close();
+    await boot({ withdrawn: [P1] });
+
+    await call('POST', `/matches/${M2}/result`, { body: { setsA: 3, setsB: 0 }, auth: true });
+
+    // M1 решена снятием сразу: P1 против P4, оба известны.
+    expect(matchById(M1)).toMatchObject({ resultType: 'WALKOVER', setsA: 0, setsB: 3 });
+    expect(matchById(FINAL)).toMatchObject({ playerAId: P4, playerBId: P2, setsA: null });
   });
 });
 

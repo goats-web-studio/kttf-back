@@ -1,3 +1,5 @@
+import { isDecidedByWithdrawal } from '@kttf/shared/brackets';
+
 import type { MatchRecord, StageRecord } from './tournaments.select.js';
 
 /**
@@ -12,10 +14,12 @@ import type { MatchRecord, StageRecord } from './tournaments.select.js';
  *
  * - **В группах** встречу снявшегося ждать нельзя: он её не сыграет никогда.
  *   Техническую победу сопернику даёт расчёт таблицы, а не запись в базе
- *   (ADR-009), поэтому такая встреча так и остаётся без результата.
+ *   (ADR-009), поэтому такая встреча так и остаётся без результата. Решена
+ *   ли она снятием — общее правило `isDecidedByWithdrawal`: тем же вопросом
+ *   консоль убирает её из очереди (ADR-061).
  * - **В сетке** ждать приходится: пока результата нет, `resolveBracketSlots`
  *   не поднимет победителя в следующий круг, и играть будет некому. Снятие
- *   здесь вводится судьёй явной технической победой — иначе сетка не едет.
+ *   здесь записывается технической победой соперника (`settleWithdrawals`).
  */
 export function unplayedMatches(stage: StageRecord, withdrawn: ReadonlySet<string>): MatchRecord[] {
   return stage.matches.filter((match) => !isSettled(stage, match, withdrawn));
@@ -45,5 +49,5 @@ function isSettled(
   // Состав группы известен с самой жеребьёвки, пустых слотов там не бывает.
   if (playerAId === null || playerBId === null) return true;
 
-  return withdrawn.has(playerAId) || withdrawn.has(playerBId);
+  return isDecidedByWithdrawal({ a: playerAId, b: playerBId }, withdrawn);
 }

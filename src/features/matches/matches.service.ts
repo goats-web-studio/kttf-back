@@ -1,5 +1,4 @@
-import { resolveBracketSlots, validateMatchResult } from '@kttf/shared/brackets';
-import type { BracketSlotMatch, BracketSlotSource } from '@kttf/shared/brackets';
+import { validateMatchResult } from '@kttf/shared/brackets';
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import {
   bracketSourceSchema,
@@ -15,11 +14,14 @@ import { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { ScreenEventsService } from '../screen/screen-events.service.js';
 import { advanceAfterGroups } from '../tournaments/advance.js';
+import { settleWithdrawals } from '../tournaments/withdrawal.js';
 import { assertConsoleAccess } from '../tournaments/console-access.js';
 import { bumpVersion } from '../tournaments/tournament-state.js';
 import { matchSetsToWin } from '../tournaments/stage-config.js';
 import { toMatchView, toStageView } from '../tournaments/tournaments.mapper.js';
-import { matchFields, stageFields, type MatchRecord } from '../tournaments/tournaments.select.js';
+import { matchFields, stageFields } from '../tournaments/tournaments.select.js';
+
+import { applyAdvancement } from './advancement.js';
 
 /**
  * Встречи — ТС 7.6.
@@ -36,7 +38,7 @@ const matchWithContext = {
   ...matchFields,
   tournamentId: true,
   stage: { select: { id: true, order: true, type: true, config: true } },
-  tournament: { select: { id: true, clubId: true, status: true } },
+  tournament: { select: { id: true, clubId: true, status: true, tableCount: true } },
 } as const;
 
 type MatchWithContext = Prisma.MatchGetPayload<{ select: typeof matchWithContext }>;
@@ -60,6 +62,11 @@ export class MatchesService {
    * Встреча уезжает в зону «Играется». Результат этого шага не требует:
    * закрыть встречу можно и без назначения, иначе быстрых кнопок ТЗ 6.3
    * не получилось бы.
+   *
+   * Стол проверяет сервер (ADR-061): номер не больше числа столов турнира,
+   * и за ним не идёт другая встреча. Стол с закрытой встречей свободен —
+   * в зале его занимает следующая пара. Офлайн-консоль, где два судьи
+   * позвали пары за один стол, получит отказ второй операции списком.
    */
   async assign(id: string, input: AssignTableInput, userId: string): Promise<MatchView> {
     const match = await this.load(id);
@@ -72,7 +79,31 @@ export class MatchesService {
       throw new AppError(ERROR_CODES.MATCH_ALREADY_FINISHED, 'Match already has a result', { id });
     }
 
+    if (input.tableNumber > match.tournament.tableCount) {
+      throw new AppError(ERROR_CODES.TABLE_OUT_OF_RANGE, 'No such table in the hall', {
+        tableNumber: input.tableNumber,
+        tableCount: match.tournament.tableCount,
+      });
+    }
+
     const updated = await this.prisma.$transaction(async (tx) => {
+      const busy = await tx.match.findFirst({
+        where: {
+          tournamentId: match.tournamentId,
+          status: 'PLAYING',
+          tableNumber: input.tableNumber,
+          id: { not: id },
+        },
+        select: { id: true },
+      });
+
+      if (busy !== null) {
+        throw new AppError(ERROR_CODES.TABLE_BUSY, 'Another match is playing at this table', {
+          tableNumber: input.tableNumber,
+          matchId: busy.id,
+        });
+      }
+
       const written = await tx.match.update({
         where: { id },
         data: { tableNumber: input.tableNumber, status: 'PLAYING', startedAt: new Date() },
@@ -135,11 +166,12 @@ export class MatchesService {
         select: matchFields,
       });
 
-      const advanced = await this.applyAdvancement(tx, match.stage.id);
+      const advanced = await applyAdvancement(tx, match.stage.id);
+      const settled = await settleWithdrawals(tx, match.tournamentId);
 
       await bumpVersion(tx, match.tournamentId);
 
-      return { written, advanced };
+      return { written, advanced: [...advanced, ...settled] };
     });
 
     this.screen.changed(match.tournamentId);
@@ -232,12 +264,15 @@ export class MatchesService {
         });
       }
 
-      const advanced = await this.applyAdvancement(tx, match.stage.id);
+      const advanced = await applyAdvancement(tx, match.stage.id);
       const next = await advanceAfterGroups(tx, match.tournamentId);
+      // Победитель мог доехать до снявшегося, а достроенный плей-офф —
+      // посадить снявшегося напротив соперника (ADR-061).
+      const settled = await settleWithdrawals(tx, match.tournamentId);
 
       await bumpVersion(tx, match.tournamentId);
 
-      return { written, advanced, next };
+      return { written, advanced: [...advanced, ...settled], next };
     });
 
     const nextStage =
@@ -253,39 +288,6 @@ export class MatchesService {
       nextStage,
       blockedByTies: [...outcome.next.blockedByTies],
     };
-  }
-
-  /**
-   * Пересчёт состава сетки по источникам — ADR-019.
-   *
-   * Считается весь этап целиком, а не одна следующая встреча: так правка
-   * результата сама убирает из следующего круга прежнего победителя.
-   */
-  private async applyAdvancement(
-    tx: Prisma.TransactionClient,
-    stageId: string,
-  ): Promise<MatchRecord[]> {
-    const matches = await tx.match.findMany({ where: { stageId }, select: matchFields });
-    const assignments = resolveBracketSlots(matches.map(toSlotMatch));
-
-    if (assignments.length === 0) return [];
-
-    const updated: MatchRecord[] = [];
-
-    for (const assignment of assignments) {
-      updated.push(
-        await tx.match.update({
-          where: { id: assignment.matchId },
-          data:
-            assignment.side === 'A'
-              ? { playerAId: assignment.participant }
-              : { playerBId: assignment.participant },
-          select: matchFields,
-        }),
-      );
-    }
-
-    return updated;
   }
 
   /**
@@ -416,23 +418,4 @@ function assertReady(match: MatchWithContext): void {
       id: match.id,
     });
   }
-}
-
-function toSlotMatch(match: MatchRecord): BracketSlotMatch {
-  return {
-    id: match.id,
-    a: match.playerAId,
-    b: match.playerBId,
-    sourceA: toSlotSource(match.sourceA),
-    sourceB: toSlotSource(match.sourceB),
-    setsA: match.setsA,
-    setsB: match.setsB,
-  };
-}
-
-/** Источник приходит из колонки `Json` и разбирается той же схемой, что писала. */
-function toSlotSource(value: unknown): BracketSlotSource | null {
-  const parsed = bracketSourceSchema.safeParse(value);
-
-  return parsed.success ? parsed.data : null;
 }

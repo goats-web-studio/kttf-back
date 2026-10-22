@@ -37,6 +37,11 @@ const STATUS_BY_CODE: Readonly<Record<ErrorCode, number>> = {
   TIE_DECISION_INVALID: HttpStatus.BAD_REQUEST,
   // Игрока нет в расстановке: тело запроса верное, состав турнира — другой.
   DRAW_POSITION_NOT_FOUND: HttpStatus.CONFLICT,
+  // Стола нет в зале — запрос неверен; стол занят или длину не сменить —
+  // запрос верный, мешает положение дел в зале (ADR-061).
+  TABLE_OUT_OF_RANGE: HttpStatus.BAD_REQUEST,
+  TABLE_BUSY: HttpStatus.CONFLICT,
+  MATCH_LENGTH_LOCKED: HttpStatus.CONFLICT,
 
   // Завершение турнира — ТС 7.5. Тоже конфликт состояния: запрос верный,
   // турнир к нему не готов. Отсутствие снимка — не вина запроса вовсе.
