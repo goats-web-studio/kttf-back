@@ -72,6 +72,12 @@ const STATUS_BY_CODE: Readonly<Record<ErrorCode, number>> = {
   COACH_PLAN_LIMIT: HttpStatus.CONFLICT,
   // Тренер участника после старта турнира — T3: запрос верный, турнир уже идёт.
   REGISTRATION_COACH_LOCKED: HttpStatus.CONFLICT,
+  // Заявка на пробную — T3: повтор и действие не по статусу — конфликт с тем,
+  // что уже есть. Предел за сутки — как предел тарифа, а не RATE_LIMITED:
+  // повтор через минуту ничего не изменит, ждать надо сутки.
+  TRIAL_REQUEST_EXISTS: HttpStatus.CONFLICT,
+  TRIAL_REQUEST_LIMIT: HttpStatus.CONFLICT,
+  TRIAL_REQUEST_INVALID: HttpStatus.CONFLICT,
 };
 
 const CODE_BY_STATUS: Readonly<Record<number, ErrorCode>> = {

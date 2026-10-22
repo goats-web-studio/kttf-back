@@ -112,6 +112,7 @@ export class CoachStatsService {
         telegram: row.telegramClicks,
         instagram: row.instagramClicks,
         clubGroup: row.clubGroupClicks,
+        trialRequests: row.trialRequests,
       })),
     };
   }

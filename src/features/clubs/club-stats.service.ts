@@ -100,6 +100,7 @@ export class ClubStatsService {
         website: row.websiteClicks,
         route: row.routeClicks,
         coachTraining: row.coachTrainingClicks,
+        trialRequests: row.trialRequests,
       })),
     };
   }

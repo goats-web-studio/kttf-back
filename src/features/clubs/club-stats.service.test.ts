@@ -117,6 +117,22 @@ describe('статистика', () => {
         websiteClicks: 0,
         routeClicks: 1,
         coachTrainingClicks: 4,
+        trialRequests: 2,
+      },
+      // День, в который были только заявки на пробную, — тоже строка.
+      {
+        clubId: 'club-1',
+        date: new Date('2026-10-20T00:00:00.000Z'),
+        source: 'CAMPAIGN',
+        views: 0,
+        phoneClicks: 0,
+        whatsappClicks: 0,
+        telegramClicks: 0,
+        instagramClicks: 0,
+        websiteClicks: 0,
+        routeClicks: 0,
+        coachTrainingClicks: 0,
+        trialRequests: 1,
       },
     ]);
 
@@ -135,6 +151,20 @@ describe('статистика', () => {
         website: 0,
         route: 1,
         coachTraining: 4,
+        trialRequests: 2,
+      },
+      {
+        date: '2026-10-20',
+        source: 'CAMPAIGN',
+        views: 0,
+        phone: 0,
+        whatsapp: 0,
+        telegram: 0,
+        instagram: 0,
+        website: 0,
+        route: 0,
+        coachTraining: 0,
+        trialRequests: 1,
       },
     ]);
   });
