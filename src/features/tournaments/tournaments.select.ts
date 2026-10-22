@@ -87,6 +87,8 @@ export const registrationFields = {
   coachPlayer: {
     select: { lastName: true, firstName: true, coachPage: { select: coachPageFields } },
   },
+  // Отметка «Оплатил» (ADR-062). Наружу — только организатору.
+  paidAt: true,
 } as const;
 
 export const matchFields = {

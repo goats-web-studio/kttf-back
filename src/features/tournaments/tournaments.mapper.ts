@@ -97,7 +97,16 @@ export function toPlayerView(player: RegistrationRecord['player']): PlayerView {
   };
 }
 
-export function toRegistrationView(registration: RegistrationRecord): RegistrationView {
+/**
+ * Запись в ответе.
+ *
+ * `payment` — смотрящему видна оплата (ADR-062): организатору клуба. Остальным
+ * `paid` уходит `null`: состав турнира публичный, а кто заплатил — нет.
+ */
+export function toRegistrationView(
+  registration: RegistrationRecord,
+  { payment = false }: { readonly payment?: boolean } = {},
+): RegistrationView {
   return {
     id: registration.id,
     tournamentId: registration.tournamentId,
@@ -110,6 +119,7 @@ export function toRegistrationView(registration: RegistrationRecord): Registrati
     createdAt: registration.createdAt.toISOString(),
     player: toPlayerView(registration.player),
     coach: toRegistrationCoach(registration),
+    paid: payment ? registration.paidAt !== null : null,
   };
 }
 

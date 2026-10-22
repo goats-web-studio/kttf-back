@@ -23,7 +23,7 @@ export function buildSnapshot(state: TournamentState, takenAt: Date): Tournament
   return {
     version: state.tournament.version,
     tournament: toTournamentView(state.tournament),
-    registrations: state.registrations.map(toRegistrationView),
+    registrations: state.registrations.map((registration) => toRegistrationView(registration)),
     standings: state.standings,
     stages: state.stages.map(toStageView),
     takenAt: takenAt.toISOString(),

@@ -100,6 +100,7 @@ const registration = {
   coachPlayerId: null,
   coachName: null,
   coachPlayer: null,
+  paidAt: null,
 };
 
 function makePrisma() {
@@ -901,6 +902,74 @@ describe('правка по ходу турнира — ADR-061', () => {
     });
 
     expect(result.status).toBe(403);
+  });
+});
+
+describe('отметка «Оплатил» — ADR-062', () => {
+  function entry(paidAt: Date | null = null) {
+    return {
+      id: REGISTRATION_ID,
+      tournamentId: TOURNAMENT_ID,
+      status: 'CONFIRMED',
+      playerId: PLAYER_ID,
+      paidAt,
+    };
+  }
+
+  it('организатор отмечает оплату: время ставится, отметка уходит в журнал', async () => {
+    prisma.registration.findUnique.mockResolvedValue(entry());
+
+    const result = await call(
+      'PATCH',
+      `/tournaments/${TOURNAMENT_ID}/registrations/${REGISTRATION_ID}`,
+      { auth: true, body: { paid: true } },
+    );
+
+    expect(result.status).toBe(200);
+    const data = (
+      prisma.registration.update.mock.calls[0]?.[0] as { data: Record<string, unknown> }
+    ).data;
+    expect(data.paidAt).toBeInstanceOf(Date);
+    expect(data).not.toHaveProperty('paid');
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        action: 'registration.paid',
+        entityId: REGISTRATION_ID,
+        before: { paid: false },
+        after: { paid: true },
+      }) as unknown,
+    });
+  });
+
+  it('снятая отметка стирает время, повторная — его не сдвигает', async () => {
+    prisma.registration.findUnique.mockResolvedValue(entry(new Date('2026-10-01T10:00:00.000Z')));
+
+    await call('PATCH', `/tournaments/${TOURNAMENT_ID}/registrations/${REGISTRATION_ID}`, {
+      auth: true,
+      body: { paid: true },
+    });
+    await call('PATCH', `/tournaments/${TOURNAMENT_ID}/registrations/${REGISTRATION_ID}`, {
+      auth: true,
+      body: { paid: false },
+    });
+
+    const calls = prisma.registration.update.mock.calls.map(
+      (call) => (call[0] as { data: Record<string, unknown> }).data,
+    );
+    expect(calls[0]).not.toHaveProperty('paidAt');
+    expect(calls[1]).toMatchObject({ paidAt: null });
+  });
+
+  it('в составе оплату видит организатор, посторонний — нет', async () => {
+    prisma.registration.findMany.mockResolvedValue([
+      { ...registration, paidAt: new Date('2026-10-01T10:00:00.000Z') },
+    ]);
+
+    const staff = await call('GET', `/tournaments/${TOURNAMENT_ID}/registrations`, { auth: true });
+    const anonymous = await call('GET', `/tournaments/${TOURNAMENT_ID}/registrations`);
+
+    expect((staff.body as unknown as { paid: unknown }[])[0]?.paid).toBe(true);
+    expect((anonymous.body as unknown as { paid: unknown }[])[0]?.paid).toBeNull();
   });
 });
 

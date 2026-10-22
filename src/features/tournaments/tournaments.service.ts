@@ -526,7 +526,9 @@ export class TournamentsService {
   }
 
   async listRegistrations(id: string, userId?: string): Promise<readonly RegistrationView[]> {
-    await this.findById(id, userId);
+    const tournament = await this.findById(id, userId);
+    // Оплату видит только организатор клуба (ADR-062).
+    const payment = userId !== undefined && (await this.isClubStaff(tournament.clubId, userId));
 
     const rows = await this.prisma.registration.findMany({
       where: { tournamentId: id },
@@ -534,7 +536,7 @@ export class TournamentsService {
       orderBy: [{ seed: 'asc' }, { createdAt: 'asc' }],
     });
 
-    return rows.map(toRegistrationView);
+    return rows.map((row) => toRegistrationView(row, { payment }));
   }
 
   /**
@@ -664,6 +666,7 @@ export class TournamentsService {
 
     const registration = await this.loadRegistration(id, registrationId);
     const reviewing = registration.status === 'PENDING';
+    const { paid, ...change } = input;
 
     // Отказ — решение по заявке, а не способ снять участника: для этого есть
     // снятие, при котором сыгранное остаётся (ТЗ 4.4).
@@ -717,9 +720,10 @@ export class TournamentsService {
       const result = await tx.registration.update({
         where: { id: registrationId },
         data: defined({
-          ...input,
+          ...change,
           status,
           ...(restoring ? await snapshotOf(tx, registrationId) : {}),
+          ...(await this.paymentChange(tx, registration, paid, userId)),
         }),
         select: registrationFields,
       });
@@ -752,7 +756,7 @@ export class TournamentsService {
 
     if (started) this.screen.changed(id);
 
-    return toRegistrationView(updated);
+    return toRegistrationView(updated, { payment: true });
   }
 
   /**
@@ -1462,6 +1466,37 @@ export class TournamentsService {
     return tournament;
   }
 
+  /**
+   * Отметка «Оплатил» — ADR-062: учёт наличных в зале, а не платёж.
+   *
+   * Время ставится при первой отметке и не сдвигается повторной; снятая
+   * отметка его стирает. Каждое изменение — в журнал: деньги в зале — то
+   * место, где спорят, и «кто отметил» обязан находиться.
+   */
+  private async paymentChange(
+    tx: Prisma.TransactionClient,
+    registration: { readonly id: string; readonly paidAt: Date | null },
+    paid: boolean | undefined,
+    userId: string,
+  ): Promise<{ paidAt?: Date | null }> {
+    const wasPaid = registration.paidAt !== null;
+
+    if (paid === undefined || paid === wasPaid) return {};
+
+    await tx.auditLog.create({
+      data: {
+        actorId: userId,
+        action: 'registration.paid',
+        entityType: 'Registration',
+        entityId: registration.id,
+        before: { paid: wasPaid },
+        after: { paid },
+      },
+    });
+
+    return { paidAt: paid ? new Date() : null };
+  }
+
   /** Есть ли игрок во встречах турнира — то есть в расстановке. */
   private async assertInDraw(tournamentId: string, playerId: string): Promise<void> {
     const matches = await this.prisma.match.count({
@@ -1479,10 +1514,10 @@ export class TournamentsService {
   private async loadRegistration(
     tournamentId: string,
     registrationId: string,
-  ): Promise<{ id: string; status: string; playerId: string }> {
+  ): Promise<{ id: string; status: string; playerId: string; paidAt: Date | null }> {
     const registration = await this.prisma.registration.findUnique({
       where: { id: registrationId },
-      select: { id: true, status: true, playerId: true, tournamentId: true },
+      select: { id: true, status: true, playerId: true, tournamentId: true, paidAt: true },
     });
 
     if (registration?.tournamentId !== tournamentId) {
