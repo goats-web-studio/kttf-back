@@ -5,6 +5,7 @@ import {
   type AdvancingSelection,
   type KnockoutOptions,
   type ParticipantId,
+  type TieBreakRule,
 } from '@kttf/shared/brackets';
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import type {
@@ -162,7 +163,7 @@ function planRoundRobin(
         order: 0,
         type: 'ROUND_ROBIN',
         name: 'Круговая',
-        config: { rounds: config.rounds, setsToWin: config.setsToWin },
+        config: { rounds: config.rounds, setsToWin: config.setsToWin, ...tieBreakOf(config) },
         groups: [group],
         matches,
       },
@@ -329,7 +330,12 @@ function planGroupStage(
         order: 0,
         type: 'GROUPS',
         name: 'Групповой этап',
-        config: { setsToWin, advancePerGroup: config.advancePerGroup, rounds: config.groupRounds },
+        config: {
+          setsToWin,
+          advancePerGroup: config.advancePerGroup,
+          rounds: config.groupRounds,
+          ...tieBreakOf(config),
+        },
         groups,
         matches,
       },
@@ -465,8 +471,19 @@ function planFinalGroups(
     order: 1,
     type: 'GROUPS',
     name: 'Финальные группы',
-    config: { setsToWin: config.setsToWin, rounds: config.groupRounds },
+    config: { setsToWin: config.setsToWin, rounds: config.groupRounds, ...tieBreakOf(config) },
     groups,
     matches,
   };
+}
+
+/**
+ * Правило равенства этапа с таблицами — ADR-062. Лежит в `Stage.config`, как
+ * длина встреч: таблицу сервер считает по этапу. Не заданное не пишется —
+ * этап читается правилом по умолчанию.
+ */
+function tieBreakOf(config: { readonly tieBreak?: TieBreakRule | undefined }): {
+  tieBreak?: TieBreakRule;
+} {
+  return config.tieBreak === undefined ? {} : { tieBreak: config.tieBreak };
 }

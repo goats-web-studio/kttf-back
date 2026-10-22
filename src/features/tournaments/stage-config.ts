@@ -1,4 +1,4 @@
-import { playoffSetsToWin } from '@kttf/shared/brackets';
+import { playoffSetsToWin, type TieBreakRule } from '@kttf/shared/brackets';
 import {
   playoffSetsToWinSchema,
   type FormatConfig,
@@ -25,6 +25,20 @@ export function setsToWinOf(config: unknown): number {
   // Умолчание на случай этапа, созданного до появления поля: три сета —
   // самая частая схема, и таблица без него не считалась бы вовсе.
   return 3;
+}
+
+/**
+ * Правило равенства этапа — ADR-062. Лежит в `Stage.config`; не задано или
+ * испорчено — разница сетов (ТЗ 6.6), как считались этапы до появления поля.
+ */
+export function tieBreakOfStage(config: unknown): TieBreakRule {
+  if (typeof config === 'object' && config !== null && !Array.isArray(config)) {
+    const value = (config as Record<string, unknown>).tieBreak;
+
+    if (value === 'SET_RATIO') return 'SET_RATIO';
+  }
+
+  return 'SET_DIFF';
 }
 
 /**

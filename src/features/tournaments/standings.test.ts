@@ -15,13 +15,17 @@ interface MatchSeed {
 }
 
 /** Этап с одной группой. Форма записи повторяет выборку `stageFields`. */
-function makeStage(matches: readonly MatchSeed[], orderedIds?: string[]): StageRecord {
+function makeStage(
+  matches: readonly MatchSeed[],
+  orderedIds?: string[],
+  config: Record<string, unknown> = { setsToWin: 3 },
+): StageRecord {
   return {
     id: STAGE_ID,
     order: 0,
     type: 'ROUND_ROBIN',
     name: 'Круговая',
-    config: { setsToWin: 3 },
+    config,
     groups: [
       {
         id: GROUP_ID,
@@ -161,5 +165,33 @@ describe('групповая таблица', () => {
     expect(
       buildStandings({ tournamentId: STAGE_ID, stages: [stage], withdrawn: [] }).groups,
     ).toEqual([]);
+  });
+});
+
+describe('правило равенства этапа — ADR-062', () => {
+  // Круг: по разнице сетов a и c равны и выше c по личной встрече, по
+  // отношению сетов выше a.
+  const circle: MatchSeed[] = [
+    { a: 'a', b: 'b', setsA: 3, setsB: 0 },
+    { a: 'b', b: 'c', setsA: 3, setsB: 2 },
+    { a: 'c', b: 'a', setsA: 3, setsB: 1 },
+  ];
+  const order = (config: Record<string, unknown>): string[] =>
+    buildStandings({
+      tournamentId: STAGE_ID,
+      stages: [makeStage(circle, undefined, config)],
+      withdrawn: [],
+    }).groups[0]?.rows.map((row) => row.participant) ?? [];
+
+  it('без правила в этапе — разница сетов', () => {
+    expect(order({ setsToWin: 3 })).toEqual(['c', 'a', 'b']);
+  });
+
+  it('правило берётся из конфигурации этапа', () => {
+    expect(order({ setsToWin: 3, tieBreak: 'SET_RATIO' })).toEqual(['a', 'c', 'b']);
+  });
+
+  it('испорченное значение читается как правило по умолчанию', () => {
+    expect(order({ setsToWin: 3, tieBreak: 'COIN' })).toEqual(['c', 'a', 'b']);
   });
 });

@@ -1,7 +1,7 @@
 import { applyWithdrawals, calculateStandings } from '@kttf/shared/brackets';
 import type { GroupStandingsView, TournamentStandingsView } from '@kttf/shared/types';
 
-import { parseSetScores, setsToWinOf } from './stage-config.js';
+import { parseSetScores, setsToWinOf, tieBreakOfStage } from './stage-config.js';
 import type { MatchRecord, StageRecord } from './tournaments.select.js';
 
 /**
@@ -100,6 +100,7 @@ function buildGroup(
 
   const standings = calculateStandings(participants, [...played, ...walkovers], {
     tieDecisions: decisions,
+    tieBreak: tieBreakOfStage(stage.config),
   });
 
   return {

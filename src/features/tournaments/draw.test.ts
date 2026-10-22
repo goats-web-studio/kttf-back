@@ -470,3 +470,59 @@ describe('длины этапов совпадают с правкой по хо
     });
   }
 });
+
+describe('правило равенства уходит в этапы с таблицами — ADR-062', () => {
+  it('круговая, группы и финальные группы несут его в конфигурации', () => {
+    const roundRobin = planDraw(
+      { type: 'ROUND_ROBIN', rounds: 1, setsToWin: 3, tieBreak: 'SET_RATIO' },
+      participants(4),
+      null,
+      makeIdFactory(),
+    );
+    const groups = planDraw(
+      {
+        type: 'GROUPS_FINAL_GROUPS',
+        groupRounds: 1,
+        groupCount: 2,
+        advancePerGroup: 2,
+        finalGroupCount: 2,
+        setsToWin: 3,
+        tieBreak: 'SET_RATIO',
+      },
+      participants(8),
+      null,
+      makeIdFactory(),
+    );
+    const finals = planNextStage(
+      {
+        type: 'GROUPS_FINAL_GROUPS',
+        groupRounds: 1,
+        groupCount: 2,
+        advancePerGroup: 2,
+        finalGroupCount: 2,
+        setsToWin: 3,
+        tieBreak: 'SET_RATIO',
+      },
+      {
+        seeded: ['a1', 'b1', 'a2', 'b2'],
+        byPlace: [
+          ['a1', 'b1'],
+          ['a2', 'b2'],
+        ],
+        exits: [],
+        blocked: [],
+      },
+      makeIdFactory(),
+    );
+
+    for (const stage of [...roundRobin.stages, ...groups.stages, ...finals]) {
+      expect(stage.config.tieBreak, stage.name).toBe('SET_RATIO');
+    }
+  });
+
+  it('не заданное правило в этап не пишется', () => {
+    const plan = planDraw(ROUND_ROBIN, participants(4), null, makeIdFactory());
+
+    expect('tieBreak' in (plan.stages[0]?.config ?? {})).toBe(false);
+  });
+});
