@@ -1,5 +1,10 @@
 import { playoffSetsToWin } from '@kttf/shared/brackets';
-import { playoffSetsToWinSchema } from '@kttf/shared/types';
+import {
+  playoffSetsToWinSchema,
+  type FormatConfig,
+  type PlayoffSetsToWin,
+  type StageType,
+} from '@kttf/shared/types';
 
 /**
  * Разбор колонок `Json` этапа и встречи.
@@ -53,6 +58,40 @@ export function matchSetsToWin(
     { round: match.bracketRound, slot: match.bracketSlot },
     Math.log2(bracketSize),
   );
+}
+
+/** Длины встреч этапа так, как их кладёт в `Stage.config` жеребьёвка. */
+export interface StageLengths {
+  readonly setsToWin: number;
+  /** Длины по кругам — только у основной сетки (ADR-044, ADR-045). */
+  readonly playoffSetsToWin?: PlayoffSetsToWin;
+}
+
+/**
+ * Длины встреч этапа по схеме турнира — ADR-061.
+ *
+ * Жеребьёвка и достройка кладут их в `Stage.config` (`draw.ts`), правка по
+ * ходу турнира — переписывает. Совпадение с жеребьёвкой стережёт тест
+ * `stage-config.test.ts`: иначе правка длины поменяла бы этап не так, как
+ * его построили.
+ */
+export function stageLengths(format: FormatConfig, stageType: StageType): StageLengths {
+  switch (format.type) {
+    case 'ROUND_ROBIN':
+    case 'GROUPS_FINAL_GROUPS':
+      return { setsToWin: format.setsToWin };
+    case 'KNOCKOUT':
+      return withPlayoff(format.setsToWin, format.playoffSetsToWin);
+    case 'GROUPS_KNOCKOUT':
+      if (stageType === 'GROUPS') return { setsToWin: format.groupSetsToWin };
+      // Сетка за места играется общей длиной плей-офф — ADR-045.
+      if (stageType === 'CONSOLATION') return { setsToWin: format.koSetsToWin };
+      return withPlayoff(format.koSetsToWin, format.playoffSetsToWin);
+  }
+}
+
+function withPlayoff(setsToWin: number, lengths: PlayoffSetsToWin | undefined): StageLengths {
+  return lengths === undefined ? { setsToWin } : { setsToWin, playoffSetsToWin: lengths };
 }
 
 /** Счёт по сетам нужен правилам 3 и 5 разрешения равенства — ТЗ 6.6. */

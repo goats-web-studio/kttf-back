@@ -4,7 +4,7 @@ import type { FormatConfig } from '@kttf/shared/types';
 import { describe, expect, it } from 'vitest';
 
 import { type DrawParticipant, planDraw, planNextStage, seedParticipants } from './draw.js';
-import { matchSetsToWin } from './stage-config.js';
+import { matchSetsToWin, stageLengths } from './stage-config.js';
 
 function makeIdFactory(): () => string {
   let counter = 0;
@@ -405,4 +405,68 @@ describe('жеребьёвка отвергает конфигурацию, из
 
     expect(() => planDraw(config, participants(4), null, makeIdFactory())).toThrow(AppError);
   });
+});
+
+describe('длины этапов совпадают с правкой по ходу — ADR-061', () => {
+  // Правка длины после старта переписывает `Stage.config` через
+  // `stageLengths`. Разойдись она с жеребьёвкой — правка поменяла бы этап не
+  // так, как его построили.
+  const formats: FormatConfig[] = [
+    { type: 'ROUND_ROBIN', rounds: 1, setsToWin: 2 },
+    {
+      type: 'KNOCKOUT',
+      setsToWin: 3,
+      thirdPlace: true,
+      consolation: false,
+      playoffSetsToWin: { final: 4 },
+    },
+    { type: 'KNOCKOUT', setsToWin: 2, thirdPlace: false, consolation: false },
+    {
+      type: 'GROUPS_KNOCKOUT',
+      groupRounds: 1,
+      groupCount: 2,
+      advancePerGroup: 2,
+      groupSetsToWin: 2,
+      koSetsToWin: 3,
+      playoffSetsToWin: { final: 4, semifinal: 4 },
+      thirdPlace: true,
+      exitBracket: true,
+    },
+    {
+      type: 'GROUPS_FINAL_GROUPS',
+      groupRounds: 1,
+      groupCount: 2,
+      advancePerGroup: 2,
+      finalGroupCount: 2,
+      setsToWin: 4,
+    },
+  ];
+  const selection: AdvancingSelection = {
+    seeded: ['a1', 'b1', 'a2', 'b2'],
+    byPlace: [
+      ['a1', 'b1'],
+      ['a2', 'b2'],
+    ],
+    exits: ['a3', 'b3', 'a4', 'b4'],
+    blocked: [],
+  };
+
+  for (const format of formats) {
+    it(format.type, () => {
+      const stages = [
+        ...planDraw(format, participants(8), null, makeIdFactory()).stages,
+        ...planNextStage(format, selection, makeIdFactory()),
+      ];
+
+      for (const stage of stages) {
+        expect(
+          {
+            setsToWin: stage.config.setsToWin,
+            playoffSetsToWin: stage.config.playoffSetsToWin,
+          },
+          stage.name,
+        ).toEqual({ playoffSetsToWin: undefined, ...stageLengths(format, stage.type) });
+      }
+    });
+  }
 });

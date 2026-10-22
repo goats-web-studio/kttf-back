@@ -137,6 +137,7 @@ function makePrisma() {
       create: vi.fn().mockResolvedValue({ id: STAGE_ID }),
       count: vi.fn().mockResolvedValue(1),
       findMany: vi.fn().mockResolvedValue([]),
+      update: vi.fn().mockResolvedValue({}),
     },
     group: {
       create: vi.fn().mockResolvedValue({ id: GROUP_ID }),
@@ -146,7 +147,11 @@ function makePrisma() {
       }),
     },
     tieDecision: { create: vi.fn().mockResolvedValue({}) },
-    match: { createMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    match: {
+      createMany: vi.fn().mockResolvedValue({ count: 0 }),
+      count: vi.fn().mockResolvedValue(0),
+      findFirst: vi.fn().mockResolvedValue(null),
+    },
     clubMember: {
       findUnique: vi.fn().mockResolvedValue({ role: 'OWNER' }),
       findMany: vi.fn().mockResolvedValue([{ clubId: CLUB_ID }]),
@@ -647,6 +652,255 @@ describe('лист ожидания', () => {
 
     expect(result.status).toBe(403);
     expect(prisma.registration.delete).not.toHaveBeenCalled();
+  });
+});
+
+describe('снятие по ходу турнира — ADR-061', () => {
+  const running = (): ReturnType<typeof makeTournament> =>
+    makeTournament({
+      status: 'RUNNING',
+      startedAt: new Date('2026-08-30T10:00:00.000Z'),
+      maxParticipants: 8,
+    });
+
+  function entry(status: string) {
+    return { id: REGISTRATION_ID, tournamentId: TOURNAMENT_ID, status, playerId: PLAYER_ID };
+  }
+
+  it('снятие после старта не поднимает игрока из листа ожидания', async () => {
+    // Раньше поднимало: посреди турнира появлялся «подтверждённый» участник,
+    // которого нет ни в одной встрече.
+    prisma.tournament.findUnique.mockResolvedValue(running());
+    prisma.registration.findUnique.mockResolvedValue(entry('PLAYING'));
+    prisma.registration.count.mockResolvedValue(7);
+    prisma.registration.findFirst.mockResolvedValue({ id: 'next-in-line' });
+
+    const result = await call(
+      'PATCH',
+      `/tournaments/${TOURNAMENT_ID}/registrations/${REGISTRATION_ID}`,
+      { auth: true, body: { status: 'WITHDRAWN' } },
+    );
+
+    expect(result.status).toBe(200);
+    expect(prisma.registration.findFirst).not.toHaveBeenCalled();
+    expect(prisma.registration.update).toHaveBeenCalledTimes(1);
+    expect(prisma.registration.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { status: 'WITHDRAWN' } }),
+    );
+  });
+
+  it('до старта снятие по-прежнему отдаёт место первому в очереди', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(makeTournament({ maxParticipants: 8 }));
+    prisma.registration.findUnique.mockResolvedValue(entry('CONFIRMED'));
+    prisma.registration.count.mockResolvedValue(7);
+    prisma.registration.findFirst.mockResolvedValue({ id: 'next-in-line' });
+
+    await call('PATCH', `/tournaments/${TOURNAMENT_ID}/registrations/${REGISTRATION_ID}`, {
+      auth: true,
+      body: { status: 'WITHDRAWN' },
+    });
+
+    expect(prisma.registration.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'next-in-line' }, data: { status: 'CONFIRMED' } }),
+    );
+  });
+
+  it('снятого по ошибке возвращают в игру, если он в расстановке', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(running());
+    prisma.registration.findUnique.mockResolvedValue(entry('NO_SHOW'));
+    prisma.match.count.mockResolvedValue(3);
+    // Полный состав мешать не должен: место за ним в сетке и так есть.
+    prisma.registration.count.mockResolvedValue(8);
+
+    const result = await call(
+      'PATCH',
+      `/tournaments/${TOURNAMENT_ID}/registrations/${REGISTRATION_ID}`,
+      { auth: true, body: { status: 'CONFIRMED' } },
+    );
+
+    expect(result.status).toBe(200);
+    expect(prisma.registration.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'PLAYING' }) as unknown }),
+    );
+  });
+
+  it('после старта из листа ожидания в игру не взять: в сетке ему места нет', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(running());
+    prisma.registration.findUnique.mockResolvedValue(entry('WAITLIST'));
+    prisma.match.count.mockResolvedValue(0);
+
+    const result = await call(
+      'PATCH',
+      `/tournaments/${TOURNAMENT_ID}/registrations/${REGISTRATION_ID}`,
+      { auth: true, body: { status: 'CONFIRMED' } },
+    );
+
+    expect(result.status).toBe(400);
+    expect(prisma.registration.update).not.toHaveBeenCalled();
+  });
+
+  it('снятие достраивает плей-офф, если доиграть группы было некому', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(running());
+    prisma.registration.findUnique.mockResolvedValue(entry('PLAYING'));
+
+    await call('PATCH', `/tournaments/${TOURNAMENT_ID}/registrations/${REGISTRATION_ID}`, {
+      auth: true,
+      body: { status: 'WITHDRAWN' },
+    });
+
+    // Достройка читает схему турнира в транзакции снятия — ADR-020, ADR-061.
+    expect(prisma.tournament.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ select: { formatConfig: true } }),
+    );
+  });
+});
+
+describe('правка по ходу турнира — ADR-061', () => {
+  const KNOCKOUT_FORMAT = {
+    type: 'KNOCKOUT',
+    setsToWin: 3,
+    thirdPlace: false,
+    consolation: false,
+  };
+
+  function runningKnockout() {
+    return makeTournament({
+      status: 'RUNNING',
+      startedAt: new Date('2026-08-30T10:00:00.000Z'),
+      formatConfig: KNOCKOUT_FORMAT,
+    });
+  }
+
+  function knockoutStage(finalStatus: string) {
+    const match = (id: string, round: number, status: string) => ({
+      id,
+      stageId: STAGE_ID,
+      groupId: null,
+      playerAId: null,
+      playerBId: null,
+      sourceA: null,
+      sourceB: null,
+      status,
+      tableNumber: null,
+      setsA: status === 'FINISHED' ? 3 : null,
+      setsB: status === 'FINISHED' ? 0 : null,
+      setScores: null,
+      resultType: null,
+      bracketRound: round,
+      bracketSlot: 0,
+      startedAt: null,
+      finishedAt: null,
+    });
+
+    return {
+      id: STAGE_ID,
+      order: 0,
+      type: 'KNOCKOUT',
+      name: 'Сетка',
+      config: { setsToWin: 3, bracketSize: 4 },
+      groups: [],
+      matches: [match('semi', 1, 'FINISHED'), match('final', 2, finalStatus)],
+    };
+  }
+
+  it('число столов меняется после старта, жеребьёвка остаётся', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(runningKnockout());
+
+    const result = await call('PATCH', `/tournaments/${TOURNAMENT_ID}`, {
+      auth: true,
+      body: { tableCount: 8 },
+    });
+
+    expect(result.status).toBe(200);
+    expect(prisma.tournament.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ tableCount: 8 }) as unknown }),
+    );
+    expect(prisma.stage.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('стол, за которым ещё играют, не убрать', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(runningKnockout());
+    prisma.match.findFirst.mockResolvedValue({ id: 'playing', tableNumber: 6 });
+
+    const result = await call('PATCH', `/tournaments/${TOURNAMENT_ID}`, {
+      auth: true,
+      body: { tableCount: 4 },
+    });
+
+    expect(result.status).toBe(409);
+    expect((result.body?.error as { code: string }).code).toBe('TABLE_BUSY');
+    expect(prisma.tournament.update).not.toHaveBeenCalled();
+  });
+
+  it('финал до четырёх побед, пока финал не начат', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(runningKnockout());
+    prisma.stage.findMany.mockResolvedValue([knockoutStage('PENDING')]);
+
+    const result = await call('PATCH', `/tournaments/${TOURNAMENT_ID}`, {
+      auth: true,
+      body: { formatConfig: { ...KNOCKOUT_FORMAT, playoffSetsToWin: { final: 4 } } },
+    });
+
+    expect(result.status).toBe(200);
+    // Сервер берёт длину из этапа (ADR-044): правка обязана доехать и туда.
+    expect(prisma.stage.update).toHaveBeenCalledWith({
+      where: { id: STAGE_ID },
+      data: { config: { setsToWin: 3, bracketSize: 4, playoffSetsToWin: { final: 4 } } },
+    });
+  });
+
+  it('длину начатой встречи не сменить', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(runningKnockout());
+    prisma.stage.findMany.mockResolvedValue([knockoutStage('PLAYING')]);
+
+    const result = await call('PATCH', `/tournaments/${TOURNAMENT_ID}`, {
+      auth: true,
+      body: { formatConfig: { ...KNOCKOUT_FORMAT, playoffSetsToWin: { final: 4 } } },
+    });
+
+    expect(result.status).toBe(409);
+    expect(result.body?.error).toMatchObject({
+      code: 'MATCH_LENGTH_LOCKED',
+      details: { matchIds: ['final'] },
+    });
+  });
+
+  it('сыгранный круг длину не держит, если её не меняют', async () => {
+    // Полуфинал сыгран до трёх, правка трогает только финал.
+    prisma.tournament.findUnique.mockResolvedValue(runningKnockout());
+    prisma.stage.findMany.mockResolvedValue([knockoutStage('PENDING')]);
+
+    const result = await call('PATCH', `/tournaments/${TOURNAMENT_ID}`, {
+      auth: true,
+      body: { formatConfig: { ...KNOCKOUT_FORMAT, playoffSetsToWin: { semifinal: 3, final: 4 } } },
+    });
+
+    expect(result.status).toBe(200);
+  });
+
+  it('схему после старта не сменить: только длины', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(runningKnockout());
+
+    const result = await call('PATCH', `/tournaments/${TOURNAMENT_ID}`, {
+      auth: true,
+      body: { formatConfig: { ...KNOCKOUT_FORMAT, thirdPlace: true } },
+    });
+
+    expect(result.status).toBe(403);
+    expect(prisma.tournament.update).not.toHaveBeenCalled();
+  });
+
+  it('завершённый турнир не правится вовсе', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(
+      makeTournament({ status: 'FINISHED', startedAt: new Date('2026-08-30T10:00:00.000Z') }),
+    );
+
+    const result = await call('PATCH', `/tournaments/${TOURNAMENT_ID}`, {
+      auth: true,
+      body: { tableCount: 8 },
+    });
+
+    expect(result.status).toBe(403);
   });
 });
 

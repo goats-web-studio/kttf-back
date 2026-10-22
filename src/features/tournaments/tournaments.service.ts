@@ -8,6 +8,7 @@ import {
   formatConfigSchema,
   seedingConfigSchema,
   type ClubCollisionView,
+  type FormatConfig,
   type DrawResult,
   type DrawSwapInput,
   type SeedingConfig,
@@ -50,6 +51,7 @@ import {
 } from './finish.js';
 import { buildResults } from './results.js';
 import { buildStandings } from './standings.js';
+import { matchSetsToWin, stageLengths } from './stage-config.js';
 import { bumpVersion } from './tournament-state.js';
 import { writeStage } from './stage-writer.js';
 import {
@@ -60,6 +62,7 @@ import {
   type TournamentAction,
 } from './tournament-lifecycle.js';
 import { toRegistrationView, toStageView, toTournamentView } from './tournaments.mapper.js';
+import { settleWithdrawals } from './withdrawal.js';
 import {
   OCCUPYING_STATUSES,
   playerFields,
@@ -233,14 +236,17 @@ export class TournamentsService {
   /**
    * Правка турнира.
    *
-   * После старта запрещена целиком: схема проведения уже развёрнута в сетку,
-   * а планки и ограничения уже отработали при записи участников. Менять их
-   * задним числом значит получить состав, не соответствующий условиям.
+   * После старта — только то, что зал меняет по ходу (`updateRunning`): схема
+   * проведения уже развёрнута в сетку, а планки и ограничения уже отработали
+   * при записи участников. Менять их задним числом значит получить состав,
+   * не соответствующий условиям. После завершения не правится ничего.
    */
   async update(id: string, input: UpdateTournamentInput, userId: string): Promise<TournamentView> {
     const tournament = await this.load(id);
 
     await this.assertClubStaff(tournament.clubId, userId);
+
+    if (tournament.status === 'RUNNING') return this.updateRunning(tournament, input);
 
     if (tournament.startedAt !== null || tournament.status === 'CANCELLED') {
       throw new AppError(ERROR_CODES.FORBIDDEN, 'Started tournament cannot be edited', {
@@ -305,6 +311,123 @@ export class TournamentsService {
     });
 
     return toTournamentView(updated);
+  }
+
+  /**
+   * Правка идущего турнира — ADR-061.
+   *
+   * Сломался стол, освободился соседний зал, турнир затянулся и финал хотят
+   * играть до трёх побед вместо четырёх — это решается по ходу, без сброса
+   * жеребьёвки. Поэтому меняются только число столов, описание и длины встреч,
+   * а остальное отвергается, как и раньше.
+   *
+   * - Стол убрать нельзя, пока за ним играют.
+   * - Длина меняется только у встреч, которые ещё не начаты: длину каждой
+   *   встречи этапа до и после правки считает одно правило
+   *   (`matchSetsToWin`), и начатые встречи, где она разошлась бы, называются
+   *   в отказе. Новая длина ложится и в схему турнира (её читает офлайн-
+   *   консоль), и в этапы (их читает сервер, ADR-044).
+   */
+  private async updateRunning(
+    tournament: TournamentRecord,
+    input: UpdateTournamentInput,
+  ): Promise<TournamentView> {
+    const { tableCount, description, formatConfig, ...rest } = input;
+    const locked = Object.keys(defined(rest));
+    const current = formatConfigSchema.parse(tournament.formatConfig);
+
+    if (
+      locked.length > 0 ||
+      (formatConfig !== undefined && !sameExceptLengths(current, formatConfig))
+    ) {
+      throw new AppError(ERROR_CODES.FORBIDDEN, 'Only tables, description and lengths change', {
+        id: tournament.id,
+        fields: formatConfig === undefined ? locked : [...locked, 'formatConfig'],
+      });
+    }
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      if (tableCount !== undefined && tableCount < tournament.tableCount) {
+        const busy = await tx.match.findFirst({
+          where: {
+            tournamentId: tournament.id,
+            status: 'PLAYING',
+            tableNumber: { gt: tableCount },
+          },
+          select: { id: true, tableNumber: true },
+        });
+
+        if (busy !== null) {
+          throw new AppError(ERROR_CODES.TABLE_BUSY, 'A match is playing at a removed table', {
+            tableNumber: busy.tableNumber,
+            matchId: busy.id,
+          });
+        }
+      }
+
+      if (formatConfig !== undefined) {
+        await this.applyLengths(tx, tournament.id, formatConfig);
+      }
+
+      return tx.tournament.update({
+        where: { id: tournament.id },
+        data: {
+          ...defined({ tableCount, description, formatConfig }),
+          version: { increment: 1 },
+        },
+        select: tournamentFields,
+      });
+    });
+
+    // Экран зала рисует столы по их числу: правка обязана доехать до зала.
+    this.screen.changed(tournament.id);
+
+    return toTournamentView(updated);
+  }
+
+  /** Новые длины — в этапы, если ни одна начатая встреча от этого не меняется. */
+  private async applyLengths(
+    tx: Prisma.TransactionClient,
+    tournamentId: string,
+    format: FormatConfig,
+  ): Promise<void> {
+    const stages = await tx.stage.findMany({ where: { tournamentId }, select: stageFields });
+    const changes: { id: string; config: Record<string, unknown> }[] = [];
+    const lockedMatches: string[] = [];
+
+    for (const stage of stages) {
+      const before = asRecord(stage.config);
+      // Длины по кругам целиком из новой схемы: стёртые там стираются и здесь.
+      const base = Object.fromEntries(
+        Object.entries(before).filter(([key]) => key !== 'playoffSetsToWin'),
+      );
+      const config: Record<string, unknown> = { ...base, ...stageLengths(format, stage.type) };
+
+      for (const match of stage.matches) {
+        const started = match.status === 'PLAYING' || match.setsA !== null;
+
+        if (started && matchSetsToWin(before, match) !== matchSetsToWin(config, match)) {
+          lockedMatches.push(match.id);
+        }
+      }
+
+      if (JSON.stringify(canonical(config)) !== JSON.stringify(canonical(before))) {
+        changes.push({ id: stage.id, config });
+      }
+    }
+
+    if (lockedMatches.length > 0) {
+      throw new AppError(ERROR_CODES.MATCH_LENGTH_LOCKED, 'Started matches keep their length', {
+        matchIds: lockedMatches,
+      });
+    }
+
+    for (const change of changes) {
+      await tx.stage.update({
+        where: { id: change.id },
+        data: { config: change.config as Prisma.InputJsonObject },
+      });
+    }
   }
 
   /**
@@ -555,17 +678,28 @@ export class TournamentsService {
       );
     }
 
+    const started = tournament.startedAt !== null;
+
     // После старта сетка уже разложена, и принятому в ней места нет.
-    if (reviewing && tournament.startedAt !== null) {
+    if (reviewing && started) {
       throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Tournament has already started', {
         id,
         registrationId,
       });
     }
 
-    let status = input.status;
+    let status: UpdateRegistrationInput['status'] | 'PLAYING' = input.status;
+    const restoring =
+      started && status !== undefined && !isOccupying(registration.status) && isOccupying(status);
 
-    if (status !== undefined && !isOccupying(registration.status) && isOccupying(status)) {
+    if (restoring) {
+      // После старта в игру возвращают только того, кто есть в расстановке:
+      // снятого или отмеченного неявкой по ошибке (ADR-061). Места за ним в
+      // сетке и так есть, лимит состава здесь ни при чём. Из листа ожидания
+      // в идущий турнир не взять — встреч у него нет.
+      await this.assertInDraw(id, registration.playerId);
+      status = 'PLAYING';
+    } else if (status !== undefined && !isOccupying(registration.status) && isOccupying(status)) {
       // Принятая заявка при полном составе встаёт в лист ожидания, а не
       // отвергается: организатор сказал «да», место освободится при отмене.
       if (
@@ -582,11 +716,18 @@ export class TournamentsService {
     const updated = await this.prisma.$transaction(async (tx) => {
       const result = await tx.registration.update({
         where: { id: registrationId },
-        data: defined({ ...input, status }),
+        data: defined({
+          ...input,
+          status,
+          ...(restoring ? await snapshotOf(tx, registrationId) : {}),
+        }),
         select: registrationFields,
       });
 
+      // После старта освободившееся место никому не отдаётся: сетка уже
+      // разложена, и поднятый из очереди оказался бы участником без встреч.
       if (
+        !started &&
         input.status !== undefined &&
         isOccupying(registration.status) &&
         !isOccupying(input.status)
@@ -594,12 +735,22 @@ export class TournamentsService {
         await promoteFromWaitlist(tx, id, tournament.maxParticipants);
       }
 
-      // Снятие участника меняет таблицы: несыгранное уходит соперникам
-      // технической победой (ADR-009), и снимок консоли обязан это увидеть.
+      // По ходу турнира снятие решает встречи: в группе — расчётом таблицы
+      // (ADR-009), в сетке — технической победой соперника (ADR-061). Если
+      // группам больше нечего доигрывать, плей-офф достраивается здесь же,
+      // как после последнего счёта (ADR-020).
+      if (started && status !== undefined && status !== registration.status) {
+        await advanceAfterGroups(tx, id);
+        await settleWithdrawals(tx, id);
+      }
+
+      // Снятие участника меняет таблицы, и снимок консоли обязан это увидеть.
       await bumpVersion(tx, id);
 
       return result;
     });
+
+    if (started) this.screen.changed(id);
 
     return toRegistrationView(updated);
   }
@@ -1309,6 +1460,20 @@ export class TournamentsService {
     return tournament;
   }
 
+  /** Есть ли игрок во встречах турнира — то есть в расстановке. */
+  private async assertInDraw(tournamentId: string, playerId: string): Promise<void> {
+    const matches = await this.prisma.match.count({
+      where: { tournamentId, OR: [{ playerAId: playerId }, { playerBId: playerId }] },
+    });
+
+    if (matches === 0) {
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Player is not in the draw', {
+        tournamentId,
+        playerId,
+      });
+    }
+  }
+
   private async loadRegistration(
     tournamentId: string,
     registrationId: string,
@@ -1434,6 +1599,59 @@ export class TournamentsService {
 
     return Promise.resolve();
   }
+}
+
+/**
+ * Снимок рейтинга для вернувшегося в игру после старта (ТС 5.4).
+ *
+ * Отмеченный неявкой до старта снимка не получил: старт снимает только
+ * занимающих место. Без него обсчёт остановился бы на первой же встрече.
+ */
+async function snapshotOf(
+  tx: Prisma.TransactionClient,
+  registrationId: string,
+): Promise<{ ratingAtStart?: Prisma.Decimal; matchesAtStart?: number }> {
+  const row = await tx.registration.findUnique({
+    where: { id: registrationId },
+    select: { ratingAtStart: true, player: { select: { rating: true, ratedMatches: true } } },
+  });
+
+  if (row?.ratingAtStart !== null) return {};
+
+  return { ratingAtStart: row.player.rating, matchesAtStart: row.player.ratedMatches };
+}
+
+/** Схемы совпадают во всём, кроме длин встреч — их одних и можно менять по ходу. */
+function sameExceptLengths(left: FormatConfig, right: FormatConfig): boolean {
+  return (
+    JSON.stringify(canonical(withoutLengths(left))) ===
+    JSON.stringify(canonical(withoutLengths(right)))
+  );
+}
+
+const LENGTH_FIELDS = new Set(['setsToWin', 'groupSetsToWin', 'koSetsToWin', 'playoffSetsToWin']);
+
+function withoutLengths(format: FormatConfig): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(format).filter(([key]) => !LENGTH_FIELDS.has(key)));
+}
+
+/** Ключи по алфавиту: порядок полей в `Json` от правки к правке не держится. */
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (typeof value !== 'object' || value === null) return value;
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => [key, canonical(item)]),
+  );
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 function isOccupying(status: string): boolean {
