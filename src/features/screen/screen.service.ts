@@ -3,6 +3,7 @@ import type { ScreenView } from '@kttf/shared/types';
 import { Injectable } from '@nestjs/common';
 
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
+import { withdrawnPlayers } from '../tournaments/finish.js';
 import { loadTournamentState } from '../tournaments/tournament-state.js';
 import { toPlayerView, toStageView, toTournamentView } from '../tournaments/tournaments.mapper.js';
 import { tournamentFields } from '../tournaments/tournaments.select.js';
@@ -41,6 +42,7 @@ export class ScreenService {
     return {
       tournament: toTournamentView(tournament),
       players: state.registrations.map((registration) => toPlayerView(registration.player)),
+      withdrawn: [...withdrawnPlayers(state.registrations)],
       standings: state.standings,
       stages: state.stages.map(toStageView),
       updatedAt: new Date().toISOString(),

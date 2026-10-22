@@ -135,6 +135,15 @@ beforeEach(() => {
 });
 
 describe('состояние по публичному токену', () => {
+  it('отдаёт снявшихся: их встречам не место в «Кто следующий» — ADR-061', async () => {
+    prisma.registration.findMany.mockResolvedValue([
+      registration('player-a', 'Ахметов'),
+      registration('player-b', 'Сериков', 'WITHDRAWN'),
+    ]);
+
+    expect((await service.byToken(TOKEN)).withdrawn).toEqual(['player-b']);
+  });
+
   it('турнир ищется по токену, а не по идентификатору', async () => {
     await service.byToken(TOKEN);
 
