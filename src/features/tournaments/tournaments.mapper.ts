@@ -20,6 +20,7 @@ import type {
   StageRecord,
   TournamentRecord,
 } from './tournaments.select.js';
+import { parseSetScores } from './stage-config.js';
 
 /**
  * Запись базы в ответ API.
@@ -168,6 +169,7 @@ export function toMatchView(match: MatchRecord): MatchView {
     setsA: match.setsA,
     setsB: match.setsB,
     resultType: match.resultType,
+    setScores: parseSetScores(match.setScores),
     bracketRound: match.bracketRound,
     bracketSlot: match.bracketSlot,
     startedAt: match.startedAt?.toISOString() ?? null,

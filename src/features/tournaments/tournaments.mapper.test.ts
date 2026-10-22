@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { toRegistrationCoach } from './tournaments.mapper.js';
+import { toMatchView, toRegistrationCoach } from './tournaments.mapper.js';
+import type { MatchRecord } from './tournaments.select.js';
 
 const COACH = '99999999-9999-4999-8999-999999999999';
 
@@ -57,5 +58,43 @@ describe('тренер участника на турнире (ADR-059, T3)', ()
     expect(
       toRegistrationCoach({ coachPlayerId: null, coachName: null, coachPlayer: null }),
     ).toBeNull();
+  });
+});
+
+describe('встреча в ответе', () => {
+  const record = {
+    id: 'm1',
+    stageId: 's1',
+    groupId: null,
+    playerAId: 'a',
+    playerBId: 'b',
+    sourceA: null,
+    sourceB: null,
+    status: 'FINISHED',
+    tableNumber: 2,
+    setsA: 2,
+    setsB: 1,
+    setScores: [
+      [11, 7],
+      [9, 11],
+      [11, 5],
+    ],
+    resultType: 'NORMAL',
+    bracketRound: 1,
+    bracketSlot: 0,
+    startedAt: null,
+    finishedAt: null,
+  } as unknown as MatchRecord;
+
+  it('несёт счёт по партиям, если судья его вводил', () => {
+    expect(toMatchView(record).setScores).toEqual([
+      [11, 7],
+      [9, 11],
+      [11, 5],
+    ]);
+  });
+
+  it('без счёта по партиям — null', () => {
+    expect(toMatchView({ ...record, setScores: null }).setScores).toBeNull();
   });
 });
