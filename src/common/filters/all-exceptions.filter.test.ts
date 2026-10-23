@@ -99,6 +99,10 @@ describe('AllExceptionsFilter', () => {
       TRIAL_REQUEST_EXISTS: 409,
       TRIAL_REQUEST_LIMIT: 409,
       TRIAL_REQUEST_INVALID: 409,
+      FORUM_PROFILE_REQUIRED: 403,
+      FORUM_MUTED: 403,
+      FORUM_TOPIC_LOCKED: 409,
+      FORUM_LIMIT: 409,
     };
 
     for (const code of Object.values(ERROR_CODES)) {

@@ -73,6 +73,67 @@ export class NotificationsService {
     });
   }
 
+  /**
+   * Новое сообщение в теме — подписчикам (ADR-064 §6). У кого непрочитанное
+   * о ней уже есть, у того растёт счётчик и обновляется автор, а ссылка
+   * остаётся на первом непрочитанном; остальным — новое уведомление.
+   */
+  async bumpForumTopic(
+    tx: Pick<Prisma.TransactionClient, 'notification'>,
+    userIds: readonly string[],
+    data: Omit<NotificationData['FORUM_TOPIC_UPDATE'], 'count'>,
+    now = new Date(),
+  ): Promise<void> {
+    const unique = [...new Set(userIds)];
+
+    if (unique.length === 0) return;
+
+    const pending = await tx.notification.findMany({
+      where: {
+        userId: { in: unique },
+        type: 'FORUM_TOPIC_UPDATE',
+        readAt: null,
+        data: { path: ['topicId'], equals: data.topicId },
+      },
+      select: { id: true, userId: true, data: true },
+    });
+    const bumped = new Set<string>();
+
+    for (const row of pending) {
+      const previous = row.data as Partial<NotificationData['FORUM_TOPIC_UPDATE']>;
+
+      await tx.notification.update({
+        where: { id: row.id },
+        data: {
+          data: { ...previous, authorName: data.authorName, count: (previous.count ?? 1) + 1 },
+          // Свежее событие поднимает строку наверх списка.
+          createdAt: now,
+        },
+      });
+      bumped.add(row.userId);
+    }
+
+    await this.create(
+      tx,
+      unique.filter((userId) => !bumped.has(userId)),
+      'FORUM_TOPIC_UPDATE',
+      { ...data, count: 1 },
+    );
+  }
+
+  /** Человек открыл тему — уведомления о ней прочитаны. */
+  async settleForumTopic(userId: string, topicId: string, now = new Date()): Promise<void> {
+    await this.prisma.notification.updateMany({
+      where: {
+        userId,
+        type: { in: ['FORUM_REPLY', 'FORUM_TOPIC_UPDATE'] },
+        readAt: null,
+        data: { path: ['topicId'], equals: topicId },
+      },
+      data: { readAt: now },
+    });
+  }
+
   /** Свои уведомления, новые первыми. Строка, не прошедшая контракт, пропускается. */
   async list(
     userId: string,

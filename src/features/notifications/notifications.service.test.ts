@@ -165,3 +165,57 @@ describe('непрочитанные и отметка', () => {
     });
   });
 });
+
+describe('NotificationsService — форум', () => {
+  const TOPIC = '44444444-4444-4444-8444-444444444444';
+  const POST = '55555555-5555-4555-8555-555555555555';
+  const snapshot = {
+    topicId: TOPIC,
+    topicTitle: 'Накладки',
+    postId: POST,
+    number: 5,
+    authorName: 'Ким Сергей',
+  };
+
+  it('непрочитанное о теме растёт счётчиком, остальным — новое', async () => {
+    const tx = {
+      notification: {
+        findMany: vi
+          .fn()
+          .mockResolvedValue([
+            { id: ID, userId: 'user-1', data: { ...snapshot, number: 2, count: 3 } },
+          ]),
+        update: vi.fn(),
+        createMany: vi.fn(),
+      },
+    };
+
+    await service.bumpForumTopic(tx as never, ['user-1', 'user-2', 'user-2'], snapshot, NOW);
+
+    expect(tx.notification.update).toHaveBeenCalledWith({
+      where: { id: ID },
+      data: {
+        // Ссылка остаётся на первом непрочитанном (№ 2), автор — последний.
+        data: { ...snapshot, number: 2, count: 4 },
+        createdAt: NOW,
+      },
+    });
+    expect(tx.notification.createMany).toHaveBeenCalledWith({
+      data: [{ userId: 'user-2', type: 'FORUM_TOPIC_UPDATE', data: { ...snapshot, count: 1 } }],
+    });
+  });
+
+  it('открыл тему — ответы и новые в ней прочитаны', async () => {
+    await service.settleForumTopic('user-1', TOPIC, NOW);
+
+    expect(prisma.notification.updateMany).toHaveBeenCalledWith({
+      where: {
+        userId: 'user-1',
+        type: { in: ['FORUM_REPLY', 'FORUM_TOPIC_UPDATE'] },
+        readAt: null,
+        data: { path: ['topicId'], equals: TOPIC },
+      },
+      data: { readAt: NOW },
+    });
+  });
+});

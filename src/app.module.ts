@@ -8,6 +8,7 @@ import { ClubsModule } from './features/clubs/clubs.module.js';
 import { CoachContentModule } from './features/coach-content/coach-content.module.js';
 import { CoachesModule } from './features/coaches/coaches.module.js';
 import { FilesModule } from './features/files/files.module.js';
+import { ForumModule } from './features/forum/forum.module.js';
 import { HealthModule } from './features/health/health.module.js';
 import { NotificationsModule } from './features/notifications/notifications.module.js';
 import { PlacesModule } from './features/places/places.module.js';
@@ -40,6 +41,7 @@ import { PrismaModule } from './infra/prisma/prisma.module.js';
     CoachContentModule,
     TrialRequestsModule,
     NotificationsModule,
+    ForumModule,
     FilesModule,
     PlacesModule,
     PlayersModule,

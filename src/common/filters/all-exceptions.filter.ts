@@ -87,6 +87,14 @@ const STATUS_BY_CODE: Readonly<Record<ErrorCode, number>> = {
   TRIAL_REQUEST_EXISTS: HttpStatus.CONFLICT,
   TRIAL_REQUEST_LIMIT: HttpStatus.CONFLICT,
   TRIAL_REQUEST_INVALID: HttpStatus.CONFLICT,
+
+  // Форум — ADR-064. Без профиля и под запретом — нет прав на действие;
+  // закрытая тема — конфликт состояния; предел за сутки или час — как у
+  // заявки на пробную: повтор через минуту ничего не изменит.
+  FORUM_PROFILE_REQUIRED: HttpStatus.FORBIDDEN,
+  FORUM_MUTED: HttpStatus.FORBIDDEN,
+  FORUM_TOPIC_LOCKED: HttpStatus.CONFLICT,
+  FORUM_LIMIT: HttpStatus.CONFLICT,
 };
 
 const CODE_BY_STATUS: Readonly<Record<number, ErrorCode>> = {

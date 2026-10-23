@@ -173,6 +173,21 @@ export class FilesController {
   }
 
   /**
+   * Фото в сообщение форума — ADR-064: как картинка клуба, WebP трёх ширин,
+   * метаданные сняты. Загружает любой вошедший; в сообщение путь попадает
+   * только через контракт (`FORUM_IMAGE_PATH_PATTERN`), а писать на форуме
+   * проверяет сам форум.
+   */
+  @Post('forum')
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: CLUB_IMAGE_MAX_BYTES } }))
+  async uploadForumImage(@UploadedFileParam() file?: IncomingFile): Promise<UploadedImage> {
+    const accepted = acceptImage(file);
+
+    return storeImage(this.storage, 'forum', await this.images.process(accepted.buffer));
+  }
+
+  /**
    * Отдача файла.
    *
    * Через API, а не прямой ссылкой в MinIO: наружу открыт один прокси, и

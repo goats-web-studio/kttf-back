@@ -54,9 +54,18 @@ model User {
   clubApplications ClubApplication[]
   products         Product[]
   coaches          Coach[]
-  trialRequests    TrialRequest[]    @relation("TrialRequester")
-  trialAnswers     TrialRequest[]    @relation("TrialAnswerer")
+  trialRequests    TrialRequest[]      @relation("TrialRequester")
+  trialAnswers     TrialRequest[]      @relation("TrialAnswerer")
   notifications    Notification[]
+  forumTopics      ForumTopic[]        @relation("ForumTopicAuthor")
+  forumLastPosts   ForumTopic[]        @relation("ForumTopicLastAuthor")
+  forumPosts       ForumPost[]
+  forumLikes       ForumLike[]
+  forumSubs        ForumSubscription[]
+  forumReports     ForumReport[]       @relation("ForumReporter")
+  forumResolved    ForumReport[]       @relation("ForumResolver")
+  forumMute        ForumMute?          @relation("ForumMuted")
+  forumMutesGiven  ForumMute[]         @relation("ForumMuter")
 }
 
 enum Locale {
@@ -1030,6 +1039,9 @@ enum NotificationType {
   TRIAL_REQUEST_NEW
   TRIAL_REQUEST_CANCELLED
   TRIAL_REQUEST_ANSWERED
+  FORUM_REPLY
+  FORUM_TOPIC_UPDATE
+  FORUM_POST_HIDDEN
 }
 
 // ============ Турниры ============
@@ -1443,6 +1455,155 @@ model SyncOperation {
 
   @@unique([tournamentId, clientOpId])
   @@index([tournamentId, seq])
+}
+
+// ============ Форум — ADR-064, docs/12 ============
+
+// Предмет темы (F2): одна тема на турнир, клуб, тренера или товар. Ссылка
+// без внешнего ключа: предметы в четырёх таблицах, а удалённый предмет не
+// должен уносить разговор о нём.
+enum ForumSubjectType {
+  TOURNAMENT
+  CLUB
+  COACH
+  PRODUCT
+}
+
+model ForumSection {
+  id          String            @id @default(uuid())
+  slug        String            @unique
+  title       String
+  description String?
+  position    Int               @default(0)
+  // Куда попадают темы с предметом этого типа — один раздел на тип
+  subjectType ForumSubjectType? @unique
+  archivedAt  DateTime?
+  createdAt   DateTime          @default(now())
+  topics      ForumTopic[]
+}
+
+model ForumTopic {
+  id               String              @id @default(uuid())
+  sectionId        String
+  authorId         String?
+  title            String
+  subjectType      ForumSubjectType?
+  subjectId        String?
+  // Сколько сообщений выдано: следующее получит номер postsCount + 1.
+  // Увеличивается в транзакции ответа — строка темы блокируется, и два
+  // ответа одновременно одного номера не получат.
+  postsCount       Int                 @default(0)
+  lastPostAt       DateTime            @default(now())
+  lastPostAuthorId String?
+  pinnedAt         DateTime?
+  lockedAt         DateTime?
+  hiddenAt         DateTime?
+  hiddenReason     String?
+  createdAt        DateTime            @default(now())
+  section          ForumSection        @relation(fields: [sectionId], references: [id])
+  author           User?               @relation("ForumTopicAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  lastPostAuthor   User?               @relation("ForumTopicLastAuthor", fields: [lastPostAuthorId], references: [id], onDelete: SetNull)
+  posts            ForumPost[]
+  subscriptions    ForumSubscription[]
+
+  @@unique([subjectType, subjectId])
+  @@index([sectionId, lastPostAt(sort: Desc)])
+  @@index([lastPostAt(sort: Desc)])
+  @@index([authorId, createdAt])
+}
+
+model ForumPost {
+  id           String        @id @default(uuid())
+  topicId      String
+  authorId     String?
+  number       Int
+  body         String // простой текст, без HTML (ADR-055 §8)
+  // Цитата — снимок фрагмента: исходное сообщение могут править и удалять
+  quotePostId  String?
+  quoteText    String?
+  // [{ url, width, height }] — фото форума, до FORUM_POST_IMAGES_MAX
+  images       Json          @default("[]")
+  likesCount   Int           @default(0)
+  createdAt    DateTime      @default(now())
+  editedAt     DateTime?
+  // Удалено автором: текст стирается, номер и место в теме остаются
+  deletedAt    DateTime?
+  hiddenAt     DateTime?
+  hiddenReason String?
+  topic        ForumTopic    @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  author       User?         @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  quotePost    ForumPost?    @relation("ForumQuote", fields: [quotePostId], references: [id], onDelete: SetNull)
+  quotedBy     ForumPost[]   @relation("ForumQuote")
+  likes        ForumLike[]
+  reports      ForumReport[]
+
+  @@unique([topicId, number])
+  @@index([authorId, createdAt(sort: Desc)])
+}
+
+model ForumLike {
+  postId    String
+  userId    String
+  createdAt DateTime  @default(now())
+  post      ForumPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([postId, userId])
+}
+
+model ForumSubscription {
+  topicId   String
+  userId    String
+  createdAt DateTime   @default(now())
+  topic     ForumTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([topicId, userId])
+  @@index([userId])
+}
+
+enum ForumReportReason {
+  SPAM
+  ABUSE
+  OFFTOPIC
+  OTHER
+}
+
+enum ForumReportStatus {
+  OPEN
+  ACCEPTED
+  REJECTED
+}
+
+model ForumReport {
+  id           String            @id @default(uuid())
+  postId       String
+  reporterId   String
+  reason       ForumReportReason
+  comment      String?
+  status       ForumReportStatus @default(OPEN)
+  createdAt    DateTime          @default(now())
+  resolvedAt   DateTime?
+  resolvedById String?
+  post         ForumPost         @relation(fields: [postId], references: [id], onDelete: Cascade)
+  reporter     User              @relation("ForumReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  resolvedBy   User?             @relation("ForumResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+
+  @@unique([postId, reporterId])
+  @@index([status, createdAt])
+  @@index([reporterId, createdAt])
+}
+
+// Запрет писать до даты. Читать можно. Один на пользователя: новый
+// запрет заменяет старый
+model ForumMute {
+  userId      String   @id
+  until       DateTime
+  reason      String
+  createdById String?
+  createdAt   DateTime @default(now())
+  user        User     @relation("ForumMuted", fields: [userId], references: [id], onDelete: Cascade)
+  createdBy   User?    @relation("ForumMuter", fields: [createdById], references: [id], onDelete: SetNull)
 }
 
 // ============ Журнал действий ============
