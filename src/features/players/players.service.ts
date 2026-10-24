@@ -40,7 +40,7 @@ import {
 } from '../catalog/catalog-views.js';
 import { assertCoachExists, publicCoachSlug } from './coach-ref.js';
 import { followProfileCoach, switchCoach } from './coach-tenure.js';
-import { buildRatingPoints, summarize, toPlayerMatch } from './history.js';
+import { buildRatingPoints, ratingEventRowFields, summarize, toPlayerMatch } from './history.js';
 import { ratingBounds } from './rating-band.js';
 
 export const playerFields = {
@@ -276,21 +276,14 @@ export class PlayersService {
               },
             }),
       },
-      select: {
-        tournamentId: true,
-        ratingBefore: true,
-        delta: true,
-        ratingAfter: true,
-        createdAt: true,
-        tournament: { select: { name: true, startsAt: true } },
-      },
+      select: ratingEventRowFields,
       orderBy: { createdAt: 'asc' },
     });
 
     return {
       playerId: id,
       current: player.rating.toString(),
-      points: buildRatingPoints(events),
+      points: buildRatingPoints(events, id),
     };
   }
 

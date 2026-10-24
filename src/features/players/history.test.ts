@@ -34,12 +34,14 @@ function event(
   over: Partial<RatingEventRow> = {},
 ): RatingEventRow {
   return {
+    type: 'MATCH',
     tournamentId: TOURNAMENT_ID,
     ratingBefore: new Prisma.Decimal(before),
     delta: new Prisma.Decimal(delta),
     ratingAfter: new Prisma.Decimal(after),
     createdAt: WRITTEN_AT,
     tournament: { name: 'Кубок клуба', startsAt: new Date('2026-09-02T10:00:00.000Z') },
+    duel: null,
     ...over,
   };
 }
@@ -90,10 +92,10 @@ describe('порядок событий турнира', () => {
 
 describe('кривая рейтинга', () => {
   it('турнир даёт одну точку, а не точку на встречу', () => {
-    const points = buildRatingPoints([
-      event('250.00', '5.00', '255.00'),
-      event('255.00', '10.00', '265.00'),
-    ]);
+    const points = buildRatingPoints(
+      [event('250.00', '5.00', '255.00'), event('255.00', '10.00', '265.00')],
+      PLAYER_ID,
+    );
 
     expect(points).toHaveLength(1);
     expect(points[0]).toMatchObject({
@@ -107,20 +109,23 @@ describe('кривая рейтинга', () => {
   it('точка стоит на дате турнира, а не на дате обсчёта', () => {
     // Обсчёт идёт после последней встречи, иногда на следующий день. На
     // графике турнир обязан стоять там, когда он игрался.
-    const points = buildRatingPoints([event('250.00', '5.00', '255.00')]);
+    const points = buildRatingPoints([event('250.00', '5.00', '255.00')], PLAYER_ID);
 
     expect(points[0]?.playedAt).toBe('2026-09-02T10:00:00.000Z');
   });
 
   it('ручная корректировка остаётся отдельной точкой', () => {
-    const points = buildRatingPoints([
-      event('250.00', '5.00', '255.00'),
-      event('255.00', '-5.00', '250.00', {
-        tournamentId: null,
-        tournament: null,
-        createdAt: new Date('2026-09-03T10:00:00.000Z'),
-      }),
-    ]);
+    const points = buildRatingPoints(
+      [
+        event('250.00', '5.00', '255.00'),
+        event('255.00', '-5.00', '250.00', {
+          tournamentId: null,
+          tournament: null,
+          createdAt: new Date('2026-09-03T10:00:00.000Z'),
+        }),
+      ],
+      PLAYER_ID,
+    );
 
     // Без неё кривая прыгнула бы без объяснения — ТЗ 12.
     expect(points).toHaveLength(2);
@@ -128,15 +133,105 @@ describe('кривая рейтинга', () => {
   });
 
   it('точки идут по возрастанию времени: график рисуется слева направо', () => {
-    const points = buildRatingPoints([
-      event('260.00', '5.00', '265.00', {
-        tournamentId: 'later',
-        tournament: { name: 'Второй', startsAt: new Date('2026-09-10T10:00:00.000Z') },
-      }),
-      event('250.00', '10.00', '260.00'),
-    ]);
+    const points = buildRatingPoints(
+      [
+        event('260.00', '5.00', '265.00', {
+          tournamentId: 'later',
+          tournament: { name: 'Второй', startsAt: new Date('2026-09-10T10:00:00.000Z') },
+        }),
+        event('250.00', '10.00', '260.00'),
+      ],
+      PLAYER_ID,
+    );
 
     expect(points.map((point) => point.tournamentName)).toEqual(['Кубок клуба', 'Второй']);
+  });
+
+  it('у точки турнира и корректировки нет дуэли', () => {
+    const points = buildRatingPoints(
+      [
+        event('250.00', '5.00', '255.00'),
+        event('255.00', '-5.00', '250.00', {
+          type: 'MANUAL_ADJUST',
+          tournamentId: null,
+          tournament: null,
+          createdAt: new Date('2026-09-03T10:00:00.000Z'),
+        }),
+      ],
+      PLAYER_ID,
+    );
+
+    expect(points.map((point) => point.duel)).toEqual([null, null]);
+  });
+});
+
+describe('дуэли на кривой — ADR-065', () => {
+  const DUEL_ID = '00000000-0000-4000-8000-000000000009';
+  const duel = {
+    id: DUEL_ID,
+    kind: 'DUEL' as const,
+    startsAt: new Date('2026-09-05T15:00:00.000Z'),
+    author: { id: PLAYER_ID, lastName: 'Петров', firstName: 'Олег' },
+    opponent: { id: OPPONENT_ID, lastName: 'Иванов', firstName: 'Пётр' },
+  };
+  const duelEvent = (
+    before: string,
+    delta: string,
+    after: string,
+    over: Partial<RatingEventRow> = {},
+  ) =>
+    event(before, delta, after, {
+      tournamentId: null,
+      tournament: null,
+      duel,
+      createdAt: new Date('2026-09-06T09:00:00.000Z'),
+      ...over,
+    });
+
+  it('каждая дуэль — своя точка с именем соперника на время игры', () => {
+    const points = buildRatingPoints(
+      [
+        duelEvent('255.00', '3.10', '258.10'),
+        duelEvent('258.10', '-2.00', '256.10', {
+          duel: { ...duel, id: 'other', startsAt: new Date('2026-09-20T15:00:00.000Z') },
+        }),
+      ],
+      PLAYER_ID,
+    );
+
+    expect(points).toHaveLength(2);
+    expect(points[0]).toEqual({
+      tournamentId: null,
+      tournamentName: null,
+      duel: { id: DUEL_ID, kind: 'DUEL', opponentName: 'Иванов Пётр' },
+      playedAt: '2026-09-05T15:00:00.000Z',
+      ratingBefore: '255',
+      ratingAfter: '258.1',
+      delta: '3.1',
+      matches: 1,
+    });
+  });
+
+  it('соперник — с точки зрения игрока: у вызванного это автор', () => {
+    const points = buildRatingPoints([duelEvent('300.00', '-3.10', '296.90')], OPPONENT_ID);
+
+    expect(points[0]?.duel?.opponentName).toBe('Петров Олег');
+  });
+
+  it('отмена начисления администратором — отдельная корректировка, не дуэль', () => {
+    const points = buildRatingPoints(
+      [
+        duelEvent('255.00', '3.10', '258.10'),
+        duelEvent('258.10', '-3.10', '255.00', {
+          type: 'MANUAL_ADJUST',
+          createdAt: new Date('2026-09-08T09:00:00.000Z'),
+        }),
+      ],
+      PLAYER_ID,
+    );
+
+    expect(points).toHaveLength(2);
+    expect(points[1]).toMatchObject({ duel: null, delta: '-3.1', matches: 0 });
   });
 });
 

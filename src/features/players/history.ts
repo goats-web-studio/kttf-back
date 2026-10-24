@@ -10,15 +10,51 @@ import { Prisma } from '../../generated/prisma/client.js';
  * уже посчитаны движком при завершении турнира (ADR-022).
  */
 
+/** Участник дуэли — для имени соперника в точке кривой. */
+interface DuelSide {
+  readonly id: string;
+  readonly lastName: string;
+  readonly firstName: string;
+}
+
 /** Событие журнала в том виде, в каком его читает история. */
 export interface RatingEventRow {
+  readonly type: 'MATCH' | 'INITIAL' | 'MANUAL_ADJUST' | 'RECALC';
   readonly tournamentId: string | null;
   readonly ratingBefore: Prisma.Decimal;
   readonly delta: Prisma.Decimal;
   readonly ratingAfter: Prisma.Decimal;
   readonly createdAt: Date;
   readonly tournament: { readonly name: string; readonly startsAt: Date } | null;
+  /** Дуэль вне турнира — ADR-065. */
+  readonly duel: {
+    readonly id: string;
+    readonly kind: 'DUEL' | 'SPARRING';
+    readonly startsAt: Date | null;
+    readonly author: DuelSide;
+    readonly opponent: DuelSide | null;
+  } | null;
 }
+
+/** Выборка события для кривой: турнир и дуэль с именами участников. */
+export const ratingEventRowFields = {
+  type: true,
+  tournamentId: true,
+  ratingBefore: true,
+  delta: true,
+  ratingAfter: true,
+  createdAt: true,
+  tournament: { select: { name: true, startsAt: true } },
+  duel: {
+    select: {
+      id: true,
+      kind: true,
+      startsAt: true,
+      author: { select: { id: true, lastName: true, firstName: true } },
+      opponent: { select: { id: true, lastName: true, firstName: true } },
+    },
+  },
+} as const satisfies Prisma.RatingEventSelect;
 
 /**
  * Границы цепочки событий одного турнира.
@@ -84,12 +120,28 @@ function sumOf(events: readonly ChainLink[]): Prisma.Decimal {
  * Точка на турнир, а не на встречу: в кривой года сотня точек одного турнира
  * ничего не объясняет. Ручная корректировка турнира не имеет и остаётся
  * отдельной точкой — без неё кривая прыгала бы без причины (ТЗ 12).
+ *
+ * Дуэль (ADR-065) — своя точка на каждую встречу, с именем соперника: она
+ * одна, сворачивать нечего. Обратное событие администратора, отменившее
+ * начисление дуэли, — `MANUAL_ADJUST` со ссылкой на ту же дуэль — остаётся
+ * корректировкой: на графике видно и начисление, и его отмену, каждое в
+ * свой момент. Сложенные в одну точку, они дали бы ноль там, где рейтинг
+ * на самом деле какое-то время был другим.
  */
-export function buildRatingPoints(events: readonly RatingEventRow[]): RatingPointView[] {
+export function buildRatingPoints(
+  events: readonly RatingEventRow[],
+  playerId: string,
+): RatingPointView[] {
   const byTournament = new Map<string, RatingEventRow[]>();
   const standalone: RatingEventRow[] = [];
+  const duels: RatingPointView[] = [];
 
   for (const event of events) {
+    if (event.duel !== null && event.type === 'MATCH') {
+      duels.push(duelPoint(event, event.duel, playerId));
+      continue;
+    }
+
     if (event.tournamentId === null) {
       standalone.push(event);
       continue;
@@ -105,6 +157,7 @@ export function buildRatingPoints(events: readonly RatingEventRow[]): RatingPoin
     return {
       tournamentId,
       tournamentName: first?.tournament?.name ?? null,
+      duel: null,
       // Старт турнира, а не запись в журнал: на графике турнир стоит там,
       // когда он игрался, а не когда его обсчитали.
       playedAt: (first?.tournament?.startsAt ?? first?.createdAt ?? new Date()).toISOString(),
@@ -119,6 +172,7 @@ export function buildRatingPoints(events: readonly RatingEventRow[]): RatingPoin
   const manual = standalone.map((event): RatingPointView => ({
     tournamentId: null,
     tournamentName: null,
+    duel: null,
     playedAt: event.createdAt.toISOString(),
     ratingBefore: event.ratingBefore.toString(),
     ratingAfter: event.ratingAfter.toString(),
@@ -126,7 +180,34 @@ export function buildRatingPoints(events: readonly RatingEventRow[]): RatingPoin
     matches: 0,
   }));
 
-  return [...points, ...manual].sort((left, right) => left.playedAt.localeCompare(right.playedAt));
+  return [...points, ...duels, ...manual].sort((left, right) =>
+    left.playedAt.localeCompare(right.playedAt),
+  );
+}
+
+/** Точка дуэли: «Дуэль с Ивановым» — соперник глазами этого игрока. */
+function duelPoint(
+  event: RatingEventRow,
+  duel: NonNullable<RatingEventRow['duel']>,
+  playerId: string,
+): RatingPointView {
+  const other = duel.author.id === playerId ? duel.opponent : duel.author;
+
+  return {
+    tournamentId: null,
+    tournamentName: null,
+    duel: {
+      id: duel.id,
+      kind: duel.kind,
+      opponentName: other === null ? '' : `${other.lastName} ${other.firstName}`,
+    },
+    // Как у турнира: когда играли, а не когда подтвердили счёт.
+    playedAt: (duel.startsAt ?? event.createdAt).toISOString(),
+    ratingBefore: event.ratingBefore.toString(),
+    ratingAfter: event.ratingAfter.toString(),
+    delta: event.delta.toString(),
+    matches: 1,
+  };
 }
 
 /** Встреча в том виде, в каком её читает история. */
