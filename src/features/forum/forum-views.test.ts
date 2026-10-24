@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { excerptOf, toAuthor, toPostView, type PostRecord } from './forum-views.js';
+import {
+  excerptOf,
+  toAuthor,
+  toPostView,
+  toTopicItem,
+  type PostRecord,
+  type TopicRecord,
+} from './forum-views.js';
 
 const USER = '11111111-1111-4111-8111-111111111111';
 const OTHER = '22222222-2222-4222-8222-222222222222';
@@ -12,9 +19,12 @@ const IMAGE = {
   height: 1200,
 };
 
+const NOW = new Date('2026-10-24T12:00:00.000Z');
+
 const author = {
   id: USER,
   isAdmin: false,
+  lastSeenAt: new Date('2026-10-24T11:58:00.000Z'),
   player: {
     id: '66666666-6666-4666-8666-666666666666',
     lastName: 'Иванов',
@@ -22,6 +32,7 @@ const author = {
     photoUrl: null,
     rating: { toString: () => '512.50' },
     club: { id: '77777777-7777-4777-8777-777777777777', name: 'Спин' },
+    coachPage: null,
   },
 } as unknown as NonNullable<PostRecord['author']>;
 
@@ -61,10 +72,65 @@ describe('toAuthor', () => {
   it('без аккаунта — null', () => {
     expect(toAuthor(null)).toBeNull();
   });
+
+  it('«в сети» — заходил последние пять минут', () => {
+    expect(toAuthor(author, NOW)?.online).toBe(true);
+    expect(toAuthor(author, new Date('2026-10-24T12:10:00.000Z'))?.online).toBe(false);
+  });
+
+  it('метка «Тренер» — только у опубликованной и не скрытой страницы', () => {
+    const coach = (status: string, hiddenAt: Date | null) =>
+      ({
+        ...author,
+        player: { ...author.player, coachPage: { slug: 'ivanov-ivan', status, hiddenAt } },
+      }) as unknown as NonNullable<PostRecord['author']>;
+
+    expect(toAuthor(coach('APPROVED', null))?.coachSlug).toBe('ivanov-ivan');
+    expect(toAuthor(coach('PENDING', null))?.coachSlug).toBeNull();
+    expect(toAuthor(coach('APPROVED', NOW))?.coachSlug).toBeNull();
+  });
+});
+
+describe('toTopicItem — «новые»', () => {
+  const topic = {
+    id: TOPIC,
+    title: 'Тема',
+    authorId: USER,
+    subjectType: null,
+    subjectId: null,
+    createdAt: NOW,
+    postsCount: 12,
+    viewsCount: 40,
+    lastPostAt: NOW,
+    pinnedAt: null,
+    lockedAt: null,
+    hiddenAt: null,
+    hiddenReason: null,
+    section: { id: TOPIC, slug: 'tennis', title: 'Настольный теннис' },
+    author,
+    lastPostAuthor: null,
+  } as unknown as TopicRecord;
+
+  it('не открывал — не «новая»; открывал — сколько новых и с какого номера', () => {
+    expect(toTopicItem(topic, new Map(), new Map()).unread).toBeNull();
+    expect(toTopicItem(topic, new Map(), new Map([[TOPIC, 9]]))).toMatchObject({
+      unread: 3,
+      firstUnread: 10,
+    });
+    expect(toTopicItem(topic, new Map(), new Map([[TOPIC, 12]]))).toMatchObject({
+      unread: 0,
+      firstUnread: null,
+    });
+  });
 });
 
 describe('toPostView', () => {
   const stranger = { userId: OTHER, isAdmin: false };
+
+  it('метка стороны — как пришла', () => {
+    expect(toPostView(makePost(), stranger, false, 'ORGANIZER').role).toBe('ORGANIZER');
+    expect(toPostView(makePost(), stranger, false).role).toBeNull();
+  });
 
   it('обычное сообщение видно всем целиком', () => {
     const view = toPostView(makePost(), stranger, true);

@@ -1,4 +1,4 @@
-import type { CoachMediaView, CoachPostView } from '@kttf/shared/types';
+import type { ForumDiscussionLink, CoachMediaView, CoachPostView } from '@kttf/shared/types';
 
 import type { Prisma } from '../../generated/prisma/client.js';
 import { isoDate } from '../club-content/content-views.js';
@@ -18,9 +18,12 @@ export const postFields = {
   hiddenReason: true,
 } as const satisfies Prisma.CoachPostSelect;
 
-type PostRecord = Prisma.CoachPostGetPayload<{ select: typeof postFields }>;
+export type PostRecord = Prisma.CoachPostGetPayload<{ select: typeof postFields }>;
 
-export function toPostView(post: PostRecord): CoachPostView {
+export function toPostView(
+  post: PostRecord,
+  discussion: ForumDiscussionLink | null = null,
+): CoachPostView {
   return {
     id: post.id,
     coachId: post.coachId,
@@ -34,6 +37,7 @@ export function toPostView(post: PostRecord): CoachPostView {
     editedAt: post.editedAt?.toISOString() ?? null,
     hidden: post.hiddenAt !== null,
     hiddenReason: post.hiddenReason,
+    discussion,
   };
 }
 

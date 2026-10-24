@@ -4,7 +4,9 @@ import { AuthModule } from '../auth/auth.module.js';
 import { NotificationsModule } from '../notifications/notifications.module.js';
 import { ForumAccessService } from './forum-access.service.js';
 import { ForumModerationService } from './forum-moderation.service.js';
+import { ForumNewsService } from './forum-news.service.js';
 import { ForumPostsService } from './forum-posts.service.js';
+import { ForumSidebarService } from './forum-sidebar.service.js';
 import { ForumSubjectsService } from './forum-subjects.service.js';
 import { ForumTopicsService } from './forum-topics.service.js';
 import { ForumAdminController, ForumController } from './forum.controller.js';
@@ -19,6 +21,10 @@ import { ForumAdminController, ForumController } from './forum.controller.js';
     ForumPostsService,
     ForumTopicsService,
     ForumModerationService,
+    ForumNewsService,
+    ForumSidebarService,
   ],
+  // Новости клубов и тренеров публикуются на форуме сами (ADR-067 §2).
+  exports: [ForumNewsService],
 })
 export class ForumModule {}

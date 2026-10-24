@@ -7,7 +7,8 @@ import {
   type ForumPostItem,
   type ForumPostLocation,
   type ForumPostView,
-  type ListForumPlayerPostsQuery,
+  type ForumSubjectType,
+  type ListForumFeedQuery,
   type ListForumPostsQuery,
   type Page,
   type UpdateForumPostInput,
@@ -20,8 +21,14 @@ import { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { NotificationsService } from '../notifications/notifications.service.js';
 import { ForumAccessService, type Writer } from './forum-access.service.js';
 import {
+  ForumSubjectsService,
+  type SubjectRef,
+  type SubjectSide,
+} from './forum-subjects.service.js';
+import {
   postFields,
   postItemFields,
+  subjectKey,
   toPostItem,
   toPostView,
   type PostRecord,
@@ -33,7 +40,8 @@ export interface TopicState {
   readonly id: string;
   readonly title: string;
   readonly authorId: string | null;
-  readonly subjectType: string | null;
+  readonly subjectType: ForumSubjectType | null;
+  readonly subjectId: string | null;
   readonly lockedAt: Date | null;
   readonly hiddenAt: Date | null;
 }
@@ -43,6 +51,7 @@ const topicStateFields = {
   title: true,
   authorId: true,
   subjectType: true,
+  subjectId: true,
   lockedAt: true,
   hiddenAt: true,
 } satisfies Prisma.ForumTopicSelect;
@@ -69,6 +78,7 @@ export class ForumPostsService {
     private readonly prisma: PrismaService,
     private readonly access: ForumAccessService,
     private readonly notifications: NotificationsService,
+    private readonly subjects: ForumSubjectsService,
   ) {}
 
   // ---------------------------------------------------------------- чтение
@@ -78,35 +88,78 @@ export class ForumPostsService {
     viewer: Viewer,
     query: ListForumPostsQuery,
   ): Promise<Page<ForumPostView>> {
-    await this.visibleTopic(topicId, viewer);
+    const topic = await this.visibleTopic(topicId, viewer);
+    // Первое сообщение — «статья» над ответами (ADR-067): `replies` его не берёт.
+    const where = {
+      topicId,
+      ...(query.replies === true ? { number: { gt: 1 } } : {}),
+    } satisfies Prisma.ForumPostWhereInput;
 
-    const [rows, total] = await Promise.all([
+    const [rows, total, side] = await Promise.all([
       this.prisma.forumPost.findMany({
-        where: { topicId },
+        where,
         select: postFields,
-        orderBy: { number: 'asc' },
+        orderBy: POST_ORDER[query.sort],
         skip: skipOf(query),
         take: query.limit,
       }),
-      this.prisma.forumPost.count({ where: { topicId } }),
+      this.prisma.forumPost.count({ where }),
+      this.sideOf(topic),
     ]);
 
-    return pageOf(await this.views(rows, viewer), total, query);
+    return pageOf(await this.views(rows, viewer, side), total, query);
+  }
+
+  /** Первое сообщение темы — «статья» над ответами. */
+  async first(
+    topic: SubjectRef & { readonly id: string },
+    viewer: Viewer,
+  ): Promise<ForumPostView | null> {
+    const row = await this.prisma.forumPost.findUnique({
+      where: { topicId_number: { topicId: topic.id, number: 1 } },
+      select: postFields,
+    });
+
+    if (row === null) return null;
+
+    const [view] = await this.views([row], viewer, await this.sideOf(topic));
+
+    return view ?? null;
+  }
+
+  /** Кто говорит за предмет темы — для меток и уведомлений (ADR-067 §3). */
+  async sideOf(topic: SubjectRef): Promise<SubjectSide | null> {
+    if (topic.subjectType === null || topic.subjectId === null) return null;
+
+    const sides = await this.subjects.sides([topic]);
+
+    return sides.get(subjectKey(topic.subjectType, topic.subjectId)) ?? null;
   }
 
   /** Последние сообщения темы по порядку — блок на странице предмета. */
-  async last(topicId: string, viewer: Viewer, take: number): Promise<ForumPostView[]> {
-    const rows = await this.prisma.forumPost.findMany({
-      where: { topicId },
-      select: postFields,
-      orderBy: { number: 'desc' },
-      take,
-    });
+  async last(
+    topic: SubjectRef & { readonly id: string },
+    viewer: Viewer,
+    take: number,
+  ): Promise<ForumPostView[]> {
+    const [rows, side] = await Promise.all([
+      this.prisma.forumPost.findMany({
+        where: { topicId: topic.id },
+        select: postFields,
+        orderBy: { number: 'desc' },
+        take,
+      }),
+      this.sideOf(topic),
+    ]);
 
-    return this.views(rows.reverse(), viewer);
+    return this.views(rows.reverse(), viewer, side);
   }
 
-  async views(rows: readonly PostRecord[], viewer: Viewer): Promise<ForumPostView[]> {
+  async views(
+    rows: readonly PostRecord[],
+    viewer: Viewer,
+    side: SubjectSide | null = null,
+  ): Promise<ForumPostView[]> {
     const liked =
       viewer.userId === undefined || rows.length === 0
         ? new Set<string>()
@@ -119,29 +172,64 @@ export class ForumPostsService {
             ).map((like) => like.postId),
           );
 
-    return rows.map((row) => toPostView(row, viewer, liked.has(row.id)));
+    return rows.map((row) =>
+      toPostView(row, viewer, liked.has(row.id), roleOf(side, row.authorId)),
+    );
   }
 
-  /** Сообщения игрока для профиля: без удалённых, скрытых и скрытых тем. */
-  async byPlayer(query: ListForumPlayerPostsQuery): Promise<Page<ForumPostItem>> {
+  /**
+   * Лента сообщений — как «Комментарии» у RTTF (ADR-067 §5): все сообщения
+   * форума и обсуждений на страницах, фильтры по разделу, типу предмета,
+   * автору и тексту. Удалённые, скрытые и сообщения скрытых тем не входят.
+   */
+  async feed(query: ListForumFeedQuery): Promise<Page<ForumPostItem>> {
     const where = {
-      author: { player: { id: query.authorPlayerId } },
       deletedAt: null,
       hiddenAt: null,
-      topic: { hiddenAt: null },
+      topic: {
+        hiddenAt: null,
+        section: {
+          archivedAt: null,
+          ...(query.section === undefined ? {} : { slug: query.section }),
+        },
+        ...(query.subjectType === undefined ? {} : { subjectType: query.subjectType }),
+      },
+      ...(query.authorPlayerId === undefined
+        ? {}
+        : { author: { player: { id: query.authorPlayerId } } }),
+      ...(query.q === undefined
+        ? {}
+        : { body: { contains: query.q, mode: 'insensitive' as const } }),
     } satisfies Prisma.ForumPostWhereInput;
     const [rows, total] = await Promise.all([
       this.prisma.forumPost.findMany({
         where,
         select: postItemFields,
-        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        orderBy: FEED_ORDER[query.sort],
         skip: skipOf(query),
         take: query.limit,
       }),
       this.prisma.forumPost.count({ where }),
     ]);
+    const refs = rows.map((row) => row.topic);
+    const [subjects, sides] = await Promise.all([
+      this.subjects.describe(refs),
+      this.subjects.sides(refs),
+    ]);
 
-    return pageOf(rows.map(toPostItem), total, query);
+    return pageOf(
+      rows.map((row) => {
+        const { subjectType, subjectId } = row.topic;
+        const side =
+          subjectType === null || subjectId === null
+            ? null
+            : (sides.get(subjectKey(subjectType, subjectId)) ?? null);
+
+        return toPostItem(row, subjects, roleOf(side, row.authorId));
+      }),
+      total,
+      query,
+    );
   }
 
   async locate(postId: string, viewer: Viewer): Promise<ForumPostLocation> {
@@ -224,11 +312,13 @@ export class ForumPostsService {
    */
   async insert(
     tx: Prisma.TransactionClient,
-    topic: Pick<TopicState, 'id' | 'title'>,
+    topic: Pick<TopicState, 'id' | 'title' | 'subjectType' | 'subjectId'>,
     writer: Writer,
     post: NewPost,
     now: Date,
   ): Promise<string> {
+    // Обсуждаемая сторона узнаёт о новых сообщениях без подписки (ADR-067 §3).
+    const side = await this.sideOf(topic);
     const { postsCount: number } = await tx.forumTopic.update({
       where: { id: topic.id },
       data: { postsCount: { increment: 1 }, lastPostAt: now, lastPostAuthorId: writer.userId },
@@ -267,20 +357,17 @@ export class ForumPostsService {
       await this.notifications.create(tx, [replyTo], 'FORUM_REPLY', snapshot);
     }
 
+    const skip = replyTo === null ? [writer.userId] : [writer.userId, replyTo];
     const subscribers = await tx.forumSubscription.findMany({
-      where: {
-        topicId: topic.id,
-        userId: { notIn: replyTo === null ? [writer.userId] : [writer.userId, replyTo] },
-      },
+      where: { topicId: topic.id, userId: { notIn: skip } },
       select: { userId: true },
     });
+    const recipients = [
+      ...subscribers.map((row) => row.userId),
+      ...(side?.notify ?? []).filter((userId) => !skip.includes(userId)),
+    ];
 
-    await this.notifications.bumpForumTopic(
-      tx,
-      subscribers.map((row) => row.userId),
-      snapshot,
-      now,
-    );
+    await this.notifications.bumpForumTopic(tx, recipients, snapshot, now);
 
     return created.id;
   }
@@ -288,12 +375,12 @@ export class ForumPostsService {
   async one(postId: string, viewer: Viewer): Promise<ForumPostView> {
     const row = await this.prisma.forumPost.findUnique({
       where: { id: postId },
-      select: postFields,
+      select: { ...postFields, topic: { select: { subjectType: true, subjectId: true } } },
     });
 
     if (row === null) throw postNotFound(postId);
 
-    const [view] = await this.views([row], viewer);
+    const [view] = await this.views([row], viewer, await this.sideOf(row.topic));
 
     if (view === undefined) throw postNotFound(postId);
 
@@ -491,4 +578,21 @@ export function topicNotFound(topicId: string): AppError {
 
 function postNotFound(postId: string): AppError {
   return new AppError(ERROR_CODES.NOT_FOUND, 'Forum post not found', { id: postId });
+}
+
+const POST_ORDER = {
+  OLD: [{ number: 'asc' }],
+  NEW: [{ number: 'desc' }],
+  TOP: [{ likesCount: 'desc' }, { number: 'asc' }],
+} as const satisfies Record<string, Prisma.ForumPostOrderByWithRelationInput[]>;
+
+const FEED_ORDER = {
+  NEW: [{ createdAt: 'desc' }, { id: 'desc' }],
+  OLD: [{ createdAt: 'asc' }, { id: 'asc' }],
+  TOP: [{ likesCount: 'desc' }, { createdAt: 'desc' }],
+} as const satisfies Record<string, Prisma.ForumPostOrderByWithRelationInput[]>;
+
+/** Метка автора: говорит ли он за обсуждаемую сторону. */
+function roleOf(side: SubjectSide | null, authorId: string | null) {
+  return side !== null && authorId !== null && side.speakers.has(authorId) ? side.role : null;
 }

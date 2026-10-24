@@ -12,8 +12,9 @@ import { Injectable } from '@nestjs/common';
 import { pageOf, skipOf } from '../../common/pagination.js';
 import type { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
+import { ForumNewsService } from '../forum/forum-news.service.js';
 import { clubDate } from '../clubs/club-stats.service.js';
-import { dateOf, postFields, toPostView } from './content-views.js';
+import { dateOf, postFields, toPostView, type PostRecord } from './content-views.js';
 
 /**
  * Новости и акции клуба — ADR-055, `docs/09` 3.2.
@@ -24,7 +25,29 @@ import { dateOf, postFields, toPostView } from './content-views.js';
  */
 @Injectable()
 export class ClubPostsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly news: ForumNewsService,
+  ) {}
+
+  /**
+   * Запись на форуме — тема-новость (ADR-067 §2): после каждой правки тема
+   * догоняет запись, а в ответ уходит ссылка «Обсудить (N)».
+   */
+  private async synced(post: PostRecord): Promise<ClubPostView> {
+    await this.news.sync('CLUB', post.id);
+
+    return toPostView(post, (await this.news.discussions('CLUB', [post.id])).get(post.id) ?? null);
+  }
+
+  private async withDiscussions(rows: readonly PostRecord[]): Promise<ClubPostView[]> {
+    const links = await this.news.discussions(
+      'CLUB',
+      rows.map((row) => row.id),
+    );
+
+    return rows.map((row) => toPostView(row, links.get(row.id) ?? null));
+  }
 
   /**
    * Публичная лента клуба: закреплённая сверху, дальше свежие. Акция после
@@ -54,7 +77,7 @@ export class ClubPostsService {
       this.prisma.clubPost.count({ where }),
     ]);
 
-    return pageOf(rows.map(toPostView), total, query);
+    return pageOf(await this.withDiscussions(rows), total, query);
   }
 
   /** Все записи клуба, со скрытыми и прошедшими, — кабинет. */
@@ -71,7 +94,7 @@ export class ClubPostsService {
       this.prisma.clubPost.count({ where }),
     ]);
 
-    return pageOf(rows.map(toPostView), total, query);
+    return pageOf(await this.withDiscussions(rows), total, query);
   }
 
   async create(
@@ -115,7 +138,7 @@ export class ClubPostsService {
       select: postFields,
     });
 
-    return toPostView(post);
+    return this.synced(post);
   }
 
   /**
@@ -170,7 +193,7 @@ export class ClubPostsService {
 
     const update = this.prisma.clubPost.update({ where: { id: postId }, data, select: postFields });
 
-    if (input.pinned !== true) return toPostView(await update);
+    if (input.pinned !== true) return this.synced(await update);
 
     const [, post] = await this.prisma.$transaction([
       this.prisma.clubPost.updateMany({
@@ -180,7 +203,7 @@ export class ClubPostsService {
       update,
     ]);
 
-    return toPostView(post);
+    return this.synced(post);
   }
 
   async remove(clubId: string, postId: string): Promise<void> {
@@ -189,6 +212,9 @@ export class ClubPostsService {
     if (count === 0) {
       throw new AppError(ERROR_CODES.NOT_FOUND, 'Post not found', { id: postId });
     }
+
+    // Обсуждение уходит вместе с записью.
+    await this.news.sync('CLUB', postId);
   }
 
   private async planOf(clubId: string) {

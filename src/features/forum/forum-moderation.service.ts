@@ -5,6 +5,8 @@ import {
   type ForumReportView,
   type ForumSectionInput,
   type ForumSectionView,
+  type ForumSubjectType,
+  type ForumWarningInput,
   type HideForumPostInput,
   type ListForumReportsQuery,
   type ModerateForumTopicInput,
@@ -366,6 +368,8 @@ export class ForumModerationService {
   }
 
   async createSection(input: ForumSectionInput): Promise<ForumSectionView> {
+    await this.assertTypesFree(input.subjectTypes ?? [], null);
+
     const created = await this.uniqueSection(() =>
       this.prisma.forumSection.create({
         data: {
@@ -373,7 +377,8 @@ export class ForumModerationService {
           title: input.title,
           description: input.description ?? null,
           position: input.position ?? 0,
-          subjectType: input.subjectType ?? null,
+          subjectTypes: [...new Set(input.subjectTypes ?? [])],
+          manualTopics: input.manualTopics ?? true,
         },
         select: { id: true },
       }),
@@ -387,13 +392,16 @@ export class ForumModerationService {
     input: UpdateForumSectionInput,
     now = new Date(),
   ): Promise<ForumSectionView> {
-    const { archived, ...fields } = input;
+    const { archived, subjectTypes, ...fields } = input;
+
+    if (subjectTypes !== undefined) await this.assertTypesFree(subjectTypes, sectionId);
 
     await this.uniqueSection(async () => {
       const updated = await this.prisma.forumSection.updateMany({
         where: { id: sectionId },
         data: {
           ...defined(fields),
+          ...(subjectTypes === undefined ? {} : { subjectTypes: [...new Set(subjectTypes)] }),
           ...(archived === undefined ? {} : { archivedAt: archived ? now : null }),
         },
       });
@@ -404,6 +412,75 @@ export class ForumModerationService {
     });
 
     return this.section(sectionId);
+  }
+
+  /** Тип предмета — в одном разделе: иначе непонятно, куда заводить тему (ADR-067). */
+  private async assertTypesFree(
+    types: readonly ForumSubjectType[],
+    exceptSectionId: string | null,
+  ): Promise<void> {
+    if (types.length === 0) return;
+
+    const taken = await this.prisma.forumSection.findFirst({
+      where: {
+        subjectTypes: { hasSome: [...types] },
+        ...(exceptSectionId === null ? {} : { id: { not: exceptSectionId } }),
+      },
+      select: { slug: true },
+    });
+
+    if (taken !== null) {
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Subject type is used by another section', {
+        field: 'subjectTypes',
+        section: taken.slug,
+      });
+    }
+  }
+
+  // ---------------------------------------------------------------- предупреждения
+
+  /**
+   * Предупреждение без скрытия (ADR-067 §8): пункт правил и, если есть,
+   * сообщение — уведомлением нарушителю и строкой в журнале.
+   */
+  async warn(adminId: string, input: ForumWarningInput): Promise<void> {
+    if (input.userId === adminId) {
+      throw new AppError(ERROR_CODES.FORBIDDEN, 'Cannot warn yourself');
+    }
+
+    const [user, post] = await Promise.all([
+      this.prisma.user.findUnique({ where: { id: input.userId }, select: { id: true } }),
+      input.postId === undefined
+        ? null
+        : this.prisma.forumPost.findUnique({
+            where: { id: input.postId },
+            select: { id: true, number: true, topic: { select: { id: true, title: true } } },
+          }),
+    ]);
+
+    if (user === null) {
+      throw new AppError(ERROR_CODES.NOT_FOUND, 'User not found', { id: input.userId });
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.notifications.create(tx, [input.userId], 'FORUM_WARNING', {
+        rule: input.rule,
+        comment: input.comment ?? null,
+        topicId: post?.topic.id ?? null,
+        topicTitle: post?.topic.title ?? null,
+        postId: post?.id ?? null,
+        number: post?.number ?? null,
+      });
+      await tx.auditLog.create({
+        data: {
+          actorId: adminId,
+          action: 'forum.user.warn',
+          entityType: 'User',
+          entityId: input.userId,
+          after: { rule: input.rule, comment: input.comment ?? null, postId: post?.id ?? null },
+        },
+      });
+    });
   }
 
   private async section(sectionId: string): Promise<ForumSectionView> {
@@ -423,10 +500,8 @@ export class ForumModerationService {
       return await write();
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-        const target = JSON.stringify(error.meta ?? {});
-
         throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Section already exists', {
-          field: target.includes('subjectType') ? 'subjectType' : 'slug',
+          field: 'slug',
         });
       }
 

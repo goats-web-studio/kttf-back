@@ -1,8 +1,10 @@
 import {
   forumImageSchema,
+  ONLINE_WINDOW_MS,
   type ForumAuthor,
   type ForumImage,
   type ForumPostItem,
+  type ForumPostRole,
   type ForumPostView,
   type ForumSubject,
   type ForumTopicItem,
@@ -12,13 +14,14 @@ import { z } from 'zod';
 import type { Prisma } from '../../generated/prisma/client.js';
 
 /**
- * Выборки и отображение форума — ADR-064. Автор берётся из профиля игрока
- * на момент чтения: сменил клуб — у старых сообщений тоже новый.
+ * Выборки и отображение форума — ADR-064, ADR-067. Автор берётся из профиля
+ * игрока на момент чтения: сменил клуб — у старых сообщений тоже новый.
  */
 
 export const authorFields = {
   id: true,
   isAdmin: true,
+  lastSeenAt: true,
   player: {
     select: {
       id: true,
@@ -27,6 +30,7 @@ export const authorFields = {
       photoUrl: true,
       rating: true,
       club: { select: { id: true, name: true } },
+      coachPage: { select: { slug: true, status: true, hiddenAt: true } },
     },
   },
 } satisfies Prisma.UserSelect;
@@ -49,10 +53,11 @@ export function authorName(
   return user.player === null ? NO_PROFILE : `${user.player.lastName} ${user.player.firstName}`;
 }
 
-export function toAuthor(user: AuthorRecord | null): ForumAuthor | null {
+export function toAuthor(user: AuthorRecord | null, now = new Date()): ForumAuthor | null {
   if (user === null) return null;
 
   const player = user.player;
+  const coach = player?.coachPage ?? null;
 
   return {
     userId: user.id,
@@ -62,6 +67,11 @@ export function toAuthor(user: AuthorRecord | null): ForumAuthor | null {
     rating: player === null ? null : Number(player.rating),
     club: player?.club ?? null,
     moderator: user.isAdmin,
+    // Метка «Тренер» — только у опубликованной и не скрытой страницы (ADR-059).
+    coachSlug:
+      coach !== null && coach.status === 'APPROVED' && coach.hiddenAt === null ? coach.slug : null,
+    online:
+      user.lastSeenAt !== null && now.getTime() - user.lastSeenAt.getTime() <= ONLINE_WINDOW_MS,
   };
 }
 
@@ -75,6 +85,7 @@ export const topicFields = {
   subjectId: true,
   createdAt: true,
   postsCount: true,
+  viewsCount: true,
   lastPostAt: true,
   pinnedAt: true,
   lockedAt: true,
@@ -92,14 +103,21 @@ export function subjectKey(type: string, id: string): string {
   return `${type}:${id}`;
 }
 
+/** Докуда человек дочитал тему: номер последнего прочитанного. */
+export type ReadMarks = ReadonlyMap<string, number>;
+
 export function toTopicItem(
   record: TopicRecord,
   subjects: ReadonlyMap<string, ForumSubject>,
+  reads: ReadMarks | null = null,
 ): ForumTopicItem {
   const subject =
     record.subjectType === null || record.subjectId === null
       ? null
       : (subjects.get(subjectKey(record.subjectType, record.subjectId)) ?? null);
+  // Тему, которую человек не открывал, «новой» не считаем: иначе весь форум жирный.
+  const read = reads?.get(record.id);
+  const unread = read === undefined ? null : Math.max(0, record.postsCount - read);
 
   return {
     id: record.id,
@@ -115,6 +133,9 @@ export function toTopicItem(
     locked: record.lockedAt !== null,
     hidden: record.hiddenAt !== null,
     hiddenReason: record.hiddenReason,
+    viewsCount: record.viewsCount,
+    unread,
+    firstUnread: unread === null || unread === 0 || read === undefined ? null : read + 1,
   };
 }
 
@@ -158,7 +179,12 @@ export function parseImages(value: Prisma.JsonValue): ForumImage[] {
   return parsed.success ? parsed.data : [];
 }
 
-export function toPostView(record: PostRecord, viewer: Viewer, liked: boolean): ForumPostView {
+export function toPostView(
+  record: PostRecord,
+  viewer: Viewer,
+  liked: boolean,
+  role: ForumPostRole | null = null,
+): ForumPostView {
   const mine = viewer.userId !== undefined && record.authorId === viewer.userId;
   const deleted = record.deletedAt !== null;
   const hidden = record.hiddenAt !== null;
@@ -189,6 +215,7 @@ export function toPostView(record: PostRecord, viewer: Viewer, liked: boolean): 
     likes: record.likesCount,
     liked,
     mine,
+    role,
   };
 }
 
@@ -210,18 +237,39 @@ export const postItemFields = {
   body: true,
   createdAt: true,
   likesCount: true,
-  topic: { select: { id: true, title: true } },
+  authorId: true,
+  topic: {
+    select: {
+      id: true,
+      title: true,
+      subjectType: true,
+      subjectId: true,
+      section: { select: { slug: true, title: true } },
+    },
+  },
   author: { select: authorFields },
 } satisfies Prisma.ForumPostSelect;
 
 export type PostItemRecord = Prisma.ForumPostGetPayload<{ select: typeof postItemFields }>;
 
-export function toPostItem(record: PostItemRecord): ForumPostItem {
+export function toPostItem(
+  record: PostItemRecord,
+  subjects: ReadonlyMap<string, ForumSubject>,
+  role: ForumPostRole | null,
+): ForumPostItem {
+  const { subjectType, subjectId } = record.topic;
+
   return {
     id: record.id,
     number: record.number,
-    topic: record.topic,
+    topic: { id: record.topic.id, title: record.topic.title },
+    section: record.topic.section,
+    subject:
+      subjectType === null || subjectId === null
+        ? null
+        : (subjects.get(subjectKey(subjectType, subjectId)) ?? null),
     author: toAuthor(record.author),
+    role,
     excerpt: excerptOf(record.body),
     createdAt: record.createdAt.toISOString(),
     likes: record.likesCount,

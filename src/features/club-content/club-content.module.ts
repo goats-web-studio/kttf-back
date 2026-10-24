@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module.js';
 import { ClubsModule } from '../clubs/clubs.module.js';
 import { FilesModule } from '../files/files.module.js';
+import { ForumModule } from '../forum/forum.module.js';
 import { ClubContentAdminService } from './club-content-admin.service.js';
 import { ClubContentAdminController, ClubContentController } from './club-content.controller.js';
 import { ClubMediaService } from './club-media.service.js';
@@ -14,7 +15,7 @@ import { YoutubeCovers } from './youtube-covers.js';
  * проверки роли в клубе, FilesModule — ради обработки и хранения картинок.
  */
 @Module({
-  imports: [AuthModule, ClubsModule, FilesModule],
+  imports: [AuthModule, ClubsModule, FilesModule, ForumModule],
   controllers: [ClubContentController, ClubContentAdminController],
   providers: [ClubPostsService, ClubMediaService, ClubContentAdminService, YoutubeCovers],
 })

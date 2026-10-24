@@ -20,6 +20,11 @@ export type NotificationData = {
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Типы уведомлений, которые знает этот контракт. */
+const KNOWN_TYPES: readonly NotificationType[] = notificationViewSchema.options.map(
+  (option) => option.shape.type.value,
+);
 /** Старые уведомления чистятся попутно, не чаще раза в час на процесс. */
 const SWEEP_EVERY_MS = 60 * 60 * 1000;
 
@@ -142,7 +147,13 @@ export class NotificationsService {
   ): Promise<Page<NotificationView>> {
     await this.sweep(now);
 
-    const where = { userId, createdAt: { gte: keepFrom(now) } };
+    // Только типы, которые знает эта сборка: строку типа новее неё клиент
+    // базы не разберёт и уронит весь список (поэтапное обновление, общая база).
+    const where = {
+      userId,
+      createdAt: { gte: keepFrom(now) },
+      type: { in: [...KNOWN_TYPES] },
+    };
     const [rows, total] = await Promise.all([
       this.prisma.notification.findMany({
         where,

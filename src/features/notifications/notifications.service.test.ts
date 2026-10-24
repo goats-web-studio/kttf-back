@@ -81,7 +81,12 @@ describe('список', () => {
 
     expect(prisma.notification.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { userId: 'user-1', createdAt: { gte: KEEP_FROM } },
+        where: {
+          userId: 'user-1',
+          createdAt: { gte: KEEP_FROM },
+          // Строку типа новее этой сборки клиент базы не разберёт.
+          type: { in: expect.arrayContaining(['TRIAL_REQUEST_NEW', 'FORUM_WARNING']) as unknown },
+        },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         skip: 0,
         take: 20,

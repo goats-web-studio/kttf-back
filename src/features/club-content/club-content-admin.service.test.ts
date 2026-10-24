@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PrismaService } from '../../infra/prisma/prisma.service.js';
+import type { ForumNewsService } from '../forum/forum-news.service.js';
 import { ClubContentAdminService } from './club-content-admin.service.js';
 import { YoutubeCovers } from './youtube-covers.js';
 
@@ -48,7 +49,13 @@ let service: ClubContentAdminService;
 
 beforeEach(() => {
   prisma = makePrisma();
-  service = new ClubContentAdminService(prisma as unknown as PrismaService);
+  service = new ClubContentAdminService(
+    prisma as unknown as PrismaService,
+    {
+      sync: vi.fn().mockResolvedValue(undefined),
+      discussions: vi.fn().mockResolvedValue(new Map()),
+    } as unknown as ForumNewsService,
+  );
 });
 
 describe('лента модерации', () => {

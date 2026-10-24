@@ -66,6 +66,7 @@ model User {
   forumResolved    ForumReport[]       @relation("ForumResolver")
   forumMute        ForumMute?          @relation("ForumMuted")
   forumMutesGiven  ForumMute[]         @relation("ForumMuter")
+  forumReads       ForumTopicRead[]
 }
 
 enum Locale {
@@ -1052,6 +1053,7 @@ enum NotificationType {
   FORUM_REPLY
   FORUM_TOPIC_UPDATE
   FORUM_POST_HIDDEN
+  FORUM_WARNING
 }
 
 // ============ Турниры ============
@@ -1477,19 +1479,24 @@ enum ForumSubjectType {
   CLUB
   COACH
   PRODUCT
+  // Новость или акция клуба и тренера — публикуется на форуме сама (ADR-067)
+  CLUB_POST
+  COACH_POST
 }
 
 model ForumSection {
-  id          String            @id @default(uuid())
-  slug        String            @unique
-  title       String
-  description String?
-  position    Int               @default(0)
-  // Куда попадают темы с предметом этого типа — один раздел на тип
-  subjectType ForumSubjectType? @unique
-  archivedAt  DateTime?
-  createdAt   DateTime          @default(now())
-  topics      ForumTopic[]
+  id           String             @id @default(uuid())
+  slug         String             @unique
+  title        String
+  description  String?
+  position     Int                @default(0)
+  // Куда попадают темы с предметом этих типов; один раздел на тип — сверяет сервис
+  subjectTypes ForumSubjectType[] @default([])
+  // Можно ли завести тему руками: в «Новостях клубов и тренеров» — нет (ADR-067)
+  manualTopics Boolean            @default(true)
+  archivedAt   DateTime?
+  createdAt    DateTime           @default(now())
+  topics       ForumTopic[]
 }
 
 model ForumTopic {
@@ -1503,6 +1510,8 @@ model ForumTopic {
   // Увеличивается в транзакции ответа — строка темы блокируется, и два
   // ответа одновременно одного номера не получат.
   postsCount       Int                 @default(0)
+  // Просмотры, как у RTTF: повтор того же человека за полчаса не считается (ADR-067)
+  viewsCount       Int                 @default(0)
   lastPostAt       DateTime            @default(now())
   lastPostAuthorId String?
   pinnedAt         DateTime?
@@ -1515,6 +1524,7 @@ model ForumTopic {
   lastPostAuthor   User?               @relation("ForumTopicLastAuthor", fields: [lastPostAuthorId], references: [id], onDelete: SetNull)
   posts            ForumPost[]
   subscriptions    ForumSubscription[]
+  reads            ForumTopicRead[]
 
   @@unique([subjectType, subjectId])
   @@index([sectionId, lastPostAt(sort: Desc)])
@@ -1570,6 +1580,19 @@ model ForumSubscription {
 
   @@id([topicId, userId])
   @@index([userId])
+}
+
+// Докуда человек дочитал тему — отметка «новые» (ADR-067). Пишется, когда
+// он открывает тему; тема, которую он не открывал, «новой» не считается.
+model ForumTopicRead {
+  userId     String
+  topicId    String
+  lastNumber Int
+  readAt     DateTime   @default(now())
+  topic      ForumTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, topicId])
 }
 
 enum ForumReportReason {

@@ -32,9 +32,15 @@ import {
   nameFields,
   toTopicItem,
   topicFields,
+  ANONYMOUS,
   type TopicRecord,
   type Viewer,
 } from './forum-views.js';
+
+/** Повтор просмотра того же человека раньше — не считается. */
+const VIEW_REPEAT_MS = 30 * 60 * 1000;
+/** Сколько последних просмотров помнит процесс. */
+const VIEW_MEMORY = 50_000;
 
 /**
  * Разделы и темы форума — ADR-064. Темы с предметом (F2) живут в разделе
@@ -49,6 +55,9 @@ export class ForumTopicsService {
     private readonly subjects: ForumSubjectsService,
     private readonly notifications: NotificationsService,
   ) {}
+
+  /** Последние просмотры: `читатель:тема` → когда. */
+  private readonly views = new Map<string, number>();
 
   // ---------------------------------------------------------------- разделы
 
@@ -93,7 +102,8 @@ export class ForumTopicsService {
         title: section.title,
         description: section.description,
         position: section.position,
-        subjectType: section.subjectType,
+        subjectTypes: section.subjectTypes,
+        manualTopics: section.manualTopics,
         archived: section.archivedAt !== null,
         topicsCount: count?._count._all ?? 0,
         postsCount: count?._sum.postsCount ?? 0,
@@ -112,14 +122,34 @@ export class ForumTopicsService {
 
   // ---------------------------------------------------------------- темы
 
-  async list(query: ListForumTopicsQuery): Promise<Page<ForumTopicItem>> {
+  async list(
+    query: ListForumTopicsQuery,
+    viewer: Viewer = ANONYMOUS,
+  ): Promise<Page<ForumTopicItem>> {
     const where: Prisma.ForumTopicWhereInput = {
       hiddenAt: null,
       section: {
         archivedAt: null,
         ...(query.section === undefined ? {} : { slug: query.section }),
       },
-      ...(query.q === undefined ? {} : { title: { contains: query.q, mode: 'insensitive' } }),
+      // Поиск — по заголовку и по тексту сообщений (ADR-067 §9).
+      ...(query.q === undefined
+        ? {}
+        : {
+            OR: [
+              { title: { contains: query.q, mode: 'insensitive' } },
+              {
+                posts: {
+                  some: {
+                    body: { contains: query.q, mode: 'insensitive' },
+                    deletedAt: null,
+                    hiddenAt: null,
+                  },
+                },
+              },
+            ],
+          }),
+      ...(query.subjectType === undefined ? {} : { subjectType: query.subjectType }),
       ...(query.authorPlayerId === undefined
         ? {}
         : { author: { player: { id: query.authorPlayerId } } }),
@@ -146,7 +176,7 @@ export class ForumTopicsService {
       this.prisma.forumTopic.count({ where }),
     ]);
 
-    return pageOf(await this.items(rows), total, query);
+    return pageOf(await this.items(rows, viewer), total, query);
   }
 
   async get(topicId: string, viewer: Viewer, now = new Date()): Promise<ForumTopicView> {
@@ -158,11 +188,45 @@ export class ForumTopicsService {
     if (row === null || !canSeeTopic(row, viewer)) throw topicNotFound(topicId);
 
     if (viewer.userId !== undefined) {
-      // Открыл тему — уведомления о ней прочитаны.
-      await this.notifications.settleForumTopic(viewer.userId, topicId, now);
+      // Открыл тему — уведомления о ней прочитаны, и «новых» в ней больше нет.
+      await Promise.all([
+        this.notifications.settleForumTopic(viewer.userId, topicId, now),
+        this.prisma.forumTopicRead.upsert({
+          where: { userId_topicId: { userId: viewer.userId, topicId } },
+          create: { userId: viewer.userId, topicId, lastNumber: row.postsCount, readAt: now },
+          update: { lastNumber: row.postsCount, readAt: now },
+        }),
+      ]);
     }
 
     return this.view(row, viewer, now);
+  }
+
+  /**
+   * Просмотр темы (ADR-067 §1). Повтор того же человека — или того же
+   * адреса у гостя — за `VIEW_REPEAT_MS` не считается. Память процесса:
+   * при нескольких экземплярах API счёт приблизительный, как и задумано.
+   */
+  async countView(topicId: string, viewerKey: string, now = Date.now()): Promise<boolean> {
+    const key = `${viewerKey}:${topicId}`;
+    const seen = this.views.get(key);
+
+    if (seen !== undefined && now - seen < VIEW_REPEAT_MS) return false;
+
+    if (this.views.size > VIEW_MEMORY) {
+      for (const [stale, at] of this.views) {
+        if (now - at >= VIEW_REPEAT_MS) this.views.delete(stale);
+      }
+      if (this.views.size > VIEW_MEMORY) this.views.clear();
+    }
+
+    this.views.set(key, now);
+    await this.prisma.forumTopic.updateMany({
+      where: { id: topicId },
+      data: { viewsCount: { increment: 1 } },
+    });
+
+    return true;
   }
 
   async create(
@@ -173,10 +237,11 @@ export class ForumTopicsService {
     const writer = await this.access.writer(userId, now);
     const section = await this.prisma.forumSection.findUnique({
       where: { id: input.sectionId },
-      select: { id: true, archivedAt: true },
+      select: { id: true, archivedAt: true, manualTopics: true },
     });
 
-    if (section?.archivedAt !== null) {
+    // В «Новостях клубов и тренеров» тема — сама новость: руками не заводится.
+    if (section?.archivedAt !== null || (!section.manualTopics && !writer.isAdmin)) {
       throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Section is not available', {
         field: 'sectionId',
       });
@@ -194,7 +259,7 @@ export class ForumTopicsService {
           createdAt: now,
           lastPostAt: now,
         },
-        select: { id: true, title: true },
+        select: { id: true, title: true, subjectType: true, subjectId: true },
       });
 
       await this.posts.insert(
@@ -264,8 +329,8 @@ export class ForumTopicsService {
     }
 
     const [section, row] = await Promise.all([
-      this.prisma.forumSection.findUnique({
-        where: { subjectType: type },
+      this.prisma.forumSection.findFirst({
+        where: { subjectTypes: { has: type } },
         select: { id: true, slug: true, title: true },
       }),
       this.prisma.forumTopic.findUnique({
@@ -280,7 +345,7 @@ export class ForumTopicsService {
 
     const [topic, posts] = await Promise.all([
       this.view(row, viewer, now),
-      this.posts.last(row.id, viewer, FORUM_SUBJECT_LAST_POSTS),
+      this.posts.last(row, viewer, FORUM_SUBJECT_LAST_POSTS),
     ]);
 
     return { section, topic, posts };
@@ -312,8 +377,13 @@ export class ForumTopicsService {
 
     if (existing !== null) return this.posts.reply(existing.id, userId, input, now);
 
-    const section = await this.prisma.forumSection.findUnique({
-      where: { subjectType: type },
+    // Тему новости заводит сама публикация записи (ForumNewsService), не первый ответ.
+    if (type === 'CLUB_POST' || type === 'COACH_POST') {
+      throw new AppError(ERROR_CODES.NOT_FOUND, 'Forum subject not found', { type, id: subjectId });
+    }
+
+    const section = await this.prisma.forumSection.findFirst({
+      where: { subjectTypes: { has: type } },
       select: { id: true, archivedAt: true },
     });
 
@@ -342,7 +412,7 @@ export class ForumTopicsService {
             createdAt: now,
             lastPostAt: now,
           },
-          select: { id: true, title: true },
+          select: { id: true, title: true, subjectType: true, subjectId: true },
         });
 
         return this.posts.insert(
@@ -372,15 +442,25 @@ export class ForumTopicsService {
 
   // ---------------------------------------------------------------- отображение
 
-  async items(rows: readonly TopicRecord[]): Promise<ForumTopicItem[]> {
-    const subjects = await this.subjects.describe(rows);
+  async items(rows: readonly TopicRecord[], viewer: Viewer = ANONYMOUS): Promise<ForumTopicItem[]> {
+    const [subjects, reads] = await Promise.all([
+      this.subjects.describe(rows),
+      viewer.userId === undefined || rows.length === 0
+        ? null
+        : this.prisma.forumTopicRead.findMany({
+            where: { userId: viewer.userId, topicId: { in: rows.map((row) => row.id) } },
+            select: { topicId: true, lastNumber: true },
+          }),
+    ]);
+    const marks =
+      reads === null ? null : new Map(reads.map((read) => [read.topicId, read.lastNumber]));
 
-    return rows.map((row) => toTopicItem(row, subjects));
+    return rows.map((row) => toTopicItem(row, subjects, marks));
   }
 
   private async view(row: TopicRecord, viewer: Viewer, now: Date): Promise<ForumTopicView> {
-    const [[item], subscription, me] = await Promise.all([
-      this.items([row]),
+    const [[item], subscription, me, firstPost] = await Promise.all([
+      this.items([row], viewer),
       viewer.userId === undefined
         ? null
         : this.prisma.forumSubscription.findUnique({
@@ -388,6 +468,7 @@ export class ForumTopicsService {
             select: { userId: true },
           }),
       viewer.userId === undefined ? null : this.access.me(viewer.userId, now),
+      this.posts.first(row, viewer),
     ]);
 
     if (item === undefined) throw topicNotFound(row.id);
@@ -396,6 +477,7 @@ export class ForumTopicsService {
 
     return {
       ...item,
+      firstPost,
       subscribed: subscription !== null,
       canReply: me?.canPost === true && open,
       canRename:

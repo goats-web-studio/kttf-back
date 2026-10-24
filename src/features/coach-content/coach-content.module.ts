@@ -4,6 +4,7 @@ import { AuthModule } from '../auth/auth.module.js';
 import { YoutubeCovers } from '../club-content/youtube-covers.js';
 import { CoachOwnerGuard } from '../coaches/coach-owner.guard.js';
 import { FilesModule } from '../files/files.module.js';
+import { ForumModule } from '../forum/forum.module.js';
 import { CoachContentAdminService } from './coach-content-admin.service.js';
 import { CoachContentAdminController, CoachContentController } from './coach-content.controller.js';
 import { CoachMediaService } from './coach-media.service.js';
@@ -15,7 +16,7 @@ import { CoachPostsService } from './coach-posts.service.js';
  * обработки и хранения картинок, YoutubeCovers — тот же, что у клуба.
  */
 @Module({
-  imports: [AuthModule, FilesModule],
+  imports: [AuthModule, FilesModule, ForumModule],
   controllers: [CoachContentController, CoachContentAdminController],
   providers: [
     CoachPostsService,

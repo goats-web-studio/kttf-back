@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PrismaService } from '../../infra/prisma/prisma.service.js';
+import type { ForumNewsService } from '../forum/forum-news.service.js';
 import { ClubPostsService } from './club-posts.service.js';
 
 const NOW = new Date('2026-10-20T10:00:00.000Z');
@@ -43,7 +44,13 @@ let service: ClubPostsService;
 
 beforeEach(() => {
   prisma = makePrisma();
-  service = new ClubPostsService(prisma as unknown as PrismaService);
+  service = new ClubPostsService(
+    prisma as unknown as PrismaService,
+    {
+      sync: vi.fn().mockResolvedValue(undefined),
+      discussions: vi.fn().mockResolvedValue(new Map()),
+    } as unknown as ForumNewsService,
+  );
 });
 
 describe('лента клуба', () => {

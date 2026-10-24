@@ -5,6 +5,7 @@ import type { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { NotificationsService } from '../notifications/notifications.service.js';
 import { ForumAccessService } from './forum-access.service.js';
 import { ForumPostsService } from './forum-posts.service.js';
+import { ForumSubjectsService } from './forum-subjects.service.js';
 
 const WRITER = '11111111-1111-4111-8111-111111111111';
 const QUOTED_AUTHOR = '22222222-2222-4222-8222-222222222222';
@@ -19,6 +20,7 @@ const openTopic = {
   title: 'Накладки на 2027',
   authorId: QUOTED_AUTHOR,
   subjectType: null,
+  subjectId: null,
   lockedAt: null,
   hiddenAt: null,
 };
@@ -77,7 +79,12 @@ describe('ForumPostsService', () => {
   beforeEach(() => {
     prisma = makePrisma();
     const db = prisma as unknown as PrismaService;
-    service = new ForumPostsService(db, new ForumAccessService(db), new NotificationsService(db));
+    service = new ForumPostsService(
+      db,
+      new ForumAccessService(db),
+      new NotificationsService(db),
+      new ForumSubjectsService(db),
+    );
   });
 
   describe('insert', () => {

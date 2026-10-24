@@ -6,7 +6,8 @@ import {
   forumSectionInputSchema,
   forumSubjectTypeSchema,
   hideForumPostSchema,
-  listForumPlayerPostsSchema,
+  forumWarningInputSchema,
+  listForumFeedSchema,
   listForumPostsSchema,
   listForumReportsSchema,
   listForumTopicsSchema,
@@ -34,7 +35,10 @@ import {
   type ForumTopicItem,
   type ForumTopicView,
   type HideForumPostInput,
-  type ListForumPlayerPostsQuery,
+  type ForumBirthday,
+  type ForumOnline,
+  type ForumWarningInput,
+  type ListForumFeedQuery,
   type ListForumPostsQuery,
   type ListForumReportsQuery,
   type ListForumTopicsQuery,
@@ -57,10 +61,13 @@ import {
   Post,
   Put,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import { z } from 'zod';
 
+import { clientIp } from '../../common/client-ip.js';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { RequireAdmin } from '../auth/admin.guard.js';
 import { CurrentUserId, JwtAuthGuard } from '../auth/jwt-auth.guard.js';
@@ -68,6 +75,7 @@ import { OptionalJwtGuard, OptionalUserId } from '../auth/optional-jwt.guard.js'
 import { ForumAccessService } from './forum-access.service.js';
 import { ForumModerationService } from './forum-moderation.service.js';
 import { ForumPostsService } from './forum-posts.service.js';
+import { ForumSidebarService } from './forum-sidebar.service.js';
 import { ForumTopicsService } from './forum-topics.service.js';
 
 const uuidParam = new ZodValidationPipe(z.uuid());
@@ -84,6 +92,7 @@ export class ForumController {
     private readonly access: ForumAccessService,
     private readonly topics: ForumTopicsService,
     private readonly posts: ForumPostsService,
+    private readonly sidebar: ForumSidebarService,
   ) {}
 
   @Get('sections')
@@ -99,11 +108,26 @@ export class ForumController {
 
   // ---------------------------------------------------------------- темы
 
+  /** С токеном — ещё и «новые» в каждой теме (ADR-067 §7). */
   @Get('topics')
+  @UseGuards(OptionalJwtGuard)
   async listTopics(
     @Query(new ZodValidationPipe(listForumTopicsSchema)) query: ListForumTopicsQuery,
+    @OptionalUserId() userId?: string,
   ): Promise<Page<ForumTopicItem>> {
-    return this.topics.list(query);
+    return this.topics.list(query, await this.access.viewer(userId));
+  }
+
+  /** «Сейчас на сайте: игроков N» (ADR-067 §6). */
+  @Get('online')
+  async online(): Promise<ForumOnline> {
+    return this.sidebar.online();
+  }
+
+  /** «Дни рождения» — только у тех, кто показывает дату целиком (ADR-037). */
+  @Get('birthdays')
+  async birthdays(): Promise<ForumBirthday[]> {
+    return this.sidebar.birthdays();
   }
 
   @Post('topics')
@@ -119,9 +143,16 @@ export class ForumController {
   @UseGuards(OptionalJwtGuard)
   async topic(
     @Param('id', uuidParam) id: string,
+    @Req() request: Request,
     @OptionalUserId() userId?: string,
   ): Promise<ForumTopicView> {
-    return this.topics.get(id, await this.access.viewer(userId));
+    const topic = await this.topics.get(id, await this.access.viewer(userId));
+
+    // Просмотр — после того как тема нашлась и видна этому человеку; в
+    // ответе счётчик уже с ним.
+    const counted = await this.topics.countView(id, userId ?? `ip:${clientIp(request)}`);
+
+    return counted ? { ...topic, viewsCount: topic.viewsCount + 1 } : topic;
   }
 
   @Patch('topics/:id')
@@ -176,12 +207,15 @@ export class ForumController {
 
   // ---------------------------------------------------------------- сообщения
 
-  /** Сообщения игрока — блок «На форуме» в профиле. */
+  /**
+   * Лента сообщений (ADR-067 §5): весь форум и обсуждения на страницах, с
+   * фильтрами. С `authorPlayerId` — блок «На форуме» в профиле.
+   */
   @Get('posts')
-  async playerPosts(
-    @Query(new ZodValidationPipe(listForumPlayerPostsSchema)) query: ListForumPlayerPostsQuery,
+  async feed(
+    @Query(new ZodValidationPipe(listForumFeedSchema)) query: ListForumFeedQuery,
   ): Promise<Page<ForumPostItem>> {
-    return this.posts.byPlayer(query);
+    return this.posts.feed(query);
   }
 
   @Get('posts/:id/locate')
@@ -310,6 +344,17 @@ export class ForumAdminController {
     @CurrentUserId() adminId: string,
   ): Promise<void> {
     await this.moderation.moderateTopic(id, adminId, body);
+  }
+
+  /** Предупреждение без скрытия — пунктом правил (ADR-067 §8). */
+  @Post('warnings')
+  @RequireAdmin()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async warn(
+    @Body(new ZodValidationPipe(forumWarningInputSchema)) body: ForumWarningInput,
+    @CurrentUserId() adminId: string,
+  ): Promise<void> {
+    await this.moderation.warn(adminId, body);
   }
 
   @Get('mutes')

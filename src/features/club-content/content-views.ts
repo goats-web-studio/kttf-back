@@ -1,4 +1,4 @@
-import type { ClubMediaView, ClubPostView } from '@kttf/shared/types';
+import type { ForumDiscussionLink, ClubMediaView, ClubPostView } from '@kttf/shared/types';
 
 import type { Prisma } from '../../generated/prisma/client.js';
 
@@ -17,9 +17,12 @@ export const postFields = {
   hiddenReason: true,
 } as const satisfies Prisma.ClubPostSelect;
 
-type PostRecord = Prisma.ClubPostGetPayload<{ select: typeof postFields }>;
+export type PostRecord = Prisma.ClubPostGetPayload<{ select: typeof postFields }>;
 
-export function toPostView(post: PostRecord): ClubPostView {
+export function toPostView(
+  post: PostRecord,
+  discussion: ForumDiscussionLink | null = null,
+): ClubPostView {
   return {
     id: post.id,
     clubId: post.clubId,
@@ -33,6 +36,7 @@ export function toPostView(post: PostRecord): ClubPostView {
     editedAt: post.editedAt?.toISOString() ?? null,
     hidden: post.hiddenAt !== null,
     hiddenReason: post.hiddenReason,
+    discussion,
   };
 }
 

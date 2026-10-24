@@ -4,6 +4,7 @@ import { Injectable } from '@nestjs/common';
 
 import { pageOf } from '../../common/pagination.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
+import { ForumNewsService } from '../forum/forum-news.service.js';
 
 /** Сколько знаков текста записи видно в ленте модерации. */
 const EXCERPT = 240;
@@ -17,7 +18,10 @@ const EXCERPT = 240;
  */
 @Injectable()
 export class ClubContentAdminService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly news: ForumNewsService,
+  ) {}
 
   async feed(query: PageQuery): Promise<Page<ClubContentItem>> {
     // Две таблицы одной лентой: с каждой берётся столько, сколько может
@@ -98,6 +102,9 @@ export class ClubContentAdminService {
     });
 
     if (count === 0) throw new AppError(ERROR_CODES.NOT_FOUND, 'Post not found', { id });
+
+    // Скрытая запись скрывает и тему на форуме — с той же причиной (ADR-067).
+    await this.news.sync('CLUB', id);
   }
 
   async hideMedia(id: string, input: HideClubContentInput): Promise<void> {

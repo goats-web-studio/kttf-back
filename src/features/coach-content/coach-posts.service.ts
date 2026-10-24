@@ -12,10 +12,11 @@ import { Injectable } from '@nestjs/common';
 import { pageOf, skipOf } from '../../common/pagination.js';
 import type { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
+import { ForumNewsService } from '../forum/forum-news.service.js';
 import { dateOf } from '../club-content/content-views.js';
 import { clubDate } from '../clubs/club-stats.service.js';
 import { assertCoachVisible, coachPage } from './coach-page.js';
-import { postFields, toPostView } from './content-views.js';
+import { postFields, toPostView, type PostRecord } from './content-views.js';
 
 /**
  * Новости и акции тренера — T2.2 (ADR-059), механика клуба один в один
@@ -27,7 +28,29 @@ import { postFields, toPostView } from './content-views.js';
  */
 @Injectable()
 export class CoachPostsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly news: ForumNewsService,
+  ) {}
+
+  /**
+   * Запись на форуме — тема-новость (ADR-067 §2): после каждой правки тема
+   * догоняет запись, а в ответ уходит ссылка «Обсудить (N)».
+   */
+  private async synced(post: PostRecord): Promise<CoachPostView> {
+    await this.news.sync('COACH', post.id);
+
+    return toPostView(post, (await this.news.discussions('COACH', [post.id])).get(post.id) ?? null);
+  }
+
+  private async withDiscussions(rows: readonly PostRecord[]): Promise<CoachPostView[]> {
+    const links = await this.news.discussions(
+      'COACH',
+      rows.map((row) => row.id),
+    );
+
+    return rows.map((row) => toPostView(row, links.get(row.id) ?? null));
+  }
 
   /**
    * Публичная лента: закреплённая сверху, дальше свежие. Акция после своего
@@ -98,7 +121,7 @@ export class CoachPostsService {
       select: postFields,
     });
 
-    return toPostView(post);
+    return this.synced(post);
   }
 
   /**
@@ -157,7 +180,7 @@ export class CoachPostsService {
       select: postFields,
     });
 
-    if (input.pinned !== true) return toPostView(await update);
+    if (input.pinned !== true) return this.synced(await update);
 
     const [, post] = await this.prisma.$transaction([
       this.prisma.coachPost.updateMany({
@@ -167,7 +190,7 @@ export class CoachPostsService {
       update,
     ]);
 
-    return toPostView(post);
+    return this.synced(post);
   }
 
   async remove(coachId: string, postId: string): Promise<void> {
@@ -176,6 +199,9 @@ export class CoachPostsService {
     if (count === 0) {
       throw new AppError(ERROR_CODES.NOT_FOUND, 'Post not found', { id: postId });
     }
+
+    // Обсуждение уходит вместе с записью.
+    await this.news.sync('COACH', postId);
   }
 
   private async page(
@@ -193,6 +219,6 @@ export class CoachPostsService {
       this.prisma.coachPost.count({ where }),
     ]);
 
-    return pageOf(rows.map(toPostView), total, query);
+    return pageOf(await this.withDiscussions(rows), total, query);
   }
 }
