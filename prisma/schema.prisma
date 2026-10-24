@@ -67,6 +67,8 @@ model User {
   forumMute        ForumMute?          @relation("ForumMuted")
   forumMutesGiven  ForumMute[]         @relation("ForumMuter")
   forumReads       ForumTopicRead[]
+  duelsResolved    Duel[]              @relation("DuelResolver")
+  duelsAnnulled    Duel[]              @relation("DuelAnnuller")
 }
 
 enum Locale {
@@ -172,6 +174,10 @@ model Player {
   // История тренеров — T2 (ADR-059): свои периоды и периоды учеников
   coachTenures   CoachTenure[]  @relation("TenurePlayer")
   studentTenures CoachTenure[]  @relation("TenureCoach")
+  // Дуэли и спарринги — ADR-065: предложенные, принятые, отклики
+  duelsAuthored  Duel[]         @relation("DuelAuthor")
+  duelsOpposed   Duel[]         @relation("DuelOpponent")
+  duelResponses  DuelResponse[]
 
   @@index([rating(sort: Desc)])
   @@index([cityId, rating(sort: Desc)])
@@ -243,6 +249,7 @@ model City {
   clubs   Club[]
   players Player[]
   coaches Coach[]
+  duels   Duel[]
 
   @@unique([countryId, name])
 }
@@ -302,6 +309,7 @@ model Club {
   trainings    Training[]
   coachLinks   ClubCoach[]
   trials       TrialRequest[]
+  duels        Duel[]
 
   @@index([cityId])
 }
@@ -1056,6 +1064,14 @@ enum NotificationType {
   FORUM_TOPIC_UPDATE
   FORUM_POST_HIDDEN
   FORUM_WARNING
+  DUEL_CHALLENGE
+  DUEL_RESPONSE
+  DUEL_SCHEDULED
+  DUEL_DECLINED
+  DUEL_CANCELLED
+  DUEL_RESULT
+  DUEL_COMPLETED
+  DUEL_DISPUTED
 }
 
 // ============ Турниры ============
@@ -1359,9 +1375,17 @@ model RatingEvent {
   match      Match?      @relation(fields: [matchId], references: [id])
   tournament Tournament? @relation(fields: [tournamentId], references: [id])
 
+  // Дуэль вне турнира — ADR-065. У события дуэли нет ни встречи, ни
+  // турнира: счёт живёт в самой дуэли. Обратные события администратора
+  // (MANUAL_ADJUST) ссылаются на ту же дуэль — по ссылке видно, что они
+  // отменяют.
+  duelId String?
+  duel   Duel?   @relation(fields: [duelId], references: [id])
+
   @@index([playerId, createdAt(sort: Desc)])
   @@index([tournamentId])
   @@index([matchId])
+  @@index([duelId])
 }
 
 enum RatingEventType {
@@ -1641,6 +1665,155 @@ model ForumMute {
   createdAt   DateTime @default(now())
   user        User     @relation("ForumMuted", fields: [userId], references: [id], onDelete: Cascade)
   createdBy   User?    @relation("ForumMuter", fields: [createdById], references: [id], onDelete: SetNull)
+}
+
+// ============ Дуэли и спарринги — ADR-065, docs/13 ============
+
+enum DuelKind {
+  DUEL
+  SPARRING
+}
+
+enum DuelStatus {
+  OPEN
+  CHALLENGE
+  SCHEDULED
+  REPORTED
+  DISPUTED
+  COMPLETED
+  UNCONFIRMED
+  DECLINED
+  CANCELLED
+  EXPIRED
+}
+
+enum DuelResponseStatus {
+  NEW
+  ACCEPTED
+  DECLINED
+  WITHDRAWN
+}
+
+// Почему подтверждённая рейтинговая дуэль обсчитана без рейтинга
+// (`duelRatingBlock` при начислении): частая пара или предел игрока.
+enum DuelRatingSkip {
+  PAIR
+  PLAYER
+}
+
+// Предложение игры: вызов конкретному игроку или публикация «ищу соперника».
+// Участники — профили игроков, а не аккаунты: рейтинг и кривая — у профиля.
+model Duel {
+  id           String     @id @default(uuid())
+  kind         DuelKind
+  // Дуэль всегда рейтинговая, спарринг — по желанию
+  rated        Boolean
+  // До скольких побед: 3, 5 или 7 партий; у нерейтингового спарринга нет
+  bestOf       Int?
+  status       DuelStatus
+  authorId     String
+  author       Player     @relation("DuelAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  // Вызов: соперник известен сразу. У публикации — false, а `opponentId`
+  // появляется, когда автор принял отклик
+  challenge    Boolean    @default(false)
+  opponentId   String?
+  opponent     Player?    @relation("DuelOpponent", fields: [opponentId], references: [id], onDelete: Cascade)
+  // Место: клуб KTTF или свой зал. Город — всегда: по нему фильтрует доска,
+  // у клуба он копируется из клуба
+  clubId       String?
+  club         Club?      @relation(fields: [clubId], references: [id], onDelete: SetNull)
+  venueName    String?
+  venueAddress String?
+  cityId       String
+  city         City       @relation(fields: [cityId], references: [id])
+  note         String?
+  // Границы предложенных вариантов: доска и ленивый переход в EXPIRED не
+  // читают варианты по одному
+  slotsFrom    DateTime
+  slotsUntil   DateTime
+  // Согласованное время — у назначенной и дальше
+  startsAt     DateTime?
+  endsAt       DateTime?
+  // Для сортировки: согласованное время, а до него — первый вариант
+  playAt       DateTime
+
+  // Счёт: победитель и проигравший — участники, `reportedById` — профиль
+  // внёсшего
+  winnerId          String?
+  winnerSets        Int?
+  loserSets         Int?
+  reportedById      String?
+  reportedAt        DateTime?
+  confirmedAt       DateTime?
+  disputeComment    String?
+  disputedAt        DateTime?
+  // Решение администратора по спору
+  resolutionComment String?
+  resolvedById      String?
+  resolvedBy        User?           @relation("DuelResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+  resolvedAt        DateTime?
+  // Рейтинговая, но обсчитана без рейтинга: предел частоты при начислении
+  ratingSkipped     DuelRatingSkip?
+  // Кто-то из двоих был провизорным в момент начисления — пометка PROVISIONAL
+  // для администратора. После начисления текущий признак уже другой
+  provisional       Boolean?
+  // Отказ вызванного или отмена участником — с причиной, если её дали
+  closeReason       String?
+  closedAt          DateTime?
+  // Начисление отменено администратором обратными событиями журнала
+  annulledAt        DateTime?
+  annulReason       String?
+  annulledById      String?
+  annulledBy        User?           @relation("DuelAnnuller", fields: [annulledById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  slots        DuelSlot[]
+  responses    DuelResponse[]
+  ratingEvents RatingEvent[]
+
+  // Доска: открытые по городу и времени; ленивые переходы — по статусу и сроку
+  @@index([status, slotsUntil])
+  @@index([status, reportedAt])
+  @@index([cityId, status, playAt])
+  @@index([authorId, createdAt])
+  @@index([opponentId, createdAt])
+  // Очередь администратора и проверка частоты — рейтинговые по времени
+  @@index([rated, createdAt(sort: Desc)])
+  @@index([rated, startsAt])
+}
+
+// Вариант времени «дата, с — до»; до DUEL_SLOTS_MAX на предложение
+model DuelSlot {
+  id        String         @id @default(uuid())
+  duelId    String
+  duel      Duel           @relation(fields: [duelId], references: [id], onDelete: Cascade)
+  startsAt  DateTime
+  endsAt    DateTime
+  responses DuelResponse[]
+
+  @@index([duelId, startsAt])
+}
+
+// Отклик на публикацию или ответ вызванного: вариант автора или своё время
+model DuelResponse {
+  id               String             @id @default(uuid())
+  duelId           String
+  duel             Duel               @relation(fields: [duelId], references: [id], onDelete: Cascade)
+  playerId         String
+  player           Player             @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  slotId           String?
+  slot             DuelSlot?          @relation(fields: [slotId], references: [id], onDelete: SetNull)
+  proposedStartsAt DateTime?
+  proposedEndsAt   DateTime?
+  message          String?
+  status           DuelResponseStatus @default(NEW)
+  createdAt        DateTime           @default(now())
+  answeredAt       DateTime?
+
+  @@index([duelId, status])
+  @@index([playerId, createdAt])
 }
 
 // ============ Журнал действий ============
