@@ -36,6 +36,7 @@ const USER = {
 } as const;
 const ADMIN_USER = '50000000-0000-4000-8000-000000000009';
 const NO_PROFILE_USER = '50000000-0000-4000-8000-000000000008';
+const SHEET_USER = '50000000-0000-4000-8000-00000000000a';
 
 const NOW = new Date('2026-10-24T10:00:00.000Z');
 const SLOT_START = new Date('2026-10-26T15:00:00.000Z');
@@ -184,18 +185,23 @@ function makePrisma() {
   const users: Record<string, Row | null> = {
     [USER[AUTHOR]]: {
       phone: '+77010000001',
-      player: { id: AUTHOR, lastName: 'Петров', firstName: 'Олег' },
+      player: { id: AUTHOR, lastName: 'Петров', firstName: 'Олег', confirmedAt: NOW },
     },
     [USER[OPPONENT]]: {
       phone: '+77010000002',
-      player: { id: OPPONENT, lastName: 'Иванов', firstName: 'Пётр' },
+      player: { id: OPPONENT, lastName: 'Иванов', firstName: 'Пётр', confirmedAt: NOW },
     },
     [USER[STRANGER]]: {
       phone: '+77010000003',
-      player: { id: STRANGER, lastName: 'Сидоров', firstName: 'Ким' },
+      player: { id: STRANGER, lastName: 'Сидоров', firstName: 'Ким', confirmedAt: NOW },
     },
     [ADMIN_USER]: { player: null },
     [NO_PROFILE_USER]: { player: null },
+    // Анкета без рейтинга — ADR-072.
+    [SHEET_USER]: {
+      phone: '+77010000009',
+      player: { id: 'sheet', lastName: 'Анкетов', firstName: 'Ли', confirmedAt: null },
+    },
   };
   const matches = (row: Row, where: Row): boolean =>
     (where.status === undefined || row.status === where.status) &&
@@ -209,7 +215,9 @@ function makePrisma() {
     },
     player: {
       findUnique: returns(({ where }: { where: { id: string } }) =>
-        where.id in USER ? { id: where.id, userId: USER[where.id as keyof typeof USER] } : null,
+        where.id in USER
+          ? { id: where.id, userId: USER[where.id as keyof typeof USER], confirmedAt: NOW }
+          : null,
       ),
       findMany: returns(() => [
         { id: AUTHOR, rating: new Prisma.Decimal('300'), ratedMatches: 25, ratedTournaments: 6 },
@@ -322,6 +330,12 @@ const input: CreateDuelInput = {
 };
 
 describe('предложение', () => {
+  it('анкета без рейтинга дуэль не предлагает — ADR-072', async () => {
+    expect(await failure(service.create(SHEET_USER, input, NOW))).toMatchObject({
+      code: 'PLAYER_NOT_CONFIRMED',
+    });
+  });
+
   it('без профиля игрока — DUEL_PROFILE_REQUIRED', async () => {
     expect(await failure(service.create(NO_PROFILE_USER, input, NOW))).toMatchObject({
       code: 'DUEL_PROFILE_REQUIRED',
