@@ -1072,6 +1072,8 @@ enum NotificationType {
   DUEL_RESULT
   DUEL_COMPLETED
   DUEL_DISPUTED
+  DUEL_RESCHEDULE
+  DUEL_REMINDER
 }
 
 // ============ Турниры ============
@@ -1510,6 +1512,7 @@ enum ForumSubjectType {
   // Новость или акция клуба и тренера — публикуется на форуме сама (ADR-067)
   CLUB_POST
   COACH_POST
+  DUEL
 }
 
 model ForumSection {
@@ -1766,6 +1769,25 @@ model Duel {
   annulledById      String?
   annulledBy        User?           @relation("DuelAnnuller", fields: [annulledById], references: [id], onDelete: SetNull)
 
+  // Матч — ADR-068. Когда согласовано время (назначение или принятый
+  // перенос): игре, согласованной ближе чем за 3 часа, напоминание не нужно
+  agreedAt           DateTime?
+  // Табло: матч начат и победители партий по порядку — профили участников
+  startedAt          DateTime?
+  sets               String[]  @default([])
+  // Как связаться — видит только соперник после согласования
+  authorContact      String?
+  opponentContact    String?
+  // Предложенный перенос, пока второй не ответил; до согласия действует прежнее
+  rescheduleStartsAt DateTime?
+  rescheduleEndsAt   DateTime?
+  rescheduleById     String?
+  rescheduleMessage  String?
+  rescheduleAt       DateTime?
+  // Напоминание за 3 часа ушло — захват строки, чтобы два экземпляра API не
+  // отправили его дважды. Сбрасывается принятым переносом
+  reminderSentAt     DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1782,6 +1804,8 @@ model Duel {
   // Очередь администратора и проверка частоты — рейтинговые по времени
   @@index([rated, createdAt(sort: Desc)])
   @@index([rated, startsAt])
+  // Напоминание: назначенные с близким началом
+  @@index([status, startsAt])
 }
 
 // Вариант времени «дата, с — до»; до DUEL_SLOTS_MAX на предложение
@@ -1811,6 +1835,8 @@ model DuelResponse {
   status           DuelResponseStatus @default(NEW)
   createdAt        DateTime           @default(now())
   answeredAt       DateTime?
+  // Контакт откликнувшегося — автору после согласования (ADR-068)
+  contact          String?
 
   @@index([duelId, status])
   @@index([playerId, createdAt])
