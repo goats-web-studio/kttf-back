@@ -29,6 +29,7 @@ import { SEEKING_STATUSES, assertScore, assertSlotTime, invalidState } from './d
 import {
   ANONYMOUS_VIEWER,
   confirmByOf,
+  startableAtOf,
   duelFields,
   playerName,
   ratingChangeFields,
@@ -50,6 +51,8 @@ export interface DuelActor {
   readonly userId: string;
   readonly playerId: string;
   readonly name: string;
+  /** Телефон аккаунта — контакт по умолчанию (ADR-068). */
+  readonly phone: string;
 }
 
 /** Отклик в объёме, нужном для действий над ним. */
@@ -61,6 +64,7 @@ const responseActionFields = {
   proposedStartsAt: true,
   proposedEndsAt: true,
   status: true,
+  contact: true,
   slot: { select: { startsAt: true, endsAt: true } },
   player: { select: { userId: true, lastName: true, firstName: true } },
 } as const satisfies Prisma.DuelResponseSelect;
@@ -273,6 +277,8 @@ export class DuelsService {
           venueAddress: input.venueAddress ?? null,
           cityId,
           note: input.note ?? null,
+          // Контакт по умолчанию — телефон аккаунта, как предлагает форма.
+          authorContact: input.contact ?? author.phone,
           slotsFrom: first.startsAt,
           slotsUntil,
           playAt: first.startsAt,
@@ -362,6 +368,8 @@ export class DuelsService {
           startsAt: agreed.startsAt,
           endsAt: agreed.endsAt,
           playAt: agreed.startsAt,
+          agreedAt: now,
+          opponentContact: input.contact ?? me.phone,
         });
       }
 
@@ -373,6 +381,7 @@ export class DuelsService {
           proposedStartsAt: proposed?.startsAt ?? null,
           proposedEndsAt: proposed?.endsAt ?? null,
           message: input.message ?? null,
+          contact: input.contact ?? me.phone,
           status: agreed === null ? 'NEW' : 'ACCEPTED',
           answeredAt: agreed === null ? null : now,
           createdAt: now,
@@ -456,6 +465,8 @@ export class DuelsService {
       await claimDuel(tx, duel.id, [...SEEKING_STATUSES], {
         status: 'SCHEDULED',
         opponentId: response.playerId,
+        opponentContact: response.contact,
+        agreedAt: now,
         startsAt: time.startsAt,
         endsAt: time.endsAt,
         playAt: time.startsAt,
@@ -632,7 +643,11 @@ export class DuelsService {
 
   // ---------------------------------------------------------------- счёт
 
-  /** Счёт вносит любой из двоих, не раньше начала согласованного времени. */
+  /**
+   * Счёт вносит любой из двоих, с часа до начала согласованного времени
+   * (ADR-068). Ручной ввод открыт и при начатом табло: кто табло не вёл,
+   * вносит итог сразу.
+   */
   async report(
     duelId: string,
     userId: string,
@@ -655,23 +670,49 @@ export class DuelsService {
     // Нерейтинговый спарринг кончается назначением: счёта у него нет.
     if (!duel.rated || duel.bestOf === null) throw invalidState(duel.status, { rated: false });
 
-    if (duel.startsAt === null || now.getTime() < duel.startsAt.getTime()) {
-      throw new AppError(ERROR_CODES.DUEL_TIME_INVALID, 'Result before the game starts', {
-        startsAt: duel.startsAt?.toISOString() ?? null,
+    if (duel.startsAt === null || now.getTime() < startableAtOf(duel.startsAt).getTime()) {
+      throw new AppError(ERROR_CODES.DUEL_TIME_INVALID, 'Result before the game can start', {
+        startableAt: duel.startsAt === null ? null : startableAtOf(duel.startsAt).toISOString(),
       });
     }
 
-    assertScore(duel.bestOf as DuelBestOf, input, [duel.authorId, other.id]);
+    assertScore(duel.bestOf as DuelBestOf, input, [me.playerId, other.id]);
+    await this.submitResult(duel, me, other, input, now);
+
+    return this.render(duelId, me, now);
+  }
+
+  /**
+   * Счёт — на подтверждение второму: ручной ввод и «Завершить» по табло.
+   * Переход — только из назначенной, условием в самом обновлении.
+   */
+  async submitResult(
+    duel: DuelRecord,
+    me: DuelActor,
+    other: SideRecord,
+    input: ReportDuelInput,
+    now: Date,
+    extra: Prisma.DuelWhereInput = {},
+  ): Promise<void> {
+    const duelId = duel.id;
 
     await this.prisma.$transaction(async (tx) => {
-      await claimDuel(tx, duelId, ['SCHEDULED'], {
-        status: 'REPORTED',
-        winnerId: input.winnerId,
-        winnerSets: input.winnerSets,
-        loserSets: input.loserSets,
-        reportedById: me.playerId,
-        reportedAt: now,
-      });
+      await claimDuel(
+        tx,
+        duelId,
+        ['SCHEDULED'],
+        {
+          status: 'REPORTED',
+          winnerId: input.winnerId,
+          winnerSets: input.winnerSets,
+          loserSets: input.loserSets,
+          reportedById: me.playerId,
+          reportedAt: now,
+          // Перенос, который не успели принять, после счёта не нужен.
+          ...CLEAR_RESCHEDULE,
+        },
+        extra,
+      );
 
       if (other.userId !== null) {
         const otherWon = input.winnerId === other.id;
@@ -686,10 +727,8 @@ export class DuelsService {
         });
       }
 
-      await this.notifications.settleDuel(tx, userId, duelId, now);
+      await this.notifications.settleDuel(tx, me.userId, duelId, now);
     });
-
-    return this.render(duelId, me, now);
   }
 
   /**
@@ -828,10 +867,10 @@ export class DuelsService {
   }
 
   /** Предлагать и откликаться — только с профилем игрока. */
-  private async actor(userId: string): Promise<DuelActor> {
+  async actor(userId: string): Promise<DuelActor> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { player: { select: { id: true, lastName: true, firstName: true } } },
+      select: { phone: true, player: { select: { id: true, lastName: true, firstName: true } } },
     });
 
     if (user === null) throw new AppError(ERROR_CODES.UNAUTHORIZED, 'User not found');
@@ -840,7 +879,12 @@ export class DuelsService {
       throw new AppError(ERROR_CODES.DUEL_PROFILE_REQUIRED, 'Duels require a player profile');
     }
 
-    return { userId, playerId: user.player.id, name: playerName(user.player) };
+    return {
+      userId,
+      playerId: user.player.id,
+      name: playerName(user.player),
+      phone: user.phone,
+    };
   }
 
   /** Вызвать можно игрока с аккаунтом и не себя. */
@@ -1002,6 +1046,15 @@ export class DuelsService {
 }
 
 // ---------------------------------------------------------------- помощники
+
+/** Снять предложение переноса. */
+export const CLEAR_RESCHEDULE = {
+  rescheduleStartsAt: null,
+  rescheduleEndsAt: null,
+  rescheduleById: null,
+  rescheduleMessage: null,
+  rescheduleAt: null,
+} as const satisfies Prisma.DuelUncheckedUpdateManyInput;
 
 function isSeeking(status: DuelStatus): boolean {
   return (SEEKING_STATUSES as readonly DuelStatus[]).includes(status);

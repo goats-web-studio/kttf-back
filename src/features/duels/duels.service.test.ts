@@ -8,7 +8,9 @@ import type { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { NotificationsService } from '../notifications/notifications.service.js';
 import { DuelRatingService } from './duel-rating.service.js';
 import { DuelsAdminService } from './duels-admin.service.js';
-import { DuelsService } from './duels.service.js';
+import { DuelMatchService } from './duel-match.service.js';
+import { DuelRemindersService } from './duel-reminders.service.js';
+import { CLEAR_RESCHEDULE, DuelsService } from './duels.service.js';
 
 /**
  * Дуэли — ADR-065, `docs/13`. Правила состояний, пределы, рейтинг и
@@ -93,6 +95,15 @@ function makeDuel(over: Record<string, unknown> = {}) {
     annulledAt: null,
     annulReason: null,
     createdAt: NOW,
+    startedAt: null,
+    sets: [] as string[],
+    authorContact: '+77010000001',
+    opponentContact: null,
+    rescheduleStartsAt: null,
+    rescheduleEndsAt: null,
+    rescheduleById: null,
+    rescheduleMessage: null,
+    rescheduleAt: null,
     author: side(AUTHOR),
     opponent: null,
     club: null,
@@ -135,6 +146,7 @@ function makeResponse(over: Record<string, unknown> = {}) {
     proposedStartsAt: null,
     proposedEndsAt: null,
     message: 'Давай',
+    contact: '@ivanov',
     status: 'NEW',
     createdAt: NOW,
     slot: { startsAt: SLOT_START, endsAt: SLOT_END },
@@ -170,9 +182,18 @@ function makePrisma() {
     events: [] as Row[],
   };
   const users: Record<string, Row | null> = {
-    [USER[AUTHOR]]: { player: { id: AUTHOR, lastName: 'Петров', firstName: 'Олег' } },
-    [USER[OPPONENT]]: { player: { id: OPPONENT, lastName: 'Иванов', firstName: 'Пётр' } },
-    [USER[STRANGER]]: { player: { id: STRANGER, lastName: 'Сидоров', firstName: 'Ким' } },
+    [USER[AUTHOR]]: {
+      phone: '+77010000001',
+      player: { id: AUTHOR, lastName: 'Петров', firstName: 'Олег' },
+    },
+    [USER[OPPONENT]]: {
+      phone: '+77010000002',
+      player: { id: OPPONENT, lastName: 'Иванов', firstName: 'Пётр' },
+    },
+    [USER[STRANGER]]: {
+      phone: '+77010000003',
+      player: { id: STRANGER, lastName: 'Сидоров', firstName: 'Ким' },
+    },
     [ADMIN_USER]: { player: null },
     [NO_PROFILE_USER]: { player: null },
   };
@@ -242,6 +263,8 @@ let prisma: ReturnType<typeof makePrisma>['prisma'];
 let state: ReturnType<typeof makePrisma>['state'];
 let service: DuelsService;
 let admin: DuelsAdminService;
+let match: DuelMatchService;
+let reminders: DuelRemindersService;
 
 beforeEach(() => {
   ({ prisma, state } = makePrisma());
@@ -251,6 +274,16 @@ beforeEach(() => {
 
   service = new DuelsService(db, notifications, rating);
   admin = new DuelsAdminService(db, notifications, rating, service);
+  match = new DuelMatchService(db, notifications, rating, service);
+  reminders = new DuelRemindersService(db, notifications, {
+    NODE_ENV: 'test',
+    PORT: 0,
+    DATABASE_URL: 'postgresql://x',
+    JWT_SECRET: 'test_secret_at_least_32_characters_long',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_BUCKET: 'kttf-media',
+    S3_REGION: 'us-east-1',
+  });
 });
 
 async function failure(run: Promise<unknown>): Promise<{ code: string; details: unknown }> {
@@ -407,6 +440,9 @@ describe('ответ на вызов', () => {
           startsAt: SLOT_START,
           endsAt: SLOT_END,
           playAt: SLOT_START,
+          agreedAt: NOW,
+          // Контакт не дан — телефон аккаунта.
+          opponentContact: '+77010000002',
         },
       },
     ]);
@@ -522,6 +558,8 @@ describe('отклики на публикацию', () => {
       data: {
         status: 'SCHEDULED',
         opponentId: OPPONENT,
+        opponentContact: '@ivanov',
+        agreedAt: NOW,
         startsAt: SLOT_START,
         endsAt: SLOT_END,
         playAt: SLOT_START,
@@ -655,6 +693,7 @@ describe('счёт', () => {
       loserSets: 1,
       reportedById: AUTHOR,
       reportedAt: PLAYED,
+      ...CLEAR_RESCHEDULE,
     });
     expect(notified()).toEqual([
       {
@@ -973,5 +1012,477 @@ describe('спор и администратор', () => {
       pairCount30d: 3,
       responsesNew: null,
     });
+  });
+});
+
+// ---------------------------------------------------------------- матч (ADR-068)
+
+const MINUTE_MS = 60 * 1000;
+/** Час до начала — с этого момента можно начать матч и внести счёт. */
+const STARTABLE = new Date(SLOT_START.getTime() - 60 * MINUTE_MS);
+const NEW_START = new Date('2026-10-28T15:00:00.000Z');
+const NEW_END = new Date('2026-10-28T17:00:00.000Z');
+
+/** Перенос, предложенный соперником. */
+const proposed = (over: Record<string, unknown> = {}) =>
+  scheduled({
+    rescheduleStartsAt: NEW_START,
+    rescheduleEndsAt: NEW_END,
+    rescheduleById: OPPONENT,
+    rescheduleMessage: 'Давай в среду',
+    rescheduleAt: NOW,
+    ...over,
+  });
+
+describe('счёт — с часа до начала', () => {
+  it('за полчаса до начала уже можно, за час с минутой — ещё нет', async () => {
+    state.duel = scheduled();
+    const score = { winnerId: AUTHOR, winnerSets: 3, loserSets: 1 };
+
+    expect(
+      await failure(
+        service.report(DUEL_ID, USER[AUTHOR], score, new Date(STARTABLE.getTime() - MINUTE_MS)),
+      ),
+    ).toEqual({
+      code: 'DUEL_TIME_INVALID',
+      details: { startableAt: STARTABLE.toISOString() },
+    });
+
+    await service.report(
+      DUEL_ID,
+      USER[AUTHOR],
+      score,
+      new Date(SLOT_START.getTime() - 30 * MINUTE_MS),
+    );
+
+    expect(transitions()[0]?.data).toMatchObject({ status: 'REPORTED' });
+  });
+
+  it('ручной счёт открыт и при начатом табло', async () => {
+    state.duel = scheduled({ startedAt: STARTABLE, sets: [AUTHOR] });
+
+    await service.report(
+      DUEL_ID,
+      USER[OPPONENT],
+      { winnerId: OPPONENT, winnerSets: 3, loserSets: 2 },
+      PLAYED,
+    );
+
+    expect(transitions()[0]?.data).toMatchObject({ status: 'REPORTED', winnerId: OPPONENT });
+  });
+});
+
+describe('старт матча', () => {
+  it('раньше чем за час — DUEL_TIME_INVALID', async () => {
+    state.duel = scheduled();
+
+    expect(
+      await failure(match.start(DUEL_ID, USER[AUTHOR], new Date(STARTABLE.getTime() - 1))),
+    ).toMatchObject({ code: 'DUEL_TIME_INVALID' });
+  });
+
+  it('за час — начат, предложенный перенос снят', async () => {
+    state.duel = proposed();
+
+    await match.start(DUEL_ID, USER[AUTHOR], STARTABLE);
+
+    expect(transitions()).toEqual([
+      {
+        where: { startedAt: null, id: DUEL_ID, status: { in: ['SCHEDULED'] } },
+        data: { startedAt: STARTABLE, ...CLEAR_RESCHEDULE },
+      },
+    ]);
+  });
+
+  it('нерейтинговый спарринг, второй старт и чужой — нельзя', async () => {
+    state.duel = scheduled({ kind: 'SPARRING', rated: false, bestOf: null });
+    expect(await failure(match.start(DUEL_ID, USER[AUTHOR], PLAYED))).toMatchObject({
+      code: 'DUEL_INVALID_STATE',
+      details: { rated: false },
+    });
+
+    state.duel = scheduled({ startedAt: STARTABLE });
+    expect(await failure(match.start(DUEL_ID, USER[AUTHOR], PLAYED))).toMatchObject({
+      code: 'DUEL_INVALID_STATE',
+      details: { started: true },
+    });
+
+    expect(await failure(match.start(DUEL_ID, USER[STRANGER], PLAYED))).toMatchObject({
+      code: 'FORBIDDEN',
+    });
+  });
+});
+
+describe('табло', () => {
+  it('партия дописывается условием на прежний список', async () => {
+    state.duel = scheduled({ startedAt: STARTABLE });
+
+    await match.addSet(DUEL_ID, USER[OPPONENT], { winnerId: AUTHOR, index: 0 }, PLAYED);
+
+    expect(transitions()).toEqual([
+      {
+        where: {
+          id: DUEL_ID,
+          status: 'SCHEDULED',
+          startedAt: { not: null },
+          sets: { equals: [] },
+        },
+        data: { sets: [AUTHOR] },
+      },
+    ]);
+  });
+
+  it('то же нажатие со второго телефона — DUEL_INVALID_STATE с числом партий', async () => {
+    state.duel = scheduled({ startedAt: STARTABLE, sets: [AUTHOR] });
+
+    expect(
+      await failure(match.addSet(DUEL_ID, USER[OPPONENT], { winnerId: AUTHOR, index: 0 }, PLAYED)),
+    ).toEqual({ code: 'DUEL_INVALID_STATE', details: { status: 'SCHEDULED', sets: 1 } });
+  });
+
+  it('чужой победитель и партия сверх формата — DUEL_SCORE_INVALID', async () => {
+    state.duel = scheduled({ startedAt: STARTABLE });
+    expect(
+      await failure(match.addSet(DUEL_ID, USER[AUTHOR], { winnerId: STRANGER, index: 0 }, PLAYED)),
+    ).toEqual({ code: 'DUEL_SCORE_INVALID', details: { setsToWin: 3 } });
+
+    state.duel = scheduled({ startedAt: STARTABLE, sets: [AUTHOR, AUTHOR, AUTHOR] });
+    expect(
+      await failure(match.addSet(DUEL_ID, USER[AUTHOR], { winnerId: OPPONENT, index: 3 }, PLAYED)),
+    ).toEqual({ code: 'DUEL_SCORE_INVALID', details: { setsToWin: 3 } });
+  });
+
+  it('до старта табло не ведётся', async () => {
+    state.duel = scheduled();
+
+    expect(
+      await failure(match.addSet(DUEL_ID, USER[AUTHOR], { winnerId: AUTHOR, index: 0 }, PLAYED)),
+    ).toMatchObject({ code: 'DUEL_INVALID_STATE', details: { started: false } });
+  });
+
+  it('отмена последней партии', async () => {
+    state.duel = scheduled({ startedAt: STARTABLE, sets: [AUTHOR, OPPONENT] });
+
+    await match.undoSet(DUEL_ID, USER[AUTHOR], { index: 2 }, PLAYED);
+
+    expect(transitions()[0]?.data).toEqual({ sets: [AUTHOR] });
+    expect(await failure(match.undoSet(DUEL_ID, USER[AUTHOR], { index: 1 }, PLAYED))).toMatchObject(
+      { code: 'DUEL_INVALID_STATE', details: { sets: 2 } },
+    );
+  });
+
+  it('«Завершить» — счёт по табло на подтверждение сопернику', async () => {
+    const board = [AUTHOR, OPPONENT, AUTHOR, AUTHOR];
+    state.duel = scheduled({ startedAt: STARTABLE, sets: board });
+
+    await match.finish(DUEL_ID, USER[AUTHOR], PLAYED);
+
+    expect(transitions()[0]).toEqual({
+      where: { sets: { equals: board }, id: DUEL_ID, status: { in: ['SCHEDULED'] } },
+      data: {
+        status: 'REPORTED',
+        winnerId: AUTHOR,
+        winnerSets: 3,
+        loserSets: 1,
+        reportedById: AUTHOR,
+        reportedAt: PLAYED,
+        ...CLEAR_RESCHEDULE,
+      },
+    });
+    expect(notified()).toEqual([
+      expect.objectContaining({
+        userId: USER[OPPONENT],
+        type: 'DUEL_RESULT',
+        data: expect.objectContaining({ setsFor: 1, setsAgainst: 3 }) as unknown,
+      }),
+    ]);
+  });
+
+  it('«Завершить» до победы — DUEL_SCORE_INVALID', async () => {
+    state.duel = scheduled({ startedAt: STARTABLE, sets: [AUTHOR, OPPONENT] });
+
+    expect(await failure(match.finish(DUEL_ID, USER[AUTHOR], PLAYED))).toEqual({
+      code: 'DUEL_SCORE_INVALID',
+      details: { setsToWin: 3 },
+    });
+  });
+});
+
+describe('перенос', () => {
+  const slot = { startsAt: NEW_START.toISOString(), endsAt: NEW_END.toISOString() };
+
+  it('предложение — второму уведомление, прежнее время действует', async () => {
+    state.duel = scheduled();
+
+    await match.propose(DUEL_ID, USER[AUTHOR], { slot, message: 'В среду?' }, NOW);
+
+    expect(transitions()).toEqual([
+      {
+        where: { startedAt: null, id: DUEL_ID, status: { in: ['SCHEDULED'] } },
+        data: {
+          rescheduleStartsAt: NEW_START,
+          rescheduleEndsAt: NEW_END,
+          rescheduleById: AUTHOR,
+          rescheduleMessage: 'В среду?',
+          rescheduleAt: NOW,
+        },
+      },
+    ]);
+    expect(notified()).toEqual([
+      {
+        userId: USER[OPPONENT],
+        type: 'DUEL_RESCHEDULE',
+        data: {
+          duelId: DUEL_ID,
+          kind: 'DUEL',
+          playerName: 'Петров Олег',
+          startsAt: NEW_START.toISOString(),
+          action: 'PROPOSED',
+        },
+      },
+    ]);
+  });
+
+  it('начатую не переносят, в прошлое — тоже', async () => {
+    state.duel = scheduled({ startedAt: STARTABLE });
+    expect(await failure(match.propose(DUEL_ID, USER[AUTHOR], { slot }, PLAYED))).toMatchObject({
+      code: 'DUEL_INVALID_STATE',
+    });
+
+    state.duel = scheduled();
+    const past = { startsAt: '2026-10-20T15:00:00.000Z', endsAt: '2026-10-20T17:00:00.000Z' };
+    expect(await failure(match.propose(DUEL_ID, USER[AUTHOR], { slot: past }, NOW))).toMatchObject({
+      code: 'DUEL_TIME_INVALID',
+    });
+  });
+
+  it('принят — новое время, напоминание заново, предложившему ответ', async () => {
+    state.duel = proposed();
+
+    await match.acceptReschedule(DUEL_ID, USER[AUTHOR], NOW);
+
+    expect(transitions()).toEqual([
+      {
+        where: {
+          startedAt: null,
+          rescheduleById: OPPONENT,
+          rescheduleStartsAt: NEW_START,
+          id: DUEL_ID,
+          status: { in: ['SCHEDULED'] },
+        },
+        data: {
+          startsAt: NEW_START,
+          endsAt: NEW_END,
+          playAt: NEW_START,
+          agreedAt: NOW,
+          reminderSentAt: null,
+          ...CLEAR_RESCHEDULE,
+        },
+      },
+    ]);
+    expect(notified()).toEqual([
+      {
+        userId: USER[OPPONENT],
+        type: 'DUEL_RESCHEDULE',
+        data: {
+          duelId: DUEL_ID,
+          kind: 'DUEL',
+          playerName: 'Петров Олег',
+          startsAt: NEW_START.toISOString(),
+          action: 'ACCEPTED',
+        },
+      },
+    ]);
+  });
+
+  it('рейтинговая на новое время — снова предел частоты', async () => {
+    state.duel = proposed();
+    prisma.duel.findMany.mockResolvedValue([
+      { authorId: AUTHOR, opponentId: STRANGER, startsAt: NEW_START },
+      { authorId: AUTHOR, opponentId: STRANGER, startsAt: new Date(NEW_START.getTime() - HOUR_MS) },
+      { authorId: STRANGER, opponentId: AUTHOR, startsAt: new Date(NEW_START.getTime() + HOUR_MS) },
+    ]);
+
+    expect(await failure(match.acceptReschedule(DUEL_ID, USER[AUTHOR], NOW))).toEqual({
+      code: 'DUEL_RATING_LIMIT',
+      details: { kind: 'PLAYER', playerId: AUTHOR },
+    });
+    expect(transitions()).toEqual([]);
+  });
+
+  it('свой перенос не принимают, чужой не отзывают', async () => {
+    state.duel = proposed();
+
+    expect(await failure(match.acceptReschedule(DUEL_ID, USER[OPPONENT], NOW))).toMatchObject({
+      code: 'FORBIDDEN',
+    });
+    expect(await failure(match.withdrawReschedule(DUEL_ID, USER[AUTHOR], NOW))).toMatchObject({
+      code: 'FORBIDDEN',
+    });
+  });
+
+  it('отказ — предложение снято, предложившему ответ; отзыв — без уведомления', async () => {
+    state.duel = proposed();
+
+    await match.declineReschedule(DUEL_ID, USER[AUTHOR], NOW);
+
+    expect(transitions()[0]?.data).toEqual(CLEAR_RESCHEDULE);
+    expect(notified()[0]).toMatchObject({
+      userId: USER[OPPONENT],
+      data: { action: 'DECLINED' },
+    });
+
+    prisma.notification.createMany.mockClear();
+    await match.withdrawReschedule(DUEL_ID, USER[OPPONENT], NOW);
+
+    expect(notified()).toEqual([]);
+  });
+
+  it('без предложения отвечать не на что', async () => {
+    state.duel = scheduled();
+
+    expect(await failure(match.declineReschedule(DUEL_ID, USER[AUTHOR], NOW))).toEqual({
+      code: 'DUEL_INVALID_STATE',
+      details: { status: 'SCHEDULED', reschedule: null },
+    });
+  });
+});
+
+describe('контакты и страница матча', () => {
+  it('участник правит свой контакт, чужой — нет', async () => {
+    state.duel = scheduled();
+
+    await match.contact(DUEL_ID, USER[OPPONENT], { contact: 'tg @ivanov' }, NOW);
+
+    expect(prisma.duel.update).toHaveBeenCalledWith({
+      where: { id: DUEL_ID },
+      data: { opponentContact: 'tg @ivanov' },
+      select: { id: true },
+    });
+    expect(
+      await failure(match.contact(DUEL_ID, USER[STRANGER], { contact: null }, NOW)),
+    ).toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('при создании контакт по умолчанию — телефон аккаунта', async () => {
+    await service.create(USER[AUTHOR], input, NOW);
+
+    expect(prisma.duel.create.mock.calls[0]?.[0]).toMatchObject({
+      data: { authorContact: '+77010000001' },
+    });
+  });
+
+  it('участнику — контакты, перенос, «начать матч»; постороннему — только табло', async () => {
+    state.duel = proposed({ opponentContact: '@ivanov' });
+
+    const mine = duelViewSchema.parse(await service.view(DUEL_ID, USER[AUTHOR], STARTABLE));
+
+    expect(mine.contacts).toEqual({ mine: '+77010000001', counterpart: '@ivanov' });
+    expect(mine.reschedule).toMatchObject({ proposedById: OPPONENT, message: 'Давай в среду' });
+    expect(mine.startableAt).toBe(STARTABLE.toISOString());
+    expect(mine.can).toMatchObject({
+      start: true,
+      score: false,
+      reschedule: true,
+      answerReschedule: true,
+      report: true,
+      cancel: true,
+    });
+
+    const theirs = duelViewSchema.parse(await service.view(DUEL_ID, USER[OPPONENT], NOW));
+
+    expect(theirs.contacts).toEqual({ mine: '@ivanov', counterpart: '+77010000001' });
+    expect(theirs.can).toMatchObject({ start: false, answerReschedule: false, report: false });
+
+    const stranger = duelViewSchema.parse(await service.view(DUEL_ID, USER[STRANGER], NOW));
+
+    expect(stranger.contacts).toBeNull();
+    expect(stranger.reschedule).toBeNull();
+    expect(stranger.sets).toEqual([]);
+  });
+
+  it('начатый матч: табло видно всем, «партия» — участникам', async () => {
+    state.duel = scheduled({ startedAt: STARTABLE, sets: [AUTHOR, OPPONENT] });
+
+    const view = duelViewSchema.parse(await service.view(DUEL_ID, undefined, PLAYED));
+    const mine = duelViewSchema.parse(await service.view(DUEL_ID, USER[OPPONENT], PLAYED));
+
+    expect(view.startedAt).toBe(STARTABLE.toISOString());
+    expect(view.sets).toEqual([AUTHOR, OPPONENT]);
+    expect(mine.can).toMatchObject({ start: false, score: true, reschedule: false, cancel: true });
+  });
+
+  it('до согласования контакты не видны даже автору', async () => {
+    const view = duelViewSchema.parse(await service.view(DUEL_ID, USER[AUTHOR], NOW));
+
+    expect(view.contacts).toBeNull();
+    expect(view.startableAt).toBeNull();
+  });
+});
+
+describe('напоминание за 3 часа', () => {
+  const reminderRow = (over: Record<string, unknown> = {}) => ({
+    id: DUEL_ID,
+    kind: 'DUEL',
+    startsAt: SLOT_START,
+    agreedAt: NOW,
+    venueName: 'Школа №5',
+    club: null,
+    author: { userId: USER[AUTHOR], lastName: 'Петров', firstName: 'Олег' },
+    opponent: { userId: USER[OPPONENT], lastName: 'Иванов', firstName: 'Пётр' },
+    ...over,
+  });
+  const twoHoursBefore = new Date(SLOT_START.getTime() - 2 * HOUR_MS);
+
+  it('обоим — с кем, когда и где; строка захвачена условием', async () => {
+    prisma.duel.findMany.mockResolvedValue([reminderRow({ club: { name: 'Спин' } })]);
+
+    expect(await reminders.sweep(twoHoursBefore)).toBe(1);
+    expect(prisma.duel.findMany.mock.calls[0]?.[0]).toMatchObject({
+      where: {
+        status: 'SCHEDULED',
+        reminderSentAt: null,
+        startsAt: { gt: twoHoursBefore, lte: new Date(twoHoursBefore.getTime() + 3 * HOUR_MS) },
+      },
+    });
+    expect(prisma.duel.updateMany).toHaveBeenCalledWith({
+      where: { id: DUEL_ID, status: 'SCHEDULED', reminderSentAt: null, startsAt: SLOT_START },
+      data: { reminderSentAt: twoHoursBefore },
+    });
+    expect(notified()).toEqual([
+      {
+        userId: USER[AUTHOR],
+        type: 'DUEL_REMINDER',
+        data: {
+          duelId: DUEL_ID,
+          kind: 'DUEL',
+          playerName: 'Иванов Пётр',
+          startsAt: SLOT_START.toISOString(),
+          venueName: 'Спин',
+        },
+      },
+      {
+        userId: USER[OPPONENT],
+        type: 'DUEL_REMINDER',
+        data: expect.objectContaining({ playerName: 'Петров Олег', venueName: 'Спин' }) as unknown,
+      },
+    ]);
+  });
+
+  it('согласованной внутри окна не напоминают', async () => {
+    prisma.duel.findMany.mockResolvedValue([
+      reminderRow({ agreedAt: new Date(SLOT_START.getTime() - 2.5 * HOUR_MS) }),
+    ]);
+
+    expect(await reminders.sweep(twoHoursBefore)).toBe(0);
+    expect(prisma.duel.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('второй экземпляр строку не захватил — без дубля', async () => {
+    prisma.duel.findMany.mockResolvedValue([reminderRow()]);
+    prisma.duel.updateMany.mockResolvedValue({ count: 0 });
+
+    expect(await reminders.sweep(twoHoursBefore)).toBe(0);
+    expect(notified()).toEqual([]);
   });
 });

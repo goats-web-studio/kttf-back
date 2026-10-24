@@ -34,6 +34,8 @@ const DUEL_TYPES = [
   'DUEL_RESULT',
   'DUEL_COMPLETED',
   'DUEL_DISPUTED',
+  'DUEL_RESCHEDULE',
+  'DUEL_REMINDER',
 ] as const satisfies readonly NotificationType[];
 /** Старые уведомления чистятся попутно, не чаще раза в час на процесс. */
 const SWEEP_EVERY_MS = 60 * 60 * 1000;

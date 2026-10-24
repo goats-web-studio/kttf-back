@@ -2,25 +2,33 @@ import {
   annulDuelSchema,
   createDuelSchema,
   disputeDuelSchema,
+  duelContactSchema,
   duelReasonSchema,
+  duelSetSchema,
+  duelUndoSetSchema,
   listAdminDuelsSchema,
   listDuelsSchema,
   listMyDuelsSchema,
   reportDuelSchema,
   resolveDuelSchema,
+  rescheduleDuelSchema,
   respondDuelSchema,
   type AdminDuelItemView,
   type AnnulDuelInput,
   type CreateDuelInput,
   type DisputeDuelInput,
+  type DuelContactInput,
   type DuelItemView,
   type DuelReasonInput,
+  type DuelSetInput,
+  type DuelUndoSetInput,
   type DuelView,
   type ListAdminDuelsQuery,
   type ListDuelsQuery,
   type ListMyDuelsQuery,
   type Page,
   type ReportDuelInput,
+  type RescheduleDuelInput,
   type ResolveDuelInput,
   type RespondDuelInput,
 } from '@kttf/shared/types';
@@ -41,6 +49,7 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { RequireAdmin } from '../auth/admin.guard.js';
 import { CurrentUserId, JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { OptionalJwtGuard, OptionalUserId } from '../auth/optional-jwt.guard.js';
+import { DuelMatchService } from './duel-match.service.js';
 import { DuelsAdminService } from './duels-admin.service.js';
 import { DuelsService } from './duels.service.js';
 
@@ -187,6 +196,101 @@ export class DuelsController {
     @CurrentUserId() userId: string,
   ): Promise<DuelView> {
     return this.duels.dispute(id, userId, body);
+  }
+}
+
+/**
+ * Матч дуэли — ADR-068, `docs/13` §3.7: старт, табло, перенос, контакт.
+ * Только участникам; что именно можно сейчас — решает сервис.
+ */
+@Controller('duels/:id')
+@UseGuards(JwtAuthGuard)
+export class DuelMatchController {
+  constructor(private readonly match: DuelMatchService) {}
+
+  @Post('start')
+  @HttpCode(HttpStatus.OK)
+  async start(
+    @Param('id', uuidParam) id: string,
+    @CurrentUserId() userId: string,
+  ): Promise<DuelView> {
+    return this.match.start(id, userId);
+  }
+
+  @Post('sets')
+  @HttpCode(HttpStatus.OK)
+  async addSet(
+    @Param('id', uuidParam) id: string,
+    @Body(new ZodValidationPipe(duelSetSchema)) body: DuelSetInput,
+    @CurrentUserId() userId: string,
+  ): Promise<DuelView> {
+    return this.match.addSet(id, userId, body);
+  }
+
+  @Post('sets/undo')
+  @HttpCode(HttpStatus.OK)
+  async undoSet(
+    @Param('id', uuidParam) id: string,
+    @Body(new ZodValidationPipe(duelUndoSetSchema)) body: DuelUndoSetInput,
+    @CurrentUserId() userId: string,
+  ): Promise<DuelView> {
+    return this.match.undoSet(id, userId, body);
+  }
+
+  @Post('finish')
+  @HttpCode(HttpStatus.OK)
+  async finish(
+    @Param('id', uuidParam) id: string,
+    @CurrentUserId() userId: string,
+  ): Promise<DuelView> {
+    return this.match.finish(id, userId);
+  }
+
+  @Post('reschedule')
+  @HttpCode(HttpStatus.OK)
+  async propose(
+    @Param('id', uuidParam) id: string,
+    @Body(new ZodValidationPipe(rescheduleDuelSchema)) body: RescheduleDuelInput,
+    @CurrentUserId() userId: string,
+  ): Promise<DuelView> {
+    return this.match.propose(id, userId, body);
+  }
+
+  @Post('reschedule/accept')
+  @HttpCode(HttpStatus.OK)
+  async acceptReschedule(
+    @Param('id', uuidParam) id: string,
+    @CurrentUserId() userId: string,
+  ): Promise<DuelView> {
+    return this.match.acceptReschedule(id, userId);
+  }
+
+  @Post('reschedule/decline')
+  @HttpCode(HttpStatus.OK)
+  async declineReschedule(
+    @Param('id', uuidParam) id: string,
+    @CurrentUserId() userId: string,
+  ): Promise<DuelView> {
+    return this.match.declineReschedule(id, userId);
+  }
+
+  @Post('reschedule/withdraw')
+  @HttpCode(HttpStatus.OK)
+  async withdrawReschedule(
+    @Param('id', uuidParam) id: string,
+    @CurrentUserId() userId: string,
+  ): Promise<DuelView> {
+    return this.match.withdrawReschedule(id, userId);
+  }
+
+  @Post('contact')
+  @HttpCode(HttpStatus.OK)
+  async contact(
+    @Param('id', uuidParam) id: string,
+    @Body(new ZodValidationPipe(duelContactSchema)) body: DuelContactInput,
+    @CurrentUserId() userId: string,
+  ): Promise<DuelView> {
+    return this.match.contact(id, userId, body);
   }
 }
 

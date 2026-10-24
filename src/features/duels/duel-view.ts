@@ -1,4 +1,5 @@
 import { DUEL_CONFIRM_HOURS } from '@kttf/shared/rating';
+import { DUEL_START_EARLY_MINUTES, setsToWin, type DuelStatus } from '@kttf/shared/types';
 import type {
   DuelBestOf,
   DuelItemView,
@@ -18,7 +19,20 @@ import { cityRefFields } from '../places/place.fields.js';
  * рейтинг на момент начисления хранит журнал (`ratingChanges`).
  */
 
-const HOUR_MS = 60 * 60 * 1000;
+const MINUTE_MS = 60 * 1000;
+const HOUR_MS = 60 * MINUTE_MS;
+
+/**
+ * Контакты видны участникам с согласования и дальше (ADR-068): до него
+ * соперника ещё нет, а после отмены связываться незачем.
+ */
+const CONTACT_STATUSES: readonly DuelStatus[] = [
+  'SCHEDULED',
+  'REPORTED',
+  'DISPUTED',
+  'COMPLETED',
+  'UNCONFIRMED',
+];
 
 /** Игрок дуэли: имя, рейтинг, город — и аккаунт, чтобы слать уведомления. */
 export const sideFields = {
@@ -65,6 +79,16 @@ export const duelFields = {
   annulledAt: true,
   annulReason: true,
   createdAt: true,
+  // Матч — ADR-068
+  startedAt: true,
+  sets: true,
+  authorContact: true,
+  opponentContact: true,
+  rescheduleStartsAt: true,
+  rescheduleEndsAt: true,
+  rescheduleById: true,
+  rescheduleMessage: true,
+  rescheduleAt: true,
   author: { select: sideFields },
   opponent: { select: sideFields },
   club: { select: { id: true, name: true, address: true } },
@@ -124,6 +148,23 @@ export function toDuelPlayer(player: SideRecord): DuelPlayer {
     isProvisional: player.isProvisional,
     city: player.city,
   };
+}
+
+/** С какого момента можно начать матч и внести счёт: начало − 60 минут. */
+export function startableAtOf(startsAt: Date): Date {
+  return new Date(startsAt.getTime() - DUEL_START_EARLY_MINUTES * MINUTE_MS);
+}
+
+/** Набрал ли кто-то из двоих нужное число партий — победитель по табло или `null`. */
+export function boardWinner(record: Pick<DuelRecord, 'bestOf' | 'sets'>): string | null {
+  if (record.bestOf === null) return null;
+
+  const need = setsToWin(record.bestOf as DuelBestOf);
+  const counts = new Map<string, number>();
+
+  for (const winnerId of record.sets) counts.set(winnerId, (counts.get(winnerId) ?? 0) + 1);
+
+  return [...counts].find(([, count]) => count >= need)?.[0] ?? null;
 }
 
 /** Срок подтверждения счёта. */
@@ -237,6 +278,10 @@ export function duelCan(
     report: false,
     confirm: false,
     dispute: false,
+    start: false,
+    score: false,
+    reschedule: false,
+    answerReschedule: false,
   };
 
   if (me === null) return none;
@@ -247,6 +292,14 @@ export function duelCan(
   const status = record.status;
   const reportedByOther =
     isParticipant && record.reportedById !== null && record.reportedById !== me;
+  const scheduled = isParticipant && status === 'SCHEDULED';
+  // Счёт и старт — с часа до начала: пришли в зал пораньше — играют.
+  const startable =
+    scheduled &&
+    record.rated &&
+    record.startsAt !== null &&
+    startableAtOf(record.startsAt).getTime() <= now.getTime();
+  const notStarted = record.startedAt === null;
 
   return {
     respond:
@@ -256,14 +309,14 @@ export function duelCan(
     cancel:
       (isAuthor && (status === 'OPEN' || status === 'CHALLENGE' || status === 'SCHEDULED')) ||
       (isOpponent && status === 'SCHEDULED'),
-    report:
-      isParticipant &&
-      record.rated &&
-      status === 'SCHEDULED' &&
-      record.startsAt !== null &&
-      record.startsAt.getTime() <= now.getTime(),
+    report: startable,
     confirm: status === 'REPORTED' && reportedByOther,
     dispute: status === 'REPORTED' && reportedByOther,
+    start: startable && notStarted,
+    score: scheduled && record.rated && !notStarted,
+    reschedule: scheduled && notStarted,
+    answerReschedule:
+      scheduled && notStarted && record.rescheduleById !== null && record.rescheduleById !== me,
   };
 }
 
@@ -282,6 +335,9 @@ export function toDuelView(
   const ownNewResponse = responses.some(
     (response) => response.playerId === viewer.playerId && response.status === 'NEW',
   );
+  const isParticipant =
+    viewer.playerId !== null &&
+    (viewer.playerId === record.authorId || viewer.playerId === record.opponentId);
 
   return {
     ...toDuelItem(record, viewer, changes),
@@ -289,6 +345,40 @@ export function toDuelView(
     annulledAt: record.annulledAt?.toISOString() ?? null,
     annulReason: record.annulReason,
     ratingSkipped: record.ratingSkipped,
+    // Табло видно всем: за дуэлью можно следить.
+    startedAt: record.startedAt?.toISOString() ?? null,
+    sets: record.sets,
+    startableAt: record.startsAt === null ? null : startableAtOf(record.startsAt).toISOString(),
+    // Перенос — дело двоих и только пока игра назначена.
+    reschedule: isParticipant && record.status === 'SCHEDULED' ? toReschedule(record) : null,
+    contacts:
+      isParticipant && CONTACT_STATUSES.includes(record.status)
+        ? {
+            mine: isAuthor ? record.authorContact : record.opponentContact,
+            counterpart: isAuthor ? record.opponentContact : record.authorContact,
+          }
+        : null,
     can: duelCan(record, viewer, ownNewResponse, now),
+  };
+}
+
+function toReschedule(record: DuelRecord): DuelView['reschedule'] {
+  const { rescheduleStartsAt, rescheduleEndsAt, rescheduleById, rescheduleAt } = record;
+
+  if (
+    rescheduleStartsAt === null ||
+    rescheduleEndsAt === null ||
+    rescheduleById === null ||
+    rescheduleAt === null
+  ) {
+    return null;
+  }
+
+  return {
+    startsAt: rescheduleStartsAt.toISOString(),
+    endsAt: rescheduleEndsAt.toISOString(),
+    proposedById: rescheduleById,
+    message: record.rescheduleMessage,
+    createdAt: rescheduleAt.toISOString(),
   };
 }

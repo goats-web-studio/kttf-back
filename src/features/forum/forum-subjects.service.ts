@@ -30,7 +30,7 @@ const COACH_SIDE = (userId: string): SubjectSide => ({
 
 /**
  * Предмет темы — турнир, клуб, тренер, товар (ADR-064 §7), новость клуба и
- * тренера (ADR-067). Ссылка без внешнего ключа: предметы в разных таблицах,
+ * тренера (ADR-067), дуэль (ADR-068). Ссылка без внешнего ключа: предметы в разных таблицах,
  * а удалённый предмет не уносит разговор о нём — кроме новости: её тема
  * удаляется вместе с записью (`ForumNewsService`).
  */
@@ -41,7 +41,7 @@ export class ForumSubjectsService {
   /**
    * Предмет, о котором можно говорить публично: опубликованный турнир,
    * не скрытый клуб, одобренная страница тренера, опубликованный товар,
-   * не скрытая новость.
+   * не скрытая новость, любая дуэль — её страница открыта всем.
    */
   async findPublic(type: ForumSubjectType, id: string): Promise<ForumSubject | null> {
     const [subject] = (await this.describe([{ subjectType: type, subjectId: id }], true)).values();
@@ -64,70 +64,78 @@ export class ForumSubjectsService {
     const coachPublic = { status: 'APPROVED', hiddenAt: null } as const;
     const coachPlayer = { select: { lastName: true, firstName: true } } as const;
 
-    const [tournaments, clubs, coaches, products, clubPosts, coachPosts] = await Promise.all([
-      has('TOURNAMENT')
-        ? this.prisma.tournament.findMany({
-            where: {
-              id: { in: of('TOURNAMENT') },
-              ...(onlyPublic ? { status: { not: 'DRAFT' } } : {}),
-            },
-            select: { id: true, name: true },
-          })
-        : [],
-      has('CLUB')
-        ? this.prisma.club.findMany({
-            where: { id: { in: of('CLUB') }, ...(onlyPublic ? { hiddenAt: null } : {}) },
-            select: { id: true, name: true },
-          })
-        : [],
-      has('COACH')
-        ? this.prisma.coach.findMany({
-            where: { id: { in: of('COACH') }, ...(onlyPublic ? coachPublic : {}) },
-            select: { id: true, slug: true, player: coachPlayer },
-          })
-        : [],
-      has('PRODUCT')
-        ? this.prisma.product.findMany({
-            where: {
-              id: { in: of('PRODUCT') },
-              ...(onlyPublic ? { status: 'PUBLISHED', hiddenAt: null } : {}),
-            },
-            select: { id: true, name: true, slug: true },
-          })
-        : [],
-      has('CLUB_POST')
-        ? this.prisma.clubPost.findMany({
-            where: {
-              id: { in: of('CLUB_POST') },
-              ...(onlyPublic ? { hiddenAt: null, club: { hiddenAt: null } } : {}),
-            },
-            select: {
-              id: true,
-              title: true,
-              kind: true,
-              imageUrl: true,
-              validUntil: true,
-              club: { select: { id: true, name: true, logoUrl: true } },
-            },
-          })
-        : [],
-      has('COACH_POST')
-        ? this.prisma.coachPost.findMany({
-            where: {
-              id: { in: of('COACH_POST') },
-              ...(onlyPublic ? { hiddenAt: null, coach: coachPublic } : {}),
-            },
-            select: {
-              id: true,
-              title: true,
-              kind: true,
-              imageUrl: true,
-              validUntil: true,
-              coach: { select: { id: true, slug: true, photoUrl: true, player: coachPlayer } },
-            },
-          })
-        : [],
-    ]);
+    const [tournaments, clubs, coaches, products, clubPosts, coachPosts, duels] = await Promise.all(
+      [
+        has('TOURNAMENT')
+          ? this.prisma.tournament.findMany({
+              where: {
+                id: { in: of('TOURNAMENT') },
+                ...(onlyPublic ? { status: { not: 'DRAFT' } } : {}),
+              },
+              select: { id: true, name: true },
+            })
+          : [],
+        has('CLUB')
+          ? this.prisma.club.findMany({
+              where: { id: { in: of('CLUB') }, ...(onlyPublic ? { hiddenAt: null } : {}) },
+              select: { id: true, name: true },
+            })
+          : [],
+        has('COACH')
+          ? this.prisma.coach.findMany({
+              where: { id: { in: of('COACH') }, ...(onlyPublic ? coachPublic : {}) },
+              select: { id: true, slug: true, player: coachPlayer },
+            })
+          : [],
+        has('PRODUCT')
+          ? this.prisma.product.findMany({
+              where: {
+                id: { in: of('PRODUCT') },
+                ...(onlyPublic ? { status: 'PUBLISHED', hiddenAt: null } : {}),
+              },
+              select: { id: true, name: true, slug: true },
+            })
+          : [],
+        has('CLUB_POST')
+          ? this.prisma.clubPost.findMany({
+              where: {
+                id: { in: of('CLUB_POST') },
+                ...(onlyPublic ? { hiddenAt: null, club: { hiddenAt: null } } : {}),
+              },
+              select: {
+                id: true,
+                title: true,
+                kind: true,
+                imageUrl: true,
+                validUntil: true,
+                club: { select: { id: true, name: true, logoUrl: true } },
+              },
+            })
+          : [],
+        has('COACH_POST')
+          ? this.prisma.coachPost.findMany({
+              where: {
+                id: { in: of('COACH_POST') },
+                ...(onlyPublic ? { hiddenAt: null, coach: coachPublic } : {}),
+              },
+              select: {
+                id: true,
+                title: true,
+                kind: true,
+                imageUrl: true,
+                validUntil: true,
+                coach: { select: { id: true, slug: true, photoUrl: true, player: coachPlayer } },
+              },
+            })
+          : [],
+        has('DUEL')
+          ? this.prisma.duel.findMany({
+              where: { id: { in: of('DUEL') } },
+              select: duelSubjectFields,
+            })
+          : [],
+      ],
+    );
 
     const result = new Map<string, ForumSubject>();
     const put = (subject: Omit<ForumSubject, 'owner' | 'news'> & Partial<ForumSubject>): void => {
@@ -189,6 +197,9 @@ export class ForumSubjectsService {
           validUntil: row.validUntil === null ? null : isoDate(row.validUntil),
         },
       });
+    });
+    duels.forEach((row) => {
+      put(duelSubject(row));
     });
 
     return result;
@@ -284,4 +295,38 @@ function groupIds(pairs: readonly SubjectRef[]): Map<ForumSubjectType, Set<strin
 
 function fullName(player: { lastName: string; firstName: string }): string {
   return `${player.lastName} ${player.firstName}`;
+}
+
+const duelSubjectFields = {
+  id: true,
+  kind: true,
+  author: { select: { lastName: true } },
+  opponent: { select: { lastName: true } },
+} as const;
+
+/**
+ * Подпись дуэли (ADR-068): «Дуэль: Петров — Аманбаев», у публикации без
+ * соперника — «Дуэль: Петров ищет соперника». По фамилиям: в списке тем
+ * полное имя двоих не помещается, а страница дуэли — по ссылке.
+ */
+export function duelSubject(row: {
+  id: string;
+  kind: 'DUEL' | 'SPARRING';
+  author: { lastName: string };
+  opponent: { lastName: string } | null;
+}): ForumSubject {
+  const kind = row.kind === 'DUEL' ? 'Дуэль' : 'Спарринг';
+  const players =
+    row.opponent === null
+      ? `${row.author.lastName} ищет соперника`
+      : `${row.author.lastName} — ${row.opponent.lastName}`;
+
+  return {
+    type: 'DUEL',
+    id: row.id,
+    name: `${kind}: ${players}`,
+    slug: null,
+    owner: null,
+    news: null,
+  };
 }
