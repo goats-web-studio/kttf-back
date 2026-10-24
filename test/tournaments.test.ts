@@ -1270,7 +1270,7 @@ describe('старт — ТС 5.4', () => {
     // расчёт консоли расходится с серверным (ТС 5.4).
     prisma.tournament.findUnique.mockResolvedValue(makeTournament({ status: 'REG_CLOSED' }));
     prisma.registration.findMany.mockResolvedValue([
-      { id: REGISTRATION_ID, player: { rating: '250.00', ratedMatches: 12 } },
+      { id: REGISTRATION_ID, player: { rating: '250.00', ratedMatches: 12, ratedTournaments: 3 } },
     ]);
 
     const result = await call('POST', `/tournaments/${TOURNAMENT_ID}/start`, { auth: true });
@@ -1284,6 +1284,8 @@ describe('старт — ТС 5.4', () => {
       status: 'PLAYING',
       ratingAtStart: '250.00',
       matchesAtStart: 12,
+      // Без счётчика турниров игрок молча стал бы новичком — ADR-069.
+      tournamentsAtStart: 3,
     });
   });
 
@@ -1340,8 +1342,16 @@ describe('завершение и рейтинг — ТЗ 4.1, ТЗ 7.3', () => 
       seed: null,
       ratingAtStart: '300.00',
       matchesAtStart: 25,
+      tournamentsAtStart: 6,
+      place: null,
       createdAt: new Date('2026-08-30T00:00:00.000Z'),
-      player: { ...player, id, rating: { toString: () => '300.00' }, ratedMatches: 25 },
+      player: {
+        ...player,
+        id,
+        rating: { toString: () => '300.00' },
+        ratedMatches: 25,
+        ratedTournaments: 6,
+      },
       coachPlayerId: null,
       coachName: null,
       coachPlayer: null,
@@ -1416,13 +1426,19 @@ describe('завершение и рейтинг — ТЗ 4.1, ТЗ 7.3', () => 
       ratingBefore: 300,
       createdBy: USER_ID,
     });
-    // Оба рейтинговые: система замкнута, очков не прибавилось (ТС 5.5).
+    // Оба не новички: система замкнута, очков не прибавилось (ТС 5.5).
+    // Средний 300 → k = 0.25, равные, 3:1 → D = 1: 10 × 0.25 × 1 = 2.5.
+    expect(Number(events?.[0]?.delta)).toBe(2.5);
     expect(Number(events?.[0]?.delta) + Number(events?.[1]?.delta)).toBe(0);
 
     expect(prisma.player.update).toHaveBeenCalledTimes(2);
     const projection = prisma.player.update.mock.calls[0]?.[0] as
       { data?: Record<string, unknown> } | undefined;
-    expect(projection?.data).toMatchObject({ ratedMatches: 26, isProvisional: false });
+    expect(projection?.data).toMatchObject({
+      ratedMatches: 26,
+      ratedTournaments: 7,
+      isProvisional: false,
+    });
 
     const rated = prisma.tournament.updateMany.mock.calls[0]?.[0] as
       { where?: Record<string, unknown>; data?: Record<string, unknown> } | undefined;

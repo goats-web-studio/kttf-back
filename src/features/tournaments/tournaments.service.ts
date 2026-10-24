@@ -3,7 +3,7 @@ import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { checkEligibility } from '@kttf/shared/eligibility';
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import { findClubCollisions } from '@kttf/shared/brackets';
-import { calculateTournamentRating, type TournamentLevel } from '@kttf/shared/rating';
+import { calculateTournamentRating, type RatingEventDraft } from '@kttf/shared/rating';
 import {
   formatConfigSchema,
   seedingConfigSchema,
@@ -676,7 +676,11 @@ export class TournamentsService {
   private async registerLate(
     tournament: TournamentRecord,
     playerId: string,
-    player: { readonly rating: Prisma.Decimal; readonly ratedMatches: number } & {
+    player: {
+      readonly rating: Prisma.Decimal;
+      readonly ratedMatches: number;
+      readonly ratedTournaments: number;
+    } & {
       readonly coachPlayerId: string | null;
       readonly coachName: string | null;
     },
@@ -692,7 +696,7 @@ export class TournamentsService {
           tournamentId: tournament.id,
           playerId,
           status: started ? 'PLAYING' : 'CONFIRMED',
-          ...(started ? { ratingAtStart: player.rating, matchesAtStart: player.ratedMatches } : {}),
+          ...(started ? snapshotFields(player) : {}),
           coachPlayerId: player.coachPlayerId,
           coachName: player.coachName,
         },
@@ -740,7 +744,14 @@ export class TournamentsService {
     const replaced = await this.loadRegistration(id, registrationId);
     const player = await this.prisma.player.findUnique({
       where: { id: input.playerId },
-      select: { id: true, rating: true, ratedMatches: true, coachPlayerId: true, coachName: true },
+      select: {
+        id: true,
+        rating: true,
+        ratedMatches: true,
+        ratedTournaments: true,
+        coachPlayerId: true,
+        coachName: true,
+      },
     });
 
     if (player === null) {
@@ -794,7 +805,7 @@ export class TournamentsService {
       const data = {
         status: started ? ('PLAYING' as const) : ('CONFIRMED' as const),
         seed: replaced.seed,
-        ...(started ? { ratingAtStart: player.rating, matchesAtStart: player.ratedMatches } : {}),
+        ...(started ? snapshotFields(player) : {}),
         coachPlayerId: player.coachPlayerId,
         coachName: player.coachName,
       };
@@ -1200,7 +1211,10 @@ export class TournamentsService {
 
     const registrations = await this.prisma.registration.findMany({
       where: { tournamentId: id, status: { in: OCCUPYING_STATUSES } },
-      select: { id: true, player: { select: { rating: true, ratedMatches: true } } },
+      select: {
+        id: true,
+        player: { select: { rating: true, ratedMatches: true, ratedTournaments: true } },
+      },
     });
 
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -1209,8 +1223,7 @@ export class TournamentsService {
           where: { id: registration.id },
           data: {
             status: 'PLAYING',
-            ratingAtStart: registration.player.rating,
-            matchesAtStart: registration.player.ratedMatches,
+            ...snapshotFields(registration.player),
           },
         });
       }
@@ -1263,7 +1276,7 @@ export class TournamentsService {
     // показывает их сразу после завершения (ADR-048).
     await this.recordPlaces(id);
 
-    const rated = await this.applyRating(id, tournament.level, userId);
+    const rated = await this.applyRating(id, userId);
 
     this.screen.changed(id);
 
@@ -1340,11 +1353,7 @@ export class TournamentsService {
    * два одновременных вызова не начислят рейтинг дважды — второй не найдёт
    * турнир в нужном статусе и откатится целиком.
    */
-  private async applyRating(
-    id: string,
-    level: TournamentLevel,
-    userId: string,
-  ): Promise<TournamentView> {
+  private async applyRating(id: string, userId: string): Promise<TournamentView> {
     const [stages, registrations] = await Promise.all([
       this.loadStages(id),
       this.prisma.registration.findMany({
@@ -1353,7 +1362,7 @@ export class TournamentsService {
       }),
     ]);
 
-    const run = buildRatingRun(level, registrations, stages);
+    const run = buildRatingRun(registrations, stages);
     const result = calculateTournamentRating(run);
 
     return this.prisma.$transaction(async (tx) => {
@@ -1374,7 +1383,7 @@ export class TournamentsService {
           playerId: event.playerId,
           matchId: event.matchId,
           tournamentId: id,
-          type: 'MATCH' as const,
+          type: event.type,
           ratingBefore: event.ratingBefore,
           delta: event.delta,
           ratingAfter: event.ratingAfter,
@@ -1382,9 +1391,8 @@ export class TournamentsService {
           kFactor: event.kFactor,
           tFactor: event.tFactor,
           mFactor: event.mFactor,
-          expected: event.expected,
-          gapMultiplier: event.gapMultiplier,
           imbalance: event.imbalance,
+          reason: bonusReason(event),
           clamped: event.clamped,
           createdBy: userId,
         })),
@@ -1396,6 +1404,7 @@ export class TournamentsService {
           data: {
             rating: player.rating,
             ratedMatches: player.ratedMatches,
+            ratedTournaments: player.ratedTournaments,
             isProvisional: player.isProvisional,
           },
         });
@@ -1829,15 +1838,42 @@ export class TournamentsService {
 async function snapshotOf(
   tx: Prisma.TransactionClient,
   registrationId: string,
-): Promise<{ ratingAtStart?: Prisma.Decimal; matchesAtStart?: number }> {
+): Promise<Partial<ReturnType<typeof snapshotFields>>> {
   const row = await tx.registration.findUnique({
     where: { id: registrationId },
-    select: { ratingAtStart: true, player: { select: { rating: true, ratedMatches: true } } },
+    select: {
+      ratingAtStart: true,
+      player: { select: { rating: true, ratedMatches: true, ratedTournaments: true } },
+    },
   });
 
   if (row?.ratingAtStart !== null) return {};
 
-  return { ratingAtStart: row.player.rating, matchesAtStart: row.player.ratedMatches };
+  return snapshotFields(row.player);
+}
+
+/**
+ * Снимок рейтинга на старте — ТС 5.4. Одно место на все пути старта:
+ * общий старт, поздняя запись, замена, неявка до старта. Забытый счётчик
+ * турниров молча сделал бы игрока новичком (ADR-069).
+ */
+function snapshotFields(player: {
+  readonly rating: Prisma.Decimal;
+  readonly ratedMatches: number;
+  readonly ratedTournaments: number;
+}): { ratingAtStart: Prisma.Decimal; matchesAtStart: number; tournamentsAtStart: number } {
+  return {
+    ratingAtStart: player.rating,
+    matchesAtStart: player.ratedMatches,
+    tournamentsAtStart: player.ratedTournaments,
+  };
+}
+
+/** Бонус призёру читается в журнале без встречи: место и процент — словами. */
+function bonusReason(event: RatingEventDraft): string | null {
+  if (event.type !== 'BONUS') return null;
+
+  return `Бонус за ${String(event.place)} место: ${String(event.bonusPercent)} % от рейтинга на старте`;
 }
 
 /** Схемы совпадают во всём, кроме длин встреч — их одних и можно менять по ходу. */

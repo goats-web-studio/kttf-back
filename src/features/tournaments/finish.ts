@@ -1,4 +1,4 @@
-import type { RatedMatch, RatedPlayer, TournamentLevel } from '@kttf/shared/rating';
+import type { RatedMatch, RatedPlacement, RatedPlayer } from '@kttf/shared/rating';
 import type { TournamentStandingsView } from '@kttf/shared/types';
 
 import { unplayedMatches } from './stage-completion.js';
@@ -56,13 +56,23 @@ export function ratedPlayers(
   const players = new Map<string, RatedPlayer>();
 
   for (const registration of registrations) {
-    const { ratingAtStart, matchesAtStart, player } = registration;
+    const { ratingAtStart, matchesAtStart, tournamentsAtStart, player } = registration;
 
     if (!registration.isRated || ratingAtStart === null || matchesAtStart === null) continue;
 
     players.set(player.id, {
-      atStart: { rating: Number(ratingAtStart), ratedMatches: matchesAtStart },
-      current: { rating: Number(player.rating), ratedMatches: player.ratedMatches },
+      atStart: {
+        rating: Number(ratingAtStart),
+        ratedMatches: matchesAtStart,
+        // Снимки до ADR-069 досчитаны миграцией; пусто — значит игрок
+        // до старта не сыграл ни одного рейтингового турнира.
+        ratedTournaments: tournamentsAtStart ?? 0,
+      },
+      current: {
+        rating: Number(player.rating),
+        ratedMatches: player.ratedMatches,
+        ratedTournaments: player.ratedTournaments,
+      },
     });
   }
 
@@ -91,21 +101,40 @@ export function ratedMatches(
   return ordered.filter(isPlayed).map(toRatedMatch).filter(bothRated(players));
 }
 
-/** Все данные, которые нужны движку, кроме уровня турнира. */
+/** Все данные, которые нужны движку. */
 export interface RatingRunInput {
-  readonly level: TournamentLevel;
   readonly players: Map<string, RatedPlayer>;
   readonly matches: RatedMatch[];
+  readonly placements: RatedPlacement[];
 }
 
 export function buildRatingRun(
-  level: TournamentLevel,
   registrations: readonly RegistrationRecord[],
   stages: readonly StageRecord[],
 ): RatingRunInput {
   const players = ratedPlayers(registrations);
 
-  return { level, players, matches: ratedMatches(stages, players) };
+  return {
+    players,
+    matches: ratedMatches(stages, players),
+    placements: prizePlacements(registrations),
+  };
+}
+
+/**
+ * Призовые места для бонуса — ADR-069.
+ *
+ * Места записаны в заявки до рейтинга (`recordPlaces`). Делённое место
+ * («3–4» у проигравших в полуфиналах) начинается с одного и того же числа,
+ * и движок делит бонус между всеми, у кого оно совпало. Вне зачёта место
+ * занимают тоже: бонуса им нет, но делят они наравне.
+ */
+export function prizePlacements(registrations: readonly RegistrationRecord[]): RatedPlacement[] {
+  return registrations.flatMap((registration) =>
+    registration.place !== null && registration.place <= 3
+      ? [{ playerId: registration.player.id, place: registration.place }]
+      : [],
+  );
 }
 
 interface PlayedMatch extends MatchRecord {

@@ -153,10 +153,12 @@ model Player {
 
   // Проекция рейтинга. Источник истины — RatingEvent, это материализованное
   // представление для быстрых выборок (ТС 1.4).
-  rating        Decimal @default(250) @db.Decimal(8, 2)
-  ratedMatches  Int     @default(0)
-  isProvisional Boolean @default(true)
-  trustScore    Decimal @default(100) @db.Decimal(5, 2)
+  rating           Decimal @default(250) @db.Decimal(8, 2)
+  ratedMatches     Int     @default(0)
+  // Сыграно рейтинговых турниров. Меньше пяти — новичок, ADR-069.
+  ratedTournaments Int     @default(0)
+  isProvisional    Boolean @default(true)
+  trustScore       Decimal @default(100) @db.Decimal(5, 2)
 
   createdAt DateTime @default(now())
 
@@ -1079,7 +1081,7 @@ model Tournament {
   birthYearTo       Int?
   genderLimit       Gender?
 
-  level      TournamentLevel @default(CLUB) // коэффициент T в формуле рейтинга
+  level      TournamentLevel @default(CLUB) // подпись турнира, на рейтинг не влияет — ADR-069
   tableCount Int
 
   formatConfig  Json // конфигурация схемы, ТС 4.2
@@ -1144,8 +1146,9 @@ model Registration {
   // фиксируются на момент старта турнира. Без снимка расчёт зависит от
   // порядка обработки встреч, и локальный расчёт консоли расходится
   // с серверным. Заполняются при переходе турнира в RUNNING.
-  ratingAtStart  Decimal? @db.Decimal(8, 2)
-  matchesAtStart Int?
+  ratingAtStart      Decimal? @db.Decimal(8, 2)
+  matchesAtStart     Int?
+  tournamentsAtStart Int? // ratedTournaments на старте — ADR-069
 
   // Итоговое место — ADR-048. Записывается при завершении турнира, чтобы
   // профиль игрока не пересчитывал весь турнир ради одного числа. Делённое
@@ -1363,6 +1366,7 @@ model RatingEvent {
 
 enum RatingEventType {
   MATCH
+  BONUS // бонус призёру по итогам турнира — ADR-069
   INITIAL
   MANUAL_ADJUST
   RECALC

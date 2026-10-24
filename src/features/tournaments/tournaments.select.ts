@@ -25,6 +25,7 @@ export const playerFields = {
   clubId: true,
   rating: true,
   ratedMatches: true,
+  ratedTournaments: true,
   isProvisional: true,
   createdAt: true,
 } as const;
@@ -79,6 +80,9 @@ export const registrationFields = {
   seed: true,
   ratingAtStart: true,
   matchesAtStart: true,
+  tournamentsAtStart: true,
+  // Итоговое место — для бонуса призёрам (ADR-069), пишется до рейтинга.
+  place: true,
   createdAt: true,
   player: { select: playerFields },
   // Тренер на турнире (T3): имя и страница выбранного из списка — по связи.

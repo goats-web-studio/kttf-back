@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildRatingRun,
   playersWithoutSnapshot,
+  prizePlacements,
   ratedMatches,
   ratedPlayers,
   unfinishedMatches,
@@ -69,8 +70,11 @@ interface PlayerSeed {
   readonly isRated?: boolean;
   readonly ratingAtStart?: number | null;
   readonly matchesAtStart?: number | null;
+  readonly tournamentsAtStart?: number | null;
   readonly rating?: number;
   readonly ratedMatches?: number;
+  readonly ratedTournaments?: number;
+  readonly place?: number | null;
 }
 
 function makeRegistration(seed: PlayerSeed): RegistrationRecord {
@@ -82,11 +86,14 @@ function makeRegistration(seed: PlayerSeed): RegistrationRecord {
     seed: null,
     ratingAtStart: seed.ratingAtStart === undefined ? 300 : seed.ratingAtStart,
     matchesAtStart: seed.matchesAtStart === undefined ? 25 : seed.matchesAtStart,
+    tournamentsAtStart: seed.tournamentsAtStart === undefined ? 6 : seed.tournamentsAtStart,
+    place: seed.place ?? null,
     createdAt: new Date(),
     player: {
       id: seed.id,
       rating: seed.rating ?? 300,
       ratedMatches: seed.ratedMatches ?? 25,
+      ratedTournaments: seed.ratedTournaments ?? 6,
     },
   } as unknown as RegistrationRecord;
 }
@@ -183,15 +190,23 @@ describe('участники расчёта', () => {
         id: 'a',
         ratingAtStart: 300,
         matchesAtStart: 10,
+        tournamentsAtStart: 2,
         rating: 355,
         ratedMatches: 14,
+        ratedTournaments: 3,
       }),
     ]);
 
     expect(players.get('a')).toEqual({
-      atStart: { rating: 300, ratedMatches: 10 },
-      current: { rating: 355, ratedMatches: 14 },
+      atStart: { rating: 300, ratedMatches: 10, ratedTournaments: 2 },
+      current: { rating: 355, ratedMatches: 14, ratedTournaments: 3 },
     });
+  });
+
+  it('снимок без счётчика турниров — игрок до старта турниров не играл', () => {
+    const players = ratedPlayers([makeRegistration({ id: 'a', tournamentsAtStart: null })]);
+
+    expect(players.get('a')?.atStart.ratedTournaments).toBe(0);
   });
 
   it('вне зачёта в расчёт не входит — ТЗ 7.2', () => {
@@ -331,15 +346,35 @@ describe('игроки без снимка', () => {
 });
 
 describe('вход движка', () => {
-  it('собирается целиком: уровень, участники, встречи', () => {
+  it('собирается целиком: участники, встречи, призовые места', () => {
     const run = buildRatingRun(
-      'NATIONAL',
-      [makeRegistration({ id: 'a' }), makeRegistration({ id: 'b' })],
+      [makeRegistration({ id: 'a', place: 1 }), makeRegistration({ id: 'b', place: 2 })],
       [makeStage('ROUND_ROBIN', [{ a: 'a', b: 'b', setsA: 3, setsB: 1 }])],
     );
 
-    expect(run.level).toBe('NATIONAL');
     expect([...run.players.keys()].sort()).toEqual(['a', 'b']);
     expect(run.matches).toHaveLength(1);
+    expect(run.placements).toEqual([
+      { playerId: 'a', place: 1 },
+      { playerId: 'b', place: 2 },
+    ]);
+  });
+
+  it('призовые места — только первые три, делённое место у всех одно — ADR-069', () => {
+    expect(
+      prizePlacements([
+        makeRegistration({ id: 'a', place: 1 }),
+        makeRegistration({ id: 'b', place: 3 }),
+        makeRegistration({ id: 'c', place: 3 }),
+        makeRegistration({ id: 'd', place: 5 }),
+        makeRegistration({ id: 'e', place: null }),
+        makeRegistration({ id: 'f', place: 2, isRated: false }),
+      ]),
+    ).toEqual([
+      { playerId: 'a', place: 1 },
+      { playerId: 'b', place: 3 },
+      { playerId: 'c', place: 3 },
+      { playerId: 'f', place: 2 },
+    ]);
   });
 });
