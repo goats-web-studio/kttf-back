@@ -142,10 +142,13 @@ model Player {
   // Тренер задаётся либо выбором из уже заведённых игроков, либо строкой,
   // но не обоими сразу. Роли тренера в продукте ещё нет: «тренер» — это тот,
   // на кого сослались, и список берётся из самих данных.
-  coachPlayerId String?
-  coach         Player?  @relation("PlayerCoach", fields: [coachPlayerId], references: [id])
-  students      Player[] @relation("PlayerCoach")
-  coachName     String?
+  coachPlayerId   String?
+  coach           Player?         @relation("PlayerCoach", fields: [coachPlayerId], references: [id])
+  students        Player[]        @relation("PlayerCoach")
+  coachName       String?
+  // Кому из посторонних виден тренер — ADR-066. Прячет сервер: постороннему
+  // скрытое приходит пустым, как незаполненное.
+  coachVisibility CoachVisibility @default(ALL)
 
   // Проекция рейтинга. Источник истины — RatingEvent, это материализованное
   // представление для быстрых выборок (ТС 1.4).
@@ -195,6 +198,13 @@ enum PlayingHand {
 enum Grip {
   SHAKEHAND
   PENHOLD
+}
+
+// ADR-066: текущий и прежние, только текущий, никакой.
+enum CoachVisibility {
+  ALL
+  CURRENT
+  NONE
 }
 
 // ============ Справочник стран и городов ============

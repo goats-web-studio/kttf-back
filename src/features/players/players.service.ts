@@ -4,6 +4,7 @@ import {
   ONLINE_WINDOW_MS,
   type CityRef,
   type CoachStatus,
+  type CoachVisibility,
   type CreatePlayerInput,
   type EquipmentLabel,
   type HeadToHeadView,
@@ -82,6 +83,7 @@ const profileFields = {
   bio: true,
   coachPlayerId: true,
   coachName: true,
+  coachVisibility: true,
   // Имя выбранного тренера подставляется в ответ: экрану нужно одно поле,
   // а не развилка в каждом месте, где тренер выводится.
   // Опубликованная страница тренера — ссылкой на профиле (ADR-059).
@@ -338,10 +340,10 @@ export class PlayersService {
   /**
    * Страница игрока — полный профиль вместе с анкетой ТЗ 2.2.
    *
-   * Дата рождения прячется от посторонних, если игрок этого просил
-   * (ADR-037). Прячется именно здесь, а не на экране: спрятанное только в
-   * интерфейсе поле видно всякому, кто открыл сетевую вкладку, — то есть
-   * не спрятано вовсе.
+   * Дата рождения (ADR-037) и тренер (ADR-066) прячутся от посторонних,
+   * если игрок этого просил. Прячутся именно здесь, а не на экране:
+   * спрятанное только в интерфейсе поле видно всякому, кто открыл сетевую
+   * вкладку, — то есть не спрятано вовсе.
    */
   async findById(id: string, viewerId?: string): Promise<PlayerProfileView> {
     const player = await this.prisma.player.findUnique({ where: { id }, select: profileFields });
@@ -350,14 +352,11 @@ export class PlayersService {
       throw new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { id });
     }
 
-    return this.profileView(player, await this.maySeeBirthDate(player, viewerId));
+    return this.profileView(player, await this.isInsider(player, viewerId));
   }
 
   /** Профиль с инвентарём: игроки товаров считаются одним запросом на все три слота. */
-  private async profileView(
-    player: ProfileRecord,
-    maySeeBirthDate = true,
-  ): Promise<PlayerProfileView> {
+  private async profileView(player: ProfileRecord, insider = true): Promise<PlayerProfileView> {
     const products = [
       player.bladeProduct,
       player.rubberForehandProduct,
@@ -367,21 +366,29 @@ export class PlayersService {
       ...new Set(products.map((product) => product.id)),
     ]);
 
-    return toProfileView(player, players, maySeeBirthDate);
+    return toProfileView(player, players, insider);
   }
 
   /**
-   * Кому видна полная дата: самому игроку и организаторам его клуба.
+   * Свои — сам игрок и организаторы его клуба: им видно спрятанное от
+   * посторонних (ADR-037, ADR-066).
    *
    * Тот же круг, что вправе править профиль: организатор заводит игрока и
    * заполняет за него анкету, и прятать от него то, что он сам вписал,
-   * бессмысленно.
+   * бессмысленно. Форма правки к тому же получила бы пустое поле, и
+   * сохранение стёрло бы спрятанное.
    */
-  private async maySeeBirthDate(
-    player: { userId: string | null; clubId: string | null; birthYearOnly: boolean },
+  private async isInsider(
+    player: {
+      userId: string | null;
+      clubId: string | null;
+      birthYearOnly: boolean;
+      coachVisibility: CoachVisibility;
+    },
     viewerId: string | undefined,
   ): Promise<boolean> {
-    if (!player.birthYearOnly) return true;
+    // Прятать нечего — и клуб спрашивать незачем.
+    if (!player.birthYearOnly && player.coachVisibility === 'ALL') return true;
     if (viewerId === undefined) return false;
     if (player.userId === viewerId) return true;
 
@@ -683,6 +690,7 @@ interface ProfileRecord extends PlayerRecord {
   bio: string | null;
   coachPlayerId: string | null;
   coachName: string | null;
+  coachVisibility: CoachVisibility;
   coach: {
     lastName: string;
     firstName: string;
@@ -740,20 +748,27 @@ function equipmentProduct(
     : toListItemView(product, players.get(product.id) ?? 0);
 }
 
+/**
+ * `insider` — смотрит сам игрок или организатор его клуба: им видно всё.
+ * Постороннему спрятанное приходит пустым, как незаполненное: иначе ответ
+ * сообщает, что прятать было что (ADR-037, ADR-066).
+ */
 function toProfileView(
   player: ProfileRecord,
   players: ReadonlyMap<string, number>,
-  maySeeBirthDate = true,
+  insider = true,
   now: Date = new Date(),
 ): PlayerProfileView {
   const lastSeenAt = player.user?.lastSeenAt ?? null;
+  const showCoach = insider || player.coachVisibility !== 'NONE';
+  const showHistory = insider || player.coachVisibility === 'ALL';
 
   return {
     ...toPlayerView(player),
     // Скрытая дата и незаполненная выглядят одинаково — `null`. Постороннему
     // они и обязаны выглядеть одинаково: иначе ответ сообщает, что дата есть.
     birthDate:
-      player.birthDate === null || !maySeeBirthDate
+      player.birthDate === null || (player.birthYearOnly && !insider)
         ? null
         : player.birthDate.toISOString().slice(0, 10),
     birthYearOnly: player.birthYearOnly,
@@ -766,6 +781,40 @@ function toProfileView(
     rubberForehandProduct: equipmentProduct(player.rubberForehandProduct, players),
     rubberBackhandProduct: equipmentProduct(player.rubberBackhandProduct, players),
     bio: player.bio,
+    ...(showCoach ? currentCoach(player) : NO_COACH),
+    // Прежние тренеры, последние первыми.
+    coachHistory: (showHistory ? player.coachTenures : [])
+      .flatMap((tenure) => (tenure.to === null ? [] : [{ ...tenure, to: tenure.to }]))
+      .sort((a, b) => b.to.getTime() - a.to.getTime())
+      .map((tenure) => ({
+        coachPlayerId: tenure.coachPlayerId,
+        name: `${tenure.coachPlayer.lastName} ${tenure.coachPlayer.firstName}`,
+        slug: publicCoachSlug(tenure.coachPlayer.coachPage),
+        from: tenure.from.toISOString(),
+        to: tenure.to.toISOString(),
+      })),
+    coachVisibility: player.coachVisibility,
+    ownCoachSlug: publicCoachSlug(player.coachPage),
+    lastSeenAt: lastSeenAt?.toISOString() ?? null,
+    online: isOnline(lastSeenAt, now),
+  };
+}
+
+type CurrentCoach = Pick<
+  PlayerProfileView,
+  'coachPlayerId' | 'coachName' | 'coachSlug' | 'coachSince'
+>;
+
+/** Тренер, спрятанный от постороннего (ADR-066), — как не указанный. */
+const NO_COACH: CurrentCoach = {
+  coachPlayerId: null,
+  coachName: null,
+  coachSlug: null,
+  coachSince: null,
+};
+
+function currentCoach(player: ProfileRecord): CurrentCoach {
+  return {
     coachPlayerId: player.coachPlayerId,
     // Выбранный из списка тренер подставляется по связи, вписанный руками
     // отдаётся как есть: экран показывает одно поле, а не развилку.
@@ -778,20 +827,6 @@ function toProfileView(
       player.coachTenures
         .find((tenure) => tenure.to === null && tenure.coachPlayerId === player.coachPlayerId)
         ?.from.toISOString() ?? null,
-    // Прежние тренеры, последние первыми.
-    coachHistory: player.coachTenures
-      .flatMap((tenure) => (tenure.to === null ? [] : [{ ...tenure, to: tenure.to }]))
-      .sort((a, b) => b.to.getTime() - a.to.getTime())
-      .map((tenure) => ({
-        coachPlayerId: tenure.coachPlayerId,
-        name: `${tenure.coachPlayer.lastName} ${tenure.coachPlayer.firstName}`,
-        slug: publicCoachSlug(tenure.coachPlayer.coachPage),
-        from: tenure.from.toISOString(),
-        to: tenure.to.toISOString(),
-      })),
-    ownCoachSlug: publicCoachSlug(player.coachPage),
-    lastSeenAt: lastSeenAt?.toISOString() ?? null,
-    online: isOnline(lastSeenAt, now),
   };
 }
 

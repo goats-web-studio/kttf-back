@@ -34,6 +34,7 @@ const player = {
   coachPlayerId: null,
   coachName: null,
   coach: null,
+  coachVisibility: 'ALL' as const,
   birthYearOnly: true,
   // Игрок без аккаунта: посещения нет.
   user: null,
@@ -784,5 +785,92 @@ describe('дата рождения посторонним', () => {
     const empty = await service.findById('player-1');
 
     expect(hidden.birthDate).toBe(empty.birthDate);
+  });
+});
+
+describe('кому виден тренер — ADR-066', () => {
+  const coached = {
+    ...player,
+    userId: 'user-1',
+    clubId: 'club-1',
+    birthYearOnly: false,
+    coachPlayerId: 'coach-a',
+    coach: { lastName: 'Смирнов', firstName: 'Павел', coachPage: null },
+    coachTenures: [
+      {
+        coachPlayerId: 'coach-a',
+        from: new Date('2026-01-01T00:00:00.000Z'),
+        to: null,
+        coachPlayer: { lastName: 'Смирнов', firstName: 'Павел', coachPage: null },
+      },
+      {
+        coachPlayerId: 'coach-b',
+        from: new Date('2024-01-01T00:00:00.000Z'),
+        to: new Date('2025-12-31T00:00:00.000Z'),
+        coachPlayer: { lastName: 'Петров', firstName: 'Алексей', coachPage: null },
+      },
+    ],
+  };
+
+  it('ALL — постороннему виден текущий и прежние', async () => {
+    prisma.player.findUnique.mockResolvedValue(coached);
+
+    const view = await service.findById('player-1');
+
+    expect(view).toMatchObject({ coachName: 'Смирнов Павел', coachVisibility: 'ALL' });
+    expect(view.coachHistory).toHaveLength(1);
+    // Прятать нечего — клуб не спрашивается.
+    expect(prisma.clubMember.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('CURRENT — постороннему только текущий', async () => {
+    prisma.player.findUnique.mockResolvedValue({ ...coached, coachVisibility: 'CURRENT' });
+
+    const view = await service.findById('player-1', 'кто-то-другой');
+
+    expect(view.coachName).toBe('Смирнов Павел');
+    expect(view.coachSince).toBe('2026-01-01T00:00:00.000Z');
+    expect(view.coachHistory).toEqual([]);
+  });
+
+  it('NONE — постороннему тренера нет, как не указанного', async () => {
+    prisma.player.findUnique.mockResolvedValue({ ...coached, coachVisibility: 'NONE' });
+
+    const view = await service.findById('player-1');
+
+    expect(view).toMatchObject({
+      coachPlayerId: null,
+      coachName: null,
+      coachSlug: null,
+      coachSince: null,
+      coachHistory: [],
+      coachVisibility: 'NONE',
+    });
+  });
+
+  it('сам игрок видит всё — иначе правка стёрла бы тренера', async () => {
+    prisma.player.findUnique.mockResolvedValue({ ...coached, coachVisibility: 'NONE' });
+
+    const view = await service.findById('player-1', 'user-1');
+
+    expect(view.coachPlayerId).toBe('coach-a');
+    expect(view.coachHistory).toHaveLength(1);
+  });
+
+  it('организатор клуба видит всё: он правит анкету', async () => {
+    prisma.player.findUnique.mockResolvedValue({ ...coached, coachVisibility: 'NONE' });
+    prisma.clubMember.findUnique.mockResolvedValue({ role: 'ORGANIZER' });
+
+    await expect(service.findById('player-1', 'user-2')).resolves.toMatchObject({
+      coachName: 'Смирнов Павел',
+    });
+  });
+
+  it('настройка пишется правкой анкеты', async () => {
+    await service.update('player-1', { coachVisibility: 'CURRENT' });
+
+    expect(prisma.player.update.mock.calls[0]?.[0]).toMatchObject({
+      data: { coachVisibility: 'CURRENT' },
+    });
   });
 });

@@ -19,6 +19,7 @@ function student(id: string, birthYear: number, rating: string) {
     rating: new Prisma.Decimal(rating),
     birthYear,
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    coachVisibility: 'ALL' as const,
     city,
   };
 }
@@ -89,6 +90,20 @@ describe('ученики на странице тренера', () => {
     expect(view.top.map((ref) => ref.id)).toEqual(['teen', 'adult']);
     expect(view.top[0]?.rating).toBe('610.5');
     expect(JSON.stringify(view)).not.toContain('child');
+  });
+
+  it('спрятавший тренера (ADR-066) — только числом, не среди младших', async () => {
+    prisma.player.findMany.mockResolvedValue([
+      adult,
+      { ...teen, coachVisibility: 'NONE' },
+      child,
+    ]);
+
+    const view = await service.view(COACH_ID, undefined, NOW);
+
+    expect(view).toMatchObject({ current: 3, younger: 1 });
+    expect(view.top.map((ref) => ref.id)).toEqual(['adult']);
+    expect(JSON.stringify(view)).not.toContain('teen');
   });
 
   it('бывшие — разные игроки с закрытым периодом, кто сейчас не ученик', async () => {

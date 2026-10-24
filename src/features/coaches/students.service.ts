@@ -44,10 +44,20 @@ const studentFields = {
   rating: true,
   birthYear: true,
   createdAt: true,
+  coachVisibility: true,
   city: { select: cityRefFields },
 } as const satisfies Prisma.PlayerSelect;
 
 type StudentRecord = Prisma.PlayerGetPayload<{ select: typeof studentFields }>;
+
+/**
+ * Называется ли ученик на странице тренера: не младше 14 (ADR-059) и не
+ * спрятал тренера (ADR-066). Иначе он только в числе учеников — имя
+ * в «лучших» раскрыло бы то, что игрок скрыл у себя на профиле.
+ */
+function isNamed(player: StudentRecord, now: Date): boolean {
+  return isNamedStudent(player.birthYear, now) && player.coachVisibility !== 'NONE';
+}
 
 function toStudentRef(player: StudentRecord): StudentRef {
   return {
@@ -112,7 +122,7 @@ export class StudentsService {
       select: studentFields,
     });
     const currentIds = current.map((player) => player.id);
-    const named = current.filter((player) => isNamedStudent(player.birthYear, now));
+    const named = current.filter((player) => isNamed(player, now));
     const namedById = new Map(named.map((player) => [player.id, player]));
 
     const [former, medals, growth] = await Promise.all([
@@ -145,16 +155,14 @@ export class StudentsService {
 
     return {
       current: current.length,
-      younger: current.length - named.length,
+      younger: current.filter((player) => !isNamedStudent(player.birthYear, now)).length,
       former: former.length,
       top: top.map(toStudentRef),
       medals: {
         total: medals.length,
         recent: medals
           .flatMap(({ player, place, tournament }) =>
-            place === null || !isNamedStudent(player.birthYear, now)
-              ? []
-              : [{ player, place, tournament }],
+            place === null || !isNamed(player, now) ? [] : [{ player, place, tournament }],
           )
           .slice(0, COACH_MEDALS_RECENT)
           .map(({ player, place, tournament }) => ({
