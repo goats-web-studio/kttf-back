@@ -5,6 +5,7 @@ import {
   type CityRef,
   type CoachStatus,
   type CoachVisibility,
+  type ConfirmPlayerInput,
   type CreatePlayerInput,
   type EquipmentLabel,
   type HeadToHeadView,
@@ -57,6 +58,7 @@ export const playerFields = {
   rating: true,
   ratedMatches: true,
   isProvisional: true,
+  confirmedAt: true,
   createdAt: true,
 } as const;
 
@@ -197,6 +199,9 @@ export class PlayersService {
       // (ADR-034). Без фильтра это был бы список всех игроков страны, то
       // есть приглашение занять чужую историю.
       ...(query.withoutAccount === true ? { userId: null } : {}),
+      // Анкеты без рейтинга (ADR-072) — не игроки рейтинга. Их видит только
+      // организатор, который ищет пришедшего, чтобы подтвердить анкету.
+      ...(query.withUnconfirmed === true ? {} : { confirmedAt: { not: null } }),
       // Тренер — тот, на кого уже сослались хотя бы раз: роли тренера в
       // продукте ещё нет, и список берётся из самих данных, а не из
       // выдуманной колонки.
@@ -414,8 +419,11 @@ export class PlayersService {
    *    пустым: это штатное состояние по комментарию к модели, связывание
    *    произойдёт, когда человек войдёт по своему телефону
    *
-   * Рейтинг не задаётся: он проекция журнала (ТС 1.4), а вопрос о стартовом
-   * значении открыт (ОВ-2). До его решения действует умолчание схемы.
+   * Свой профиль — анкета без рейтинга (ADR-072): рейтинг, турниры и место
+   * в списке появятся, когда организатор её подтвердит или человек
+   * привяжется к профилю, который организатор завёл ему на турнире. Чужой —
+   * игровой профиль сразу, и стартовый рейтинг по уровню игры у него
+   * обязателен (ADR-062).
    */
   async create(input: CreatePlayerInput, actorId: string): Promise<PlayerProfileView> {
     const { startRating, ...profile } = input;
@@ -442,6 +450,12 @@ export class PlayersService {
       }
 
       await this.assertClubStaff(input.clubId, actorId);
+
+      if (startRating === undefined) {
+        throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Start rating is required', {
+          field: 'startRating',
+        });
+      }
     }
 
     // Тренер из анкеты открывает период истории — той же транзакцией (ADR-059).
@@ -450,7 +464,7 @@ export class PlayersService {
         data: {
           ...defined(profile),
           ...toBirthDate(profile.birthDate),
-          ...(forSomeoneElse ? {} : { userId: actorId }),
+          ...(forSomeoneElse ? { confirmedAt: new Date() } : { userId: actorId }),
           ...(startRating === undefined ? {} : { rating: startRating }),
         },
         select: { id: true, coachPlayerId: true },
@@ -477,6 +491,93 @@ export class PlayersService {
     });
 
     return this.profileView(created);
+  }
+
+  /**
+   * Подтверждение анкеты организатором — ADR-072.
+   *
+   * Человек завёл анкету сам и пришёл на турнир. Второй профиль ему не
+   * заводится: организатор подтверждает этот и задаёт рейтинг по уровню игры
+   * — тем же событием INITIAL, что и при заведении (ADR-062).
+   */
+  async confirm(
+    id: string,
+    input: ConfirmPlayerInput,
+    actorId: string,
+  ): Promise<PlayerProfileView> {
+    await this.assertClubStaff(input.clubId, actorId);
+
+    const confirmed = await this.prisma.$transaction(async (tx) => {
+      // Условие на пустоту: второе подтверждение переписало бы рейтинг мимо
+      // журнала, а два организатора в зале нажимают одновременно.
+      const changed = await tx.player.updateMany({
+        where: { id, confirmedAt: null },
+        data: { confirmedAt: new Date(), rating: input.startRating },
+      });
+
+      if (changed.count === 0) {
+        const exists = await tx.player.findUnique({ where: { id }, select: { id: true } });
+
+        throw exists === null
+          ? new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { id })
+          : new AppError(ERROR_CODES.VALIDATION_FAILED, 'Player is already confirmed', { id });
+      }
+
+      await tx.ratingEvent.create({
+        data: {
+          playerId: id,
+          type: 'INITIAL',
+          ratingBefore: START_RATING,
+          delta: input.startRating - START_RATING,
+          ratingAfter: input.startRating,
+        },
+      });
+
+      return tx.player.findUniqueOrThrow({ where: { id }, select: profileFields });
+    });
+
+    return this.profileView(confirmed);
+  }
+
+  /**
+   * Привязка к игровому профилю — ADR-072, как «Мой рейтинг» у RTTF.
+   *
+   * Организатор завёл человеку профиль на турнире, а человек нашёл в нём
+   * себя — при регистрации или позже. Своя анкета без рейтинга, если она
+   * была, вливается в найденный профиль (`mergeInto`). Спортивное — имя, год,
+   * пол, рейтинг — остаётся у профиля организатора: его видели в зале.
+   */
+  async claim(id: string, actorId: string): Promise<PlayerProfileView> {
+    const claimed = await this.prisma.$transaction(async (tx) => {
+      const target = await tx.player.findUnique({ where: { id }, select: mergeFields });
+
+      if (target === null) throw new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { id });
+
+      if (target.userId !== null) throw claimInvalid('TAKEN');
+
+      if (target.confirmedAt === null) throw claimInvalid('NOT_CONFIRMED');
+
+      const own = await tx.player.findUnique({ where: { userId: actorId }, select: mergeFields });
+
+      if (own !== null) {
+        if (own.confirmedAt !== null) throw claimInvalid('OWN_CONFIRMED');
+
+        await mergeInto(tx, own, target);
+      }
+
+      // Условие на пустоту: между чтением и записью тем же профилем мог
+      // назваться кто-то ещё.
+      const linked = await tx.player.updateMany({
+        where: { id, userId: null },
+        data: { userId: actorId },
+      });
+
+      if (linked.count === 0) throw claimInvalid('TAKEN');
+
+      return tx.player.findUniqueOrThrow({ where: { id }, select: profileFields });
+    });
+
+    return this.profileView(claimed);
   }
 
   async update(id: string, input: UpdatePlayerInput): Promise<PlayerProfileView> {
@@ -652,6 +753,123 @@ export class PlayersService {
   }
 }
 
+/** Поля анкеты, которые при привязке переносятся в пустые места профиля. */
+const MERGED_FIELDS = [
+  'middleName',
+  'photoUrl',
+  'clubId',
+  'playingHand',
+  'grip',
+  'blade',
+  'rubberForehand',
+  'rubberBackhand',
+  'bladeProductId',
+  'rubberForehandProductId',
+  'rubberBackhandProductId',
+  'bio',
+] as const;
+
+const mergeFields = {
+  id: true,
+  userId: true,
+  confirmedAt: true,
+  birthYear: true,
+  birthDate: true,
+  birthYearOnly: true,
+  coachPlayerId: true,
+  coachName: true,
+  coachVisibility: true,
+  coachPage: { select: { id: true } },
+  middleName: true,
+  photoUrl: true,
+  clubId: true,
+  playingHand: true,
+  grip: true,
+  blade: true,
+  rubberForehand: true,
+  rubberBackhand: true,
+  bladeProductId: true,
+  rubberForehandProductId: true,
+  rubberBackhandProductId: true,
+  bio: true,
+} as const satisfies Prisma.PlayerSelect & Record<(typeof MERGED_FIELDS)[number], true>;
+
+type MergeRecord = Prisma.PlayerGetPayload<{ select: typeof mergeFields }>;
+
+function claimInvalid(
+  reason: 'TAKEN' | 'OWN_CONFIRMED' | 'NOT_CONFIRMED' | 'COACH_PAGE',
+): AppError {
+  return new AppError(ERROR_CODES.PLAYER_CLAIM_INVALID, 'Cannot claim this player', { reason });
+}
+
+/**
+ * Анкета вливается в профиль организатора — ADR-072.
+ *
+ * Анкета без рейтинга не бывает ни в турнирах, ни в журнале, поэтому
+ * переносить приходится только то, что живёт вне спорта: пустые поля
+ * анкеты, тренера с историей, страницу тренера, учеников и дуэли. Остальное
+ * уходит каскадом вместе с самой анкетой.
+ */
+async function mergeInto(
+  tx: Prisma.TransactionClient,
+  own: MergeRecord,
+  target: MergeRecord,
+): Promise<void> {
+  if (own.coachPage !== null && target.coachPage !== null) throw claimInvalid('COACH_PAGE');
+
+  const data: Prisma.PlayerUncheckedUpdateInput = {};
+
+  for (const field of MERGED_FIELDS) {
+    if (target[field] === null && own[field] !== null) Object.assign(data, { [field]: own[field] });
+  }
+
+  // Дата — только того же года: год у профиля организатора, и расходиться
+  // с ним дата не вправе (createPlayerSchema).
+  if (
+    target.birthDate === null &&
+    own.birthDate !== null &&
+    own.birthDate.getUTCFullYear() === target.birthYear
+  ) {
+    data.birthDate = own.birthDate;
+    data.birthYearOnly = own.birthYearOnly;
+  }
+
+  // Тренер — парой и вместе с историей: анкета хранит одно из двух.
+  const takesCoach =
+    target.coachPlayerId === null &&
+    target.coachName === null &&
+    (own.coachPlayerId !== null || own.coachName !== null) &&
+    own.coachPlayerId !== target.id;
+
+  if (takesCoach) {
+    data.coachPlayerId = own.coachPlayerId;
+    data.coachName = own.coachName;
+    data.coachVisibility = own.coachVisibility;
+    await tx.coachTenure.updateMany({ where: { playerId: own.id }, data: { playerId: target.id } });
+  }
+
+  await tx.coach.updateMany({ where: { playerId: own.id }, data: { playerId: target.id } });
+  await tx.coachTenure.updateMany({
+    where: { coachPlayerId: own.id, playerId: { not: target.id } },
+    data: { coachPlayerId: target.id },
+  });
+  await tx.player.updateMany({
+    where: { coachPlayerId: own.id, id: { not: target.id } },
+    data: { coachPlayerId: target.id },
+  });
+  await tx.registration.updateMany({
+    where: { coachPlayerId: own.id },
+    data: { coachPlayerId: target.id },
+  });
+  await tx.duel.updateMany({ where: { authorId: own.id }, data: { authorId: target.id } });
+  await tx.duel.updateMany({ where: { opponentId: own.id }, data: { opponentId: target.id } });
+  await tx.duelResponse.updateMany({ where: { playerId: own.id }, data: { playerId: target.id } });
+  // Анкета освобождает аккаунт раньше, чем профиль его получит: userId уникален.
+  await tx.player.delete({ where: { id: own.id } });
+
+  if (Object.keys(data).length > 0) await tx.player.update({ where: { id: target.id }, data });
+}
+
 export interface PlayerRecord {
   id: string;
   userId: string | null;
@@ -666,6 +884,7 @@ export interface PlayerRecord {
   rating: { toString: () => string };
   ratedMatches: number;
   isProvisional: boolean;
+  confirmedAt: Date | null;
   createdAt: Date;
 }
 
@@ -877,6 +1096,7 @@ export function toPlayerView(player: PlayerRecord): PlayerView {
     rating: player.rating.toString(),
     ratedMatches: player.ratedMatches,
     isProvisional: player.isProvisional,
+    confirmed: player.confirmedAt !== null,
     createdAt: player.createdAt.toISOString(),
   };
 }

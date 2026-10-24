@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import {
+  confirmPlayerSchema,
   createPlayerSchema,
   listPlayersSchema,
   playerBestWinsQuerySchema,
@@ -8,6 +9,7 @@ import {
   playerTournamentsQuerySchema,
   ratingHistoryQuerySchema,
   updatePlayerSchema,
+  type ConfirmPlayerInput,
   type CreatePlayerInput,
   type HeadToHeadView,
   type ListPlayersQuery,
@@ -138,6 +140,30 @@ export class PlayersController {
     @CurrentUserId() userId: string,
   ): Promise<PlayerProfileView> {
     return this.players.create(body, userId);
+  }
+
+  /**
+   * Подтверждение анкеты организатором — ADR-072. Право — по клубу в теле,
+   * как при заведении игрока.
+   */
+  @Post(':id/confirm')
+  @UseGuards(JwtAuthGuard)
+  async confirm(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @Body(new ZodValidationPipe(confirmPlayerSchema)) body: ConfirmPlayerInput,
+    @CurrentUserId() userId: string,
+  ): Promise<PlayerProfileView> {
+    return this.players.confirm(id, body, userId);
+  }
+
+  /** «Это я» — привязка аккаунта к игровому профилю (ADR-072). */
+  @Post(':id/claim')
+  @UseGuards(JwtAuthGuard)
+  async claim(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @CurrentUserId() userId: string,
+  ): Promise<PlayerProfileView> {
+    return this.players.claim(id, userId);
   }
 
   @Patch(':id')

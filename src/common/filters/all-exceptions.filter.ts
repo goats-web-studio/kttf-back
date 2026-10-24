@@ -107,6 +107,11 @@ const STATUS_BY_CODE: Readonly<Record<ErrorCode, number>> = {
   DUEL_RESPONSE_EXISTS: HttpStatus.CONFLICT,
   DUEL_TIME_INVALID: HttpStatus.BAD_REQUEST,
   DUEL_SCORE_INVALID: HttpStatus.BAD_REQUEST,
+
+  // Игровой профиль — ADR-072. Анкета без рейтинга — запрет действия, а не
+  // кривой запрос; привязка к занятому или к анкете — конфликт с данными.
+  PLAYER_NOT_CONFIRMED: HttpStatus.FORBIDDEN,
+  PLAYER_CLAIM_INVALID: HttpStatus.CONFLICT,
 };
 
 const CODE_BY_STATUS: Readonly<Record<number, ErrorCode>> = {

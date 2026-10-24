@@ -591,6 +591,8 @@ export class TournamentsService {
       throw new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { playerId });
     }
 
+    assertConfirmed(player);
+
     const problems = checkEligibility(
       {
         rating: Number(player.rating),
@@ -751,12 +753,15 @@ export class TournamentsService {
         ratedTournaments: true,
         coachPlayerId: true,
         coachName: true,
+        confirmedAt: true,
       },
     });
 
     if (player === null) {
       throw new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { playerId: input.playerId });
     }
+
+    assertConfirmed(player);
 
     const existing = await this.prisma.registration.findUnique({
       where: { tournamentId_playerId: { tournamentId: id, playerId: input.playerId } },
@@ -2000,4 +2005,17 @@ function assertResolvesTie(standings: TournamentStandingsView, input: TieDecisio
 /** Значение из запроса, а если поля в нём не было — из базы. `null` — стёрто. */
 function orStored<T>(sent: T | null | undefined, stored: T | null): T | null {
   return sent === undefined ? stored : sent;
+}
+
+/**
+ * На турнир — только игровой профиль (ADR-072). Анкету без рейтинга
+ * организатор сначала подтверждает, задав рейтинг по уровню игры: иначе
+ * человек входит в посев и в расчёт с умолчанием 250, а не со своей игрой.
+ */
+function assertConfirmed(player: { readonly id: string; readonly confirmedAt: Date | null }): void {
+  if (player.confirmedAt === null) {
+    throw new AppError(ERROR_CODES.PLAYER_NOT_CONFIRMED, 'Player is not confirmed', {
+      playerId: player.id,
+    });
+  }
 }

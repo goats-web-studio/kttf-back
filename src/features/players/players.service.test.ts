@@ -19,6 +19,7 @@ const player = {
   rating: { toString: () => '250.00' },
   ratedMatches: 0,
   isProvisional: true,
+  confirmedAt: new Date('2026-08-29T00:00:00.000Z'),
   createdAt: new Date('2026-08-29T00:00:00.000Z'),
   // Анкета ТЗ 2.2 — то, что отдаёт выборка полного профиля.
   birthDate: null,
@@ -59,14 +60,19 @@ function makePrisma() {
       findUniqueOrThrow: vi.fn().mockResolvedValue(player),
       create: vi.fn().mockResolvedValue(player),
       update: vi.fn().mockResolvedValue(player),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      delete: vi.fn(),
     },
     coachTenure: { create: vi.fn(), updateMany: vi.fn() },
+    coach: { updateMany: vi.fn() },
+    duel: { updateMany: vi.fn() },
+    duelResponse: { updateMany: vi.fn() },
     registration: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
     $transaction: vi.fn(),
     club: { findUnique: vi.fn().mockResolvedValue({ id: 'club-1' }) },
     clubMember: { findUnique: vi.fn().mockResolvedValue(null) },
     city: { findFirst: vi.fn().mockResolvedValue({ id: 'city-1' }) },
-    ratingEvent: { groupBy: vi.fn().mockResolvedValue([]) },
+    ratingEvent: { groupBy: vi.fn().mockResolvedValue([]), create: vi.fn() },
     product: { findMany: vi.fn().mockResolvedValue([]) },
     $queryRaw: vi.fn().mockResolvedValue([]),
   };
@@ -207,8 +213,14 @@ describe('список игроков', () => {
     });
   });
 
-  it('без фильтров в запросе нет лишних условий', async () => {
+  it('без фильтров — только игровые профили, анкет без рейтинга нет (ADR-072)', async () => {
     await service.list({ page: 1, limit: 20 });
+
+    expect(listWhere()).toEqual({ confirmedAt: { not: null } });
+  });
+
+  it('организатор, ищущий пришедшего, видит и анкеты без рейтинга', async () => {
+    await service.list({ page: 1, limit: 20, withUnconfirmed: true });
 
     expect(listWhere()).toEqual({});
   });
@@ -287,10 +299,36 @@ describe('создание игрока', () => {
     prisma.player.findUnique.mockResolvedValue({ id: 'player-1' });
     prisma.clubMember.findUnique.mockResolvedValue({ role: 'ORGANIZER' });
 
-    await service.create({ ...newcomer, clubId: 'club-1' }, 'user-1');
+    await service.create({ ...newcomer, clubId: 'club-1', startRating: 400 }, 'user-1');
 
-    const data = (prisma.player.create.mock.calls[0]?.[0] as { data: { userId?: string } }).data;
+    const data = (
+      prisma.player.create.mock.calls[0]?.[0] as {
+        data: { userId?: string; confirmedAt?: Date };
+      }
+    ).data;
     expect(data.userId).toBeUndefined();
+    // Заведённый организатором — сразу игровой профиль (ADR-072).
+    expect(data.confirmedAt).toBeInstanceOf(Date);
+  });
+
+  it('чужой профиль без рейтинга по уровню не заводится — ADR-072', async () => {
+    prisma.player.findUnique.mockResolvedValue({ id: 'player-1' });
+    prisma.clubMember.findUnique.mockResolvedValue({ role: 'ORGANIZER' });
+
+    await expect(service.create({ ...newcomer, clubId: 'club-1' }, 'user-1')).rejects.toMatchObject(
+      { code: 'VALIDATION_FAILED', details: { field: 'startRating' } },
+    );
+    expect(prisma.player.create).not.toHaveBeenCalled();
+  });
+
+  it('свой профиль — анкета без рейтинга, не подтверждена', async () => {
+    prisma.player.findUnique.mockResolvedValue(null);
+
+    await service.create(newcomer, 'user-1');
+
+    expect((prisma.player.create.mock.calls[0]?.[0] as { data: object }).data).not.toHaveProperty(
+      'confirmedAt',
+    );
   });
 
   it('чужого игрока без клуба завести нельзя', async () => {
@@ -871,6 +909,189 @@ describe('кому виден тренер — ADR-066', () => {
 
     expect(prisma.player.update.mock.calls[0]?.[0]).toMatchObject({
       data: { coachVisibility: 'CURRENT' },
+    });
+  });
+});
+
+describe('подтверждение анкеты — ADR-072', () => {
+  it('организатор задаёт рейтинг событием INITIAL от общего старта', async () => {
+    prisma.clubMember.findUnique.mockResolvedValue({ role: 'ORGANIZER' });
+
+    await service.confirm('player-1', { clubId: 'club-1', startRating: 425 }, 'user-1');
+
+    expect(prisma.player.updateMany).toHaveBeenCalledWith({
+      where: { id: 'player-1', confirmedAt: null },
+      data: { confirmedAt: expect.any(Date) as Date, rating: 425 },
+    });
+    expect(prisma.ratingEvent.create).toHaveBeenCalledWith({
+      data: {
+        playerId: 'player-1',
+        type: 'INITIAL',
+        ratingBefore: 250,
+        delta: 175,
+        ratingAfter: 425,
+      },
+    });
+  });
+
+  it('посторонний клубу не подтверждает', async () => {
+    await expect(
+      service.confirm('player-1', { clubId: 'club-1', startRating: 425 }, 'user-1'),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(prisma.player.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('второй раз не подтверждается — рейтинг мимо журнала не переписать', async () => {
+    prisma.clubMember.findUnique.mockResolvedValue({ role: 'OWNER' });
+    prisma.player.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(
+      service.confirm('player-1', { clubId: 'club-1', startRating: 425 }, 'user-1'),
+    ).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    expect(prisma.ratingEvent.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('привязка к игровому профилю — ADR-072', () => {
+  const target = {
+    id: 'player-1',
+    userId: null,
+    confirmedAt: new Date('2026-10-20T00:00:00.000Z'),
+    birthYear: 1998,
+    birthDate: null,
+    birthYearOnly: true,
+    coachPlayerId: null,
+    coachName: null,
+    coachVisibility: 'ALL' as const,
+    coachPage: null,
+    middleName: null,
+    photoUrl: null,
+    clubId: 'club-1',
+    playingHand: null,
+    grip: null,
+    blade: null,
+    rubberForehand: null,
+    rubberBackhand: null,
+    bladeProductId: null,
+    rubberForehandProductId: null,
+    rubberBackhandProductId: null,
+    bio: null,
+  };
+  const sheet = {
+    ...target,
+    id: 'sheet-1',
+    userId: 'user-1',
+    confirmedAt: null,
+    birthDate: new Date('1998-04-02T00:00:00.000Z'),
+    birthYearOnly: false,
+    clubId: 'club-2',
+    playingHand: 'LEFT',
+    bio: 'Играю по выходным',
+    coachName: 'Иванов',
+  };
+
+  /** Первый поиск — выбранный профиль, второй — свой профиль вошедшего. */
+  function lookups(own: object | null): void {
+    prisma.player.findUnique.mockResolvedValueOnce(target).mockResolvedValueOnce(own);
+  }
+
+  it('без анкеты — просто привязка условием на пустоту', async () => {
+    lookups(null);
+
+    await service.claim('player-1', 'user-1');
+
+    expect(prisma.player.updateMany).toHaveBeenCalledWith({
+      where: { id: 'player-1', userId: null },
+      data: { userId: 'user-1' },
+    });
+    expect(prisma.player.delete).not.toHaveBeenCalled();
+  });
+
+  it('анкета вливается: пустое заполняется, ссылки переходят, анкета удаляется', async () => {
+    lookups(sheet);
+
+    await service.claim('player-1', 'user-1');
+
+    expect(prisma.coach.updateMany).toHaveBeenCalledWith({
+      where: { playerId: 'sheet-1' },
+      data: { playerId: 'player-1' },
+    });
+    expect(prisma.duel.updateMany).toHaveBeenCalledWith({
+      where: { authorId: 'sheet-1' },
+      data: { authorId: 'player-1' },
+    });
+    expect(prisma.player.delete).toHaveBeenCalledWith({ where: { id: 'sheet-1' } });
+    // Клуб у профиля организатора есть — остаётся его; пустое — из анкеты.
+    expect(prisma.player.update).toHaveBeenCalledWith({
+      where: { id: 'player-1' },
+      data: {
+        playingHand: 'LEFT',
+        bio: 'Играю по выходным',
+        birthDate: sheet.birthDate,
+        birthYearOnly: false,
+        coachPlayerId: null,
+        coachName: 'Иванов',
+        coachVisibility: 'ALL',
+      },
+    });
+    // Анкета освобождает аккаунт раньше, чем профиль его получает.
+    const deleted = prisma.player.delete.mock.invocationCallOrder[0] ?? 0;
+    const linked = prisma.player.updateMany.mock.invocationCallOrder.at(-1) ?? 0;
+    expect(deleted).toBeLessThan(linked);
+  });
+
+  it('дата другого года не переносится', async () => {
+    lookups({ ...sheet, birthDate: new Date('1999-04-02T00:00:00.000Z') });
+
+    await service.claim('player-1', 'user-1');
+
+    expect((prisma.player.update.mock.calls[0]?.[0] as { data: object }).data).not.toHaveProperty(
+      'birthDate',
+    );
+  });
+
+  it('занятый профиль не отдаётся', async () => {
+    prisma.player.findUnique.mockResolvedValueOnce({ ...target, userId: 'user-9' });
+
+    await expect(service.claim('player-1', 'user-1')).rejects.toMatchObject({
+      code: 'PLAYER_CLAIM_INVALID',
+      details: { reason: 'TAKEN' },
+    });
+  });
+
+  it('к чужой анкете без рейтинга не привязаться', async () => {
+    prisma.player.findUnique.mockResolvedValueOnce({ ...target, confirmedAt: null });
+
+    await expect(service.claim('player-1', 'user-1')).rejects.toMatchObject({
+      details: { reason: 'NOT_CONFIRMED' },
+    });
+  });
+
+  it('у кого игровой профиль уже есть — второй не берёт', async () => {
+    lookups({ ...sheet, confirmedAt: new Date() });
+
+    await expect(service.claim('player-1', 'user-1')).rejects.toMatchObject({
+      details: { reason: 'OWN_CONFIRMED' },
+    });
+    expect(prisma.player.delete).not.toHaveBeenCalled();
+  });
+
+  it('две страницы тренера не сливаются', async () => {
+    prisma.player.findUnique
+      .mockResolvedValueOnce({ ...target, coachPage: { id: 'coach-a' } })
+      .mockResolvedValueOnce({ ...sheet, coachPage: { id: 'coach-b' } });
+
+    await expect(service.claim('player-1', 'user-1')).rejects.toMatchObject({
+      details: { reason: 'COACH_PAGE' },
+    });
+  });
+
+  it('кто-то успел раньше — отказ, а не две привязки', async () => {
+    lookups(null);
+    prisma.player.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(service.claim('player-1', 'user-1')).rejects.toMatchObject({
+      details: { reason: 'TAKEN' },
     });
   });
 });

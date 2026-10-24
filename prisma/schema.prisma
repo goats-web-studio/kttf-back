@@ -161,6 +161,11 @@ model Player {
   ratedTournaments Int     @default(0)
   isProvisional    Boolean @default(true)
   trustScore       Decimal @default(100) @db.Decimal(5, 2)
+  // Игровой профиль — ADR-072. Ставится, когда профиль заводит организатор
+  // или подтверждает анкету, которую человек завёл сам, задав рейтинг по
+  // уровню игры. Пусто — анкета без рейтинга: `rating` выше у неё лишь
+  // умолчание, в рейтинг и на турниры она не идёт.
+  confirmedAt      DateTime?
 
   createdAt DateTime @default(now())
 

@@ -109,11 +109,19 @@ export class AuthService {
     if (input.playerId !== undefined) {
       const player = await this.prisma.player.findUnique({
         where: { id: input.playerId },
-        select: { userId: true },
+        select: { userId: true, confirmedAt: true },
       });
 
       if (player === null) {
         throw new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { id: input.playerId });
+      }
+
+      // Привязываются к игровому профилю, который завёл организатор (ADR-072).
+      // Чужая анкета без рейтинга — не история, к которой стоит привязаться.
+      if (player.confirmedAt === null) {
+        throw new AppError(ERROR_CODES.PLAYER_CLAIM_INVALID, 'Player is not confirmed', {
+          reason: 'NOT_CONFIRMED',
+        });
       }
 
       if (player.userId !== null) {
@@ -137,7 +145,7 @@ export class AuthService {
         // Привязка условием на пустоту: между проверкой выше и этой строкой
         // тем же игроком мог назваться кто-то ещё.
         const linked = await tx.player.updateMany({
-          where: { id: input.playerId, userId: null },
+          where: { id: input.playerId, userId: null, confirmedAt: { not: null } },
           data: { userId: created.id },
         });
 

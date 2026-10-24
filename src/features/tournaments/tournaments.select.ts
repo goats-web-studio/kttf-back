@@ -27,6 +27,7 @@ export const playerFields = {
   ratedMatches: true,
   ratedTournaments: true,
   isProvisional: true,
+  confirmedAt: true,
   createdAt: true,
 } as const;
 

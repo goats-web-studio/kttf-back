@@ -93,6 +93,7 @@ export function toPlayerView(player: RegistrationRecord['player']): PlayerView {
     rating: player.rating.toString(),
     ratedMatches: player.ratedMatches,
     isProvisional: player.isProvisional,
+    confirmed: player.confirmedAt !== null,
     createdAt: player.createdAt.toISOString(),
   };
 }

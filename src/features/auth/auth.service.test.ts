@@ -44,7 +44,7 @@ function makePrisma() {
       update: vi.fn().mockResolvedValue(account),
     },
     player: {
-      findUnique: vi.fn().mockResolvedValue({ userId: null }),
+      findUnique: vi.fn().mockResolvedValue({ userId: null, confirmedAt: new Date() }),
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
     session: {
@@ -204,9 +204,22 @@ describe('регистрация', () => {
     const session = await service.signUp({ ...input, playerId: 'player-1' });
 
     expect(prisma.player.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: 'player-1', userId: null } }),
+      expect.objectContaining({
+        where: { id: 'player-1', userId: null, confirmedAt: { not: null } },
+      }),
     );
     expect(session.user.playerId).toBe('player-1');
+  });
+
+  it('к чужой анкете без рейтинга не привязывает — ADR-072', async () => {
+    prisma.player.findUnique.mockResolvedValue({ userId: null, confirmedAt: null });
+    const { service } = makeService(prisma);
+
+    await expect(service.signUp({ ...input, playerId: 'player-1' })).rejects.toMatchObject({
+      code: 'PLAYER_CLAIM_INVALID',
+      details: { reason: 'NOT_CONFIRMED' },
+    });
+    expect(prisma.user.create).not.toHaveBeenCalled();
   });
 
   it('чужого игрока занять нельзя', async () => {

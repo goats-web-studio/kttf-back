@@ -67,8 +67,11 @@ export class PlayerProfileService {
     const player = await this.load(id);
     const [above, rankedPlayers, peak, matches, first, awards] = await Promise.all([
       // Место — как в списке рейтинга: равный рейтинг делит место.
-      this.prisma.player.count({ where: { rating: { gt: player.rating } } }),
-      this.prisma.player.count(),
+      // Анкеты без рейтинга (ADR-072) в рейтинге не стоят и места не занимают.
+      this.prisma.player.count({
+        where: { rating: { gt: player.rating }, confirmedAt: { not: null } },
+      }),
+      this.prisma.player.count({ where: { confirmedAt: { not: null } } }),
       // Первое достижение максимума: повторить рекорд — не то же, что его поставить.
       this.prisma.ratingEvent.findFirst({
         where: { playerId: id },

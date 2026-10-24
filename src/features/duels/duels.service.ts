@@ -870,13 +870,24 @@ export class DuelsService {
   async actor(userId: string): Promise<DuelActor> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { phone: true, player: { select: { id: true, lastName: true, firstName: true } } },
+      select: {
+        phone: true,
+        player: { select: { id: true, lastName: true, firstName: true, confirmedAt: true } },
+      },
     });
 
     if (user === null) throw new AppError(ERROR_CODES.UNAUTHORIZED, 'User not found');
 
     if (user.player === null) {
       throw new AppError(ERROR_CODES.DUEL_PROFILE_REQUIRED, 'Duels require a player profile');
+    }
+
+    // Дуэль — с рейтингом в строке и, у рейтинговой, в журнале: анкете без
+    // рейтинга (ADR-072) показывать и считать нечего.
+    if (user.player.confirmedAt === null) {
+      throw new AppError(ERROR_CODES.PLAYER_NOT_CONFIRMED, 'Duels require a rated profile', {
+        playerId: user.player.id,
+      });
     }
 
     return {
@@ -900,11 +911,17 @@ export class DuelsService {
 
     const player = await this.prisma.player.findUnique({
       where: { id: opponentId },
-      select: { id: true, userId: true },
+      select: { id: true, userId: true, confirmedAt: true },
     });
 
     if (player === null) {
       throw new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { id: opponentId });
+    }
+
+    if (player.confirmedAt === null) {
+      throw new AppError(ERROR_CODES.PLAYER_NOT_CONFIRMED, 'Opponent has no rated profile', {
+        playerId: opponentId,
+      });
     }
 
     if (player.userId === null) {
