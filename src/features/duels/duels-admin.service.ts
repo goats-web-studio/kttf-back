@@ -22,7 +22,6 @@ import {
   playerName,
   ratingChangeFields,
   toDuelItem,
-  toRatingChange,
   type DuelRecord,
 } from './duel-view.js';
 import { DuelsService, claimDuel } from './duels.service.js';
@@ -289,9 +288,12 @@ export class DuelsAdminService {
 
       return {
         // Администратор смотрит со стороны: «новых откликов» у него нет.
-        ...toDuelItem(row, ANONYMOUS_VIEWER),
+        ...toDuelItem(
+          row,
+          ANONYMOUS_VIEWER,
+          changeRows.filter((change) => change.duelId === row.id),
+        ),
         flags,
-        ratingChanges: changeRows.filter((change) => change.duelId === row.id).map(toRatingChange),
         annulledAt: row.annulledAt?.toISOString() ?? null,
         pairCount30d: pairCount,
       };

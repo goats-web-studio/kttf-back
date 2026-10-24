@@ -157,7 +157,11 @@ function toResult(record: DuelRecord): DuelResult | null {
   };
 }
 
-export function toDuelItem(record: DuelRecord, viewer: DuelViewer): DuelItemView {
+export function toDuelItem(
+  record: DuelRecord,
+  viewer: DuelViewer,
+  changes: readonly RatingChangeRecord[],
+): DuelItemView {
   const isAuthor = viewer.playerId !== null && viewer.playerId === record.authorId;
 
   return {
@@ -186,6 +190,7 @@ export function toDuelItem(record: DuelRecord, viewer: DuelViewer): DuelItemView
     // Сколько новых откликов — дело автора: остальным это знать незачем.
     responsesNew: isAuthor ? record._count.responses : null,
     result: toResult(record),
+    ratingChanges: changes.map(toRatingChange),
     createdAt: record.createdAt.toISOString(),
   };
 }
@@ -279,9 +284,8 @@ export function toDuelView(
   );
 
   return {
-    ...toDuelItem(record, viewer),
+    ...toDuelItem(record, viewer, changes),
     responses: visible.map(toResponseView),
-    ratingChanges: changes.map(toRatingChange),
     annulledAt: record.annulledAt?.toISOString() ?? null,
     annulReason: record.annulReason,
     ratingSkipped: record.ratingSkipped,

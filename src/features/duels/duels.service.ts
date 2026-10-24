@@ -153,11 +153,7 @@ export class DuelsService {
       this.prisma.duel.count({ where }),
     ]);
 
-    return pageOf(
-      rows.map((row) => toDuelItem(row, viewer)),
-      total,
-      query,
-    );
+    return pageOf(await this.items(rows, viewer), total, query);
   }
 
   /** Страница предложения. */
@@ -230,11 +226,7 @@ export class DuelsService {
       this.prisma.duel.count({ where }),
     ]);
 
-    return pageOf(
-      rows.map((row) => toDuelItem(row, viewer)),
-      total,
-      query,
-    );
+    return pageOf(await this.items(rows, viewer), total, query);
   }
 
   // ---------------------------------------------------------------- предложение
@@ -522,7 +514,7 @@ export class DuelsService {
           duelId: duel.id,
           kind: duel.kind,
           playerName: me.name,
-          reason: 'DECLINED',
+          reason: 'REJECTED',
         });
       }
 
@@ -776,6 +768,26 @@ export class DuelsService {
   }
 
   // ---------------------------------------------------------------- общее
+
+  /** Строки списка с начислением: одним запросом журнала на страницу. */
+  private async items(rows: readonly DuelRecord[], viewer: DuelViewer): Promise<DuelItemView[]> {
+    const changes =
+      rows.length === 0
+        ? []
+        : await this.prisma.ratingEvent.findMany({
+            where: { duelId: { in: rows.map((row) => row.id) }, type: 'MATCH' },
+            select: { ...ratingChangeFields, duelId: true },
+            orderBy: { playerId: 'asc' },
+          });
+
+    return rows.map((row) =>
+      toDuelItem(
+        row,
+        viewer,
+        changes.filter((change) => change.duelId === row.id),
+      ),
+    );
+  }
 
   /** Дуэль глазами смотрящего: отклики, начисление, доступные действия. */
   async render(id: string, viewer: DuelViewer, now: Date): Promise<DuelView> {
