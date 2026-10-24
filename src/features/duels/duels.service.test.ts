@@ -1,5 +1,5 @@
 import { isAppError } from '@kttf/shared/errors';
-import { applyDelta, calculateMatch } from '@kttf/shared/rating';
+import { DUEL_WEIGHT, calculateDuelRating } from '@kttf/shared/rating';
 import { duelViewSchema, type CreateDuelInput } from '@kttf/shared/types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -212,8 +212,8 @@ function makePrisma() {
         where.id in USER ? { id: where.id, userId: USER[where.id as keyof typeof USER] } : null,
       ),
       findMany: returns(() => [
-        { id: AUTHOR, rating: new Prisma.Decimal('300'), ratedMatches: 25 },
-        { id: OPPONENT, rating: new Prisma.Decimal('300'), ratedMatches: 25 },
+        { id: AUTHOR, rating: new Prisma.Decimal('300'), ratedMatches: 25, ratedTournaments: 6 },
+        { id: OPPONENT, rating: new Prisma.Decimal('300'), ratedMatches: 25, ratedTournaments: 6 },
       ]),
       update: returns(() => ({})),
     },
@@ -711,47 +711,60 @@ describe('счёт', () => {
     ]);
   });
 
-  it('подтверждение — рейтинг с T = 0.5, события со ссылкой на дуэль, проекция', async () => {
+  it('подтверждение — рейтинг дуэли (вес 0.5), события со ссылкой на дуэль, проекция', async () => {
     state.duel = reported();
     const later = new Date(PLAYED.getTime() + HOUR_MS);
 
     await service.confirm(DUEL_ID, USER[OPPONENT], later);
 
-    const expected = calculateMatch({
-      winner: { rating: 300, ratedMatches: 25 },
-      loser: { rating: 300, ratedMatches: 25 },
+    const snapshot = { rating: 300, ratedMatches: 25, ratedTournaments: 6 };
+    const expected = calculateDuelRating({
+      duelId: DUEL_ID,
+      winnerId: AUTHOR,
+      loserId: OPPONENT,
+      winner: snapshot,
+      loser: snapshot,
       winnerSets: 3,
       loserSets: 1,
-      level: 'DUEL',
-      resultType: 'NORMAL',
     });
+    const [won, lost] = expected.events;
     const events = (prisma.ratingEvent.createMany.mock.calls[0]?.[0] as { data: Row[] }).data;
 
-    expect(expected.factors.levelFactor).toBe(0.5);
+    // Средний 300 — k турнира 0.25, у дуэли вдвое меньше; 3:1 — D = 1.0.
+    expect(expected.tournamentFactor).toBe(0.25 * DUEL_WEIGHT);
     expect(events).toEqual([
-      expect.objectContaining({
+      {
         playerId: AUTHOR,
         duelId: DUEL_ID,
         type: 'MATCH',
         ratingBefore: 300,
-        delta: expected.winnerDelta,
-        tFactor: 0.5,
+        delta: won?.delta,
+        ratingAfter: won?.ratingAfter,
+        opponentRating: 300,
+        kFactor: 0.125,
+        tFactor: 0.125,
+        mFactor: 1,
+        imbalance: 0,
+        clamped: false,
         createdBy: USER[OPPONENT],
-      }),
+      },
       expect.objectContaining({
         playerId: OPPONENT,
         duelId: DUEL_ID,
         type: 'MATCH',
-        delta: expected.loserDelta,
-        tFactor: 0.5,
+        delta: lost?.delta,
+        imbalance: null,
       }),
     ]);
+    // (100 − 0) / 10 × 0.25 × 1.0 × 0.5
+    expect(won?.delta).toBe(1.25);
     expect(events.every((event) => !('matchId' in event) && !('tournamentId' in event))).toBe(true);
     expect(prisma.player.update).toHaveBeenCalledWith({
       where: { id: AUTHOR },
       data: {
-        rating: applyDelta(300, expected.winnerDelta).rating,
+        rating: 301.25,
         ratedMatches: 26,
+        ratedTournaments: 6,
         isProvisional: false,
       },
       select: { id: true },
@@ -772,10 +785,35 @@ describe('счёт', () => {
           duelId: DUEL_ID,
           kind: 'DUEL',
           playerName: 'Иванов Пётр',
-          delta: new Prisma.Decimal(expected.winnerDelta).toString(),
+          delta: '1.25',
         },
       },
     ]);
+  });
+
+  it('новичок по турнирам (ADR-069) — свой k, дуэль помечена PROVISIONAL', async () => {
+    state.duel = reported();
+    prisma.player.findMany.mockResolvedValue([
+      { id: AUTHOR, rating: new Prisma.Decimal('300'), ratedMatches: 40, ratedTournaments: 2 },
+      { id: OPPONENT, rating: new Prisma.Decimal('300'), ratedMatches: 25, ratedTournaments: 6 },
+    ]);
+
+    await service.confirm(DUEL_ID, USER[OPPONENT], PLAYED);
+
+    const events = (prisma.ratingEvent.createMany.mock.calls[0]?.[0] as { data: Row[] }).data;
+
+    // Новичок-победитель: k = 1, D = 1, с весом дуэли — 0.5; 10 × 0.5 = 5.
+    expect(events[0]).toMatchObject({ playerId: AUTHOR, kFactor: 0.5, delta: 5 });
+    expect(prisma.player.update).toHaveBeenCalledWith({
+      where: { id: AUTHOR },
+      data: { rating: 305, ratedMatches: 41, ratedTournaments: 2, isProvisional: true },
+      select: { id: true },
+    });
+    expect(prisma.duel.update).toHaveBeenCalledWith({
+      where: { id: DUEL_ID },
+      data: { provisional: true },
+      select: { id: true },
+    });
   });
 
   it('предел частоты при начислении — сыграно без рейтинга', async () => {
@@ -907,9 +945,9 @@ describe('спор и администратор', () => {
     state.duel = reported({ status: 'COMPLETED', confirmedAt: PLAYED });
     state.events = [change(AUTHOR, '305.75', '4.5'), change(OPPONENT, '6.5', '-4.5')];
     prisma.player.findMany.mockResolvedValue([
-      { id: AUTHOR, rating: new Prisma.Decimal('310.25'), ratedMatches: 26 },
+      { id: AUTHOR, rating: new Prisma.Decimal('310.25'), ratedMatches: 26, ratedTournaments: 6 },
       // Проигравший опустился к самому низу: возврат применяется как есть.
-      { id: OPPONENT, rating: new Prisma.Decimal('2'), ratedMatches: 26 },
+      { id: OPPONENT, rating: new Prisma.Decimal('2'), ratedMatches: 26, ratedTournaments: 6 },
     ]);
 
     await admin.annul(DUEL_ID, ADMIN_USER, { reason: 'Договорная' }, PLAYED);
@@ -957,7 +995,7 @@ describe('спор и администратор', () => {
     state.duel = reported({ status: 'COMPLETED' });
     state.events = [change(AUTHOR, '5', '10')];
     prisma.player.findMany.mockResolvedValue([
-      { id: AUTHOR, rating: new Prisma.Decimal('5'), ratedMatches: 26 },
+      { id: AUTHOR, rating: new Prisma.Decimal('5'), ratedMatches: 26, ratedTournaments: 6 },
     ]);
 
     await admin.annul(DUEL_ID, ADMIN_USER, { reason: 'Договорная' }, PLAYED);

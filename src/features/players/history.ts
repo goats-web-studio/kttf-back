@@ -19,7 +19,7 @@ interface DuelSide {
 
 /** Событие журнала в том виде, в каком его читает история. */
 export interface RatingEventRow {
-  readonly type: 'MATCH' | 'INITIAL' | 'MANUAL_ADJUST' | 'RECALC';
+  readonly type: 'MATCH' | 'BONUS' | 'INITIAL' | 'MANUAL_ADJUST' | 'RECALC';
   readonly tournamentId: string | null;
   readonly ratingBefore: Prisma.Decimal;
   readonly delta: Prisma.Decimal;
@@ -164,8 +164,9 @@ export function buildRatingPoints(
       ratingBefore: bounds.before.toString(),
       ratingAfter: bounds.after.toString(),
       delta: sumOf(group).toString(),
-      // Нулевые дельты (разрыв 100 очков, ТЗ 7) — тоже сыгранные встречи.
-      matches: group.length,
+      // Нулевые дельты (разрыв 100 очков, ТЗ 7) — тоже сыгранные встречи;
+      // бонус призёру (ADR-069) — не встреча.
+      matches: group.filter((event) => event.type !== 'BONUS').length,
     };
   });
 

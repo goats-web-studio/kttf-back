@@ -165,6 +165,18 @@ describe('кривая рейтинга', () => {
   });
 });
 
+describe('бонус призёру — ADR-069', () => {
+  it('входит в дельту турнира, но встречей не считается', () => {
+    const points = buildRatingPoints(
+      [event('250.00', '5.00', '255.00'), event('255.00', '2.55', '257.55', { type: 'BONUS' })],
+      PLAYER_ID,
+    );
+
+    expect(points).toHaveLength(1);
+    expect(points[0]).toMatchObject({ delta: '7.55', ratingAfter: '257.55', matches: 1 });
+  });
+});
+
 describe('дуэли на кривой — ADR-065', () => {
   const DUEL_ID = '00000000-0000-4000-8000-000000000009';
   const duel = {

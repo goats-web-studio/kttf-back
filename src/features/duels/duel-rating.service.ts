@@ -1,7 +1,7 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import {
   DUEL_PAIR_WINDOW_DAYS,
-  PROVISIONAL_THRESHOLD,
+  NOVICE_TOURNAMENTS,
   applyDelta,
   calculateDuelRating,
   duelRatingBlock,
@@ -110,14 +110,18 @@ export class DuelRatingService {
     const loserId = result.winnerId === authorId ? opponentId : authorId;
     const players = await tx.player.findMany({
       where: { id: { in: [authorId, opponentId] } },
-      select: { id: true, rating: true, ratedMatches: true },
+      select: { id: true, rating: true, ratedMatches: true, ratedTournaments: true },
     });
     const snapshot = (id: string) => {
       const player = players.find((row) => row.id === id);
 
       if (player === undefined) throw new Error(`Дуэль ${duel.id}: игрок ${id} не найден`);
 
-      return { rating: Number(player.rating), ratedMatches: player.ratedMatches };
+      return {
+        rating: Number(player.rating),
+        ratedMatches: player.ratedMatches,
+        ratedTournaments: player.ratedTournaments,
+      };
     };
     const winner = snapshot(result.winnerId);
     const loser = snapshot(loserId);
@@ -131,13 +135,16 @@ export class DuelRatingService {
       loserSets: result.loserSets,
     });
 
-    // Те же поля, что у события турнира: аудит и пересчёт читают их одинаково.
-    // `matchId` черновика — идентификатор дуэли, в журнал он идёт как `duelId`.
+    // Те же поля, что у события турнира (формула 3.0, ADR-069): аудит и
+    // пересчёт читают их одинаково. `matchId` черновика — идентификатор
+    // дуэли, в журнал он идёт как `duelId`. `kFactor` и `tFactor` уже с весом
+    // дуэли; колонки — два знака после запятой, k × 0.5 = 0.125 хранится как
+    // 0.13: множители — для аудита, дельта посчитана точно.
     await tx.ratingEvent.createMany({
       data: rating.events.map((event) => ({
         playerId: event.playerId,
         duelId: duel.id,
-        type: 'MATCH' as const,
+        type: event.type,
         ratingBefore: event.ratingBefore,
         delta: event.delta,
         ratingAfter: event.ratingAfter,
@@ -145,8 +152,6 @@ export class DuelRatingService {
         kFactor: event.kFactor,
         tFactor: event.tFactor,
         mFactor: event.mFactor,
-        expected: event.expected,
-        gapMultiplier: event.gapMultiplier,
         imbalance: event.imbalance,
         clamped: event.clamped,
         createdBy: userId,
@@ -159,18 +164,22 @@ export class DuelRatingService {
         data: {
           rating: player.rating,
           ratedMatches: player.ratedMatches,
+          // Дуэль — встреча, а не турнир: счётчик турниров не растёт.
+          ratedTournaments: player.ratedTournaments,
           isProvisional: player.isProvisional,
         },
         select: { id: true },
       });
     }
 
-    // Пометка PROVISIONAL смотрит на момент начисления: потом игрок
-    // наберёт встреч, и текущий признак об этой дуэли уже ничего не скажет.
+    // Пометка PROVISIONAL — новичок (меньше пяти турниров, ADR-069) в момент
+    // начисления: у новичка свой k, не зависящий от уровня соперников, и
+    // накрутка через него выгоднее. Потом он наберёт турниров, и текущий
+    // признак об этой дуэли уже ничего не скажет.
     await tx.duel.update({
       where: { id: duel.id },
       data: {
-        provisional: [winner, loser].some((side) => side.ratedMatches < PROVISIONAL_THRESHOLD),
+        provisional: [winner, loser].some((side) => side.ratedTournaments < NOVICE_TOURNAMENTS),
       },
       select: { id: true },
     });
