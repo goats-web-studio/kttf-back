@@ -25,6 +25,16 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const KNOWN_TYPES: readonly NotificationType[] = notificationViewSchema.options.map(
   (option) => option.shape.type.value,
 );
+const DUEL_TYPES = [
+  'DUEL_CHALLENGE',
+  'DUEL_RESPONSE',
+  'DUEL_SCHEDULED',
+  'DUEL_DECLINED',
+  'DUEL_CANCELLED',
+  'DUEL_RESULT',
+  'DUEL_COMPLETED',
+  'DUEL_DISPUTED',
+] as const satisfies readonly NotificationType[];
 /** Старые уведомления чистятся попутно, не чаще раза в час на процесс. */
 const SWEEP_EVERY_MS = 60 * 60 * 1000;
 
@@ -134,6 +144,44 @@ export class NotificationsService {
         type: { in: ['FORUM_REPLY', 'FORUM_TOPIC_UPDATE'] },
         readAt: null,
         data: { path: ['topicId'], equals: topicId },
+      },
+      data: { readAt: now },
+    });
+  }
+
+  /**
+   * Человек сделал что-то с дуэлью — ответил на вызов, принял отклик,
+   * подтвердил счёт: его уведомления о ней прочитаны (ADR-065). Иначе в
+   * колокольчике висит «вас вызвали» на вызов, который он уже принял.
+   */
+  async settleDuel(
+    tx: Pick<Prisma.TransactionClient, 'notification'>,
+    userId: string,
+    duelId: string,
+    now = new Date(),
+  ): Promise<void> {
+    await tx.notification.updateMany({
+      where: {
+        userId,
+        type: { in: [...DUEL_TYPES] },
+        readAt: null,
+        data: { path: ['duelId'], equals: duelId },
+      },
+      data: { readAt: now },
+    });
+  }
+
+  /** Отклик разобран или отозван — «новый отклик» у автора прочитан. */
+  async settleDuelResponse(
+    tx: Pick<Prisma.TransactionClient, 'notification'>,
+    responseId: string,
+    now = new Date(),
+  ): Promise<void> {
+    await tx.notification.updateMany({
+      where: {
+        type: 'DUEL_RESPONSE',
+        readAt: null,
+        data: { path: ['responseId'], equals: responseId },
       },
       data: { readAt: now },
     });

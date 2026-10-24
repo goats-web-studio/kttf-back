@@ -103,6 +103,14 @@ describe('AllExceptionsFilter', () => {
       FORUM_MUTED: 403,
       FORUM_TOPIC_LOCKED: 409,
       FORUM_LIMIT: 409,
+      DUEL_PROFILE_REQUIRED: 403,
+      DUEL_OPPONENT_INVALID: 400,
+      DUEL_LIMIT: 409,
+      DUEL_RATING_LIMIT: 409,
+      DUEL_INVALID_STATE: 409,
+      DUEL_RESPONSE_EXISTS: 409,
+      DUEL_TIME_INVALID: 400,
+      DUEL_SCORE_INVALID: 400,
     };
 
     for (const code of Object.values(ERROR_CODES)) {

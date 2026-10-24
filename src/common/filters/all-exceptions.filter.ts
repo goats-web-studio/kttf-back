@@ -95,6 +95,18 @@ const STATUS_BY_CODE: Readonly<Record<ErrorCode, number>> = {
   FORUM_MUTED: HttpStatus.FORBIDDEN,
   FORUM_TOPIC_LOCKED: HttpStatus.CONFLICT,
   FORUM_LIMIT: HttpStatus.CONFLICT,
+
+  // Дуэли — ADR-065. Без профиля — нет прав, как на форуме. Негодный
+  // соперник, время и счёт не по правилам — изъян запроса. Предел, частота,
+  // повтор отклика и действие не к состоянию — конфликт с тем, что уже есть.
+  DUEL_PROFILE_REQUIRED: HttpStatus.FORBIDDEN,
+  DUEL_OPPONENT_INVALID: HttpStatus.BAD_REQUEST,
+  DUEL_LIMIT: HttpStatus.CONFLICT,
+  DUEL_RATING_LIMIT: HttpStatus.CONFLICT,
+  DUEL_INVALID_STATE: HttpStatus.CONFLICT,
+  DUEL_RESPONSE_EXISTS: HttpStatus.CONFLICT,
+  DUEL_TIME_INVALID: HttpStatus.BAD_REQUEST,
+  DUEL_SCORE_INVALID: HttpStatus.BAD_REQUEST,
 };
 
 const CODE_BY_STATUS: Readonly<Record<number, ErrorCode>> = {
