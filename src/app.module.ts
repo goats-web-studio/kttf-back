@@ -14,6 +14,7 @@ import { NotificationsModule } from './features/notifications/notifications.modu
 import { PlacesModule } from './features/places/places.module.js';
 import { PlayersModule } from './features/players/players.module.js';
 import { ScreenModule } from './features/screen/screen.module.js';
+import { StatsModule } from './features/stats/stats.module.js';
 import { SyncModule } from './features/sync/sync.module.js';
 import { MatchesModule } from './features/matches/matches.module.js';
 import { TournamentsModule } from './features/tournaments/tournaments.module.js';
@@ -44,6 +45,7 @@ import { PrismaModule } from './infra/prisma/prisma.module.js';
     NotificationsModule,
     ForumModule,
     DuelsModule,
+    StatsModule,
     FilesModule,
     PlacesModule,
     PlayersModule,
