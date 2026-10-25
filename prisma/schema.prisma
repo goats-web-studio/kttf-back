@@ -69,6 +69,7 @@ model User {
   forumReads       ForumTopicRead[]
   duelsResolved    Duel[]              @relation("DuelResolver")
   duelsAnnulled    Duel[]              @relation("DuelAnnuller")
+  follows          Follow[]
 }
 
 enum Locale {
@@ -1863,4 +1864,26 @@ model AuditLog {
 
   @@index([entityType, entityId])
   @@index([actorId, createdAt(sort: Desc)])
+}
+
+// ============ Подписки — ADR-073 ============
+
+// Подписка на клуб, страницу тренера или игрока. Цель — без внешнего ключа:
+// три таблицы в одном поле. Удалённая цель в ленте и счётчиках просто не
+// находится.
+model Follow {
+  userId     String
+  targetType FollowTarget
+  targetId   String
+  createdAt  DateTime     @default(now())
+  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, targetType, targetId])
+  @@index([targetType, targetId])
+}
+
+enum FollowTarget {
+  CLUB
+  COACH
+  PLAYER
 }
