@@ -556,8 +556,13 @@ export class TournamentsService {
    */
   async register(id: string, input: RegisterInput, userId: string): Promise<RegistrationView> {
     const tournament = await this.load(id);
-    const deadline = tournament.registrationEndsAt ?? tournament.startsAt;
-    const open = acceptsRegistrations(tournament.status) && deadline.getTime() > Date.now();
+    // Свободная запись — ADR-076: пока организатор держит запись открытой.
+    // Срок действует, только если его задали явно; без него запись
+    // закрывает сам организатор, а время старта её не обрывает.
+    const deadline = tournament.registrationEndsAt;
+    const open =
+      acceptsRegistrations(tournament.status) &&
+      (deadline === null || deadline.getTime() > Date.now());
     // Поздняя запись (ADR-062): чужого игрока после закрытия записи и после
     // старта добавляет организатор. Себя после закрытия записать нельзя.
     const late =
@@ -576,7 +581,7 @@ export class TournamentsService {
 
       throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Registration deadline has passed', {
         id,
-        deadline: deadline.toISOString(),
+        deadline: deadline?.toISOString() ?? null,
       });
     }
 
@@ -987,7 +992,7 @@ export class TournamentsService {
   /**
    * Отмена записи — ТЗ 4.3.
    *
-   * Игрок снимает себя сам до дедлайна; организатор — пока турнир не начат.
+   * Игрок снимает себя сам до жеребьёвки (ADR-076); организатор — пока турнир не начат.
    * После старта запись не удаляется: участник уже в сетке, и его исчезновение
    * поменяло бы уже сыгранные встречи. Для этого есть снятие (`WITHDRAWN`),
    * при котором сыгранное остаётся, а несыгранное уходит соперникам
@@ -1007,10 +1012,16 @@ export class TournamentsService {
     const own = await this.isOwnPlayer(registration.playerId, userId);
 
     if (own) {
-      const deadline = tournament.registrationEndsAt ?? tournament.startsAt;
+      // Сняться самому — свободно до жеребьёвки (ADR-076): срок записи этому
+      // не мешает. После жеребьёвки человек уже стоит в группе или сетке, и
+      // его уход перестраивает этап — это решает организатор.
+      const drawn = (await this.prisma.stage.count({ where: { tournamentId: id } })) > 0;
 
-      if (deadline.getTime() <= Date.now()) {
-        throw new AppError(ERROR_CODES.FORBIDDEN, 'Registration deadline has passed', { id });
+      if (drawn) {
+        throw new AppError(ERROR_CODES.FORBIDDEN, 'The draw is done: ask the organizer', {
+          id,
+          reason: 'DRAWN',
+        });
       }
     } else {
       await this.assertClubStaff(tournament.clubId, userId);

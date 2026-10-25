@@ -5,6 +5,7 @@ import {
   FEED_PORTAL_SECTION,
   FEED_POSTS_SECTION,
   FEED_WINDOW_DAYS,
+  markupToPlain,
   type AdminFeedQuery,
   type FeedCurationInput,
   type FeedDiscussion,
@@ -68,7 +69,8 @@ function fullName(player: { lastName: string; firstName: string }): string {
 
 /** Начало текста карточки: по границе слова, с многоточием. */
 export function excerpt(text: string): string {
-  const clean = text.replace(/\s+\n/g, '\n').trim();
+  // В карточке — текст без разметки (ADR-076): подписи вместо ссылок и отметок.
+  const clean = markupToPlain(text).replace(/\s+\n/g, '\n').trim();
   if (clean.length <= FEED_EXCERPT_MAX) return clean;
 
   const cut = clean.slice(0, FEED_EXCERPT_MAX);
