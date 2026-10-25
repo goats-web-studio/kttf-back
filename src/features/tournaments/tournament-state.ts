@@ -5,6 +5,7 @@ import type { PrismaService } from '../../infra/prisma/prisma.service.js';
 
 import { withdrawnPlayers } from './finish.js';
 import { buildStandings } from './standings.js';
+import { withdrawalOrder } from './withdrawal.js';
 import {
   registrationFields,
   stageFields,
@@ -53,6 +54,12 @@ export async function loadTournamentState(
       tournamentId: tournament.id,
       stages,
       withdrawn: [...withdrawnPlayers(registrations)],
+      order: withdrawalOrder(
+        registrations.map((registration) => ({
+          playerId: registration.player.id,
+          withdrawnAt: registration.withdrawnAt,
+        })),
+      ),
     }),
   };
 }

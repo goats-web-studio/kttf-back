@@ -64,7 +64,7 @@ import {
 } from './tournament-lifecycle.js';
 import { toRegistrationView, toStageView, toTournamentView } from './tournaments.mapper.js';
 import { placeLateEntry } from './late-entry.js';
-import { settleWithdrawals } from './withdrawal.js';
+import { settleWithdrawals, withdrawalOrder } from './withdrawal.js';
 import {
   OCCUPYING_STATUSES,
   playerFields,
@@ -809,7 +809,7 @@ export class TournamentsService {
       });
       await tx.registration.update({
         where: { id: replaced.id },
-        data: { status: 'WITHDRAWN' },
+        data: { status: 'WITHDRAWN', withdrawnAt: new Date() },
       });
 
       const data = {
@@ -912,6 +912,13 @@ export class TournamentsService {
         data: defined({
           ...change,
           status,
+          // Время снятия — порядок технических побед (ADR-077); вернули в
+          // игру — времени снятия больше нет.
+          ...(status !== undefined && status !== registration.status
+            ? {
+                withdrawnAt: status === 'WITHDRAWN' || status === 'NO_SHOW' ? new Date() : null,
+              }
+            : {}),
           ...(restoring ? await snapshotOf(tx, registrationId) : {}),
           ...(await this.paymentChange(tx, registration, paid, userId)),
         }),
@@ -1326,7 +1333,17 @@ export class TournamentsService {
     }
 
     const ties = unresolvedTies(
-      buildStandings({ tournamentId: id, stages, withdrawn: [...withdrawn] }),
+      buildStandings({
+        tournamentId: id,
+        stages,
+        withdrawn: [...withdrawn],
+        order: withdrawalOrder(
+          registrations.map((registration) => ({
+            playerId: registration.player.id,
+            withdrawnAt: registration.withdrawnAt,
+          })),
+        ),
+      }),
     );
 
     if (ties.length > 0) {
@@ -1541,7 +1558,17 @@ export class TournamentsService {
       tournament,
       stages,
       registrations,
-      standings: buildStandings({ tournamentId: id, stages, withdrawn: [...withdrawn] }),
+      standings: buildStandings({
+        tournamentId: id,
+        stages,
+        withdrawn: [...withdrawn],
+        order: withdrawalOrder(
+          registrations.map((registration) => ({
+            playerId: registration.player.id,
+            withdrawnAt: registration.withdrawnAt,
+          })),
+        ),
+      }),
       events,
     });
   }
@@ -1554,7 +1581,7 @@ export class TournamentsService {
       this.loadStages(id),
       this.prisma.registration.findMany({
         where: { tournamentId: id, status: { in: ['WITHDRAWN', 'NO_SHOW'] } },
-        select: { playerId: true },
+        select: { playerId: true, withdrawnAt: true },
       }),
     ]);
 
@@ -1562,6 +1589,7 @@ export class TournamentsService {
       tournamentId: id,
       stages,
       withdrawn: withdrawn.map((registration) => registration.playerId),
+      order: withdrawalOrder(withdrawn),
     });
   }
 

@@ -10,6 +10,7 @@ import { isStageComplete } from './stage-completion.js';
 import { buildStandings } from './standings.js';
 import { writeStage } from './stage-writer.js';
 import { stageFields } from './tournaments.select.js';
+import { withdrawalOrder } from './withdrawal.js';
 
 /**
  * Достройка этапа по итогам группового этапа.
@@ -63,13 +64,18 @@ export async function advanceAfterGroups(
 
   const withdrawnRows = await tx.registration.findMany({
     where: { tournamentId, status: { in: ['WITHDRAWN', 'NO_SHOW'] } },
-    select: { playerId: true },
+    select: { playerId: true, withdrawnAt: true },
   });
   const withdrawn = withdrawnRows.map((registration) => registration.playerId);
 
   if (!isStageComplete(groupStage, new Set(withdrawn))) return NOTHING;
 
-  const standings = buildStandings({ tournamentId, stages: [groupStage], withdrawn });
+  const standings = buildStandings({
+    tournamentId,
+    stages: [groupStage],
+    withdrawn,
+    order: withdrawalOrder(withdrawnRows),
+  });
 
   const placements: GroupPlacement[] = standings.groups.map((group) => ({
     label: group.label,

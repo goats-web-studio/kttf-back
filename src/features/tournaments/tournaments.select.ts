@@ -82,6 +82,7 @@ export const registrationFields = {
   ratingAtStart: true,
   matchesAtStart: true,
   tournamentsAtStart: true,
+  withdrawnAt: true,
   // Итоговое место — для бонуса призёрам (ADR-069), пишется до рейтинга.
   place: true,
   createdAt: true,

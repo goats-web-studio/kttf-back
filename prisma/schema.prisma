@@ -1173,6 +1173,9 @@ model Registration {
   ratingAtStart      Decimal? @db.Decimal(8, 2)
   matchesAtStart     Int?
   tournamentsAtStart Int? // ratedTournaments на старте — ADR-069
+  // Когда снялся или отмечен неявкой — ADR-077. Снялись оба участника
+  // встречи: техническая победа тому, кто ушёл позже. Пусто у старых снятий.
+  withdrawnAt        DateTime?
 
   // Итоговое место — ADR-048. Записывается при завершении турнира, чтобы
   // профиль игрока не пересчитывал весь турнир ради одного числа. Делённое

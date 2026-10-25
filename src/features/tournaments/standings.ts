@@ -47,6 +47,8 @@ export interface StandingsInput {
   readonly stages: readonly StageRecord[];
   /** Игроки, снявшиеся или не явившиеся, — ТЗ 4.4. */
   readonly withdrawn: readonly string[];
+  /** Когда кто снялся, мс — снялись оба: победа ушедшему позже (ADR-077). */
+  readonly order?: ReadonlyMap<string, number>;
 }
 
 export function buildStandings(input: StandingsInput): TournamentStandingsView {
@@ -54,7 +56,7 @@ export function buildStandings(input: StandingsInput): TournamentStandingsView {
 
   for (const stage of input.stages) {
     for (const group of stage.groups) {
-      groups.push(buildGroup(stage, group, input.withdrawn));
+      groups.push(buildGroup(stage, group, input.withdrawn, input.order));
     }
   }
 
@@ -65,6 +67,7 @@ function buildGroup(
   stage: StageRecord,
   group: StageRecord['groups'][number],
   withdrawn: readonly string[],
+  order: ReadonlyMap<string, number> = new Map(),
 ): GroupStandingsView {
   const matches = stage.matches.filter((match) => match.groupId === group.id);
 
@@ -92,7 +95,7 @@ function buildGroup(
 
   // Несыгранные встречи снявшегося уходят соперникам технической победой,
   // чтобы таблица и рейтинг считали одно и то же (ADR-009).
-  const walkovers = applyWithdrawals(pending, withdrawn, setsToWinOf(stage.config));
+  const walkovers = applyWithdrawals(pending, withdrawn, setsToWinOf(stage.config), order);
 
   const decisions = group.tieDecisions
     .map((decision) => parseOrderedIds(decision.orderedIds))

@@ -117,6 +117,8 @@ export function toRegistrationView(
     // До старта турнира снимка нет: он делается при переходе в RUNNING (ТС 5.4).
     ratingAtStart: decimalOrNull(registration.ratingAtStart),
     matchesAtStart: registration.matchesAtStart,
+    tournamentsAtStart: registration.tournamentsAtStart,
+    withdrawnAt: registration.withdrawnAt?.toISOString() ?? null,
     createdAt: registration.createdAt.toISOString(),
     player: toPlayerView(registration.player),
     coach: toRegistrationCoach(registration),

@@ -6,6 +6,22 @@ import { applyAdvancement } from '../matches/advancement.js';
 import { matchSetsToWin } from './stage-config.js';
 import { matchFields, stageFields, type MatchRecord } from './tournaments.select.js';
 
+/**
+ * Когда кто снялся — порядок технических побед, если снялись оба (ADR-077).
+ * Время неизвестно (снятие до ADR-077) — игрока в порядке нет.
+ */
+export function withdrawalOrder(
+  rows: readonly { readonly playerId: string; readonly withdrawnAt?: Date | null }[],
+): Map<string, number> {
+  return new Map(
+    rows.flatMap((row) =>
+      row.withdrawnAt === null || row.withdrawnAt === undefined
+        ? []
+        : [[row.playerId, row.withdrawnAt.getTime()] as const],
+    ),
+  );
+}
+
 /** Статусы записи, при которых участник больше не играет: снялся или не явился. */
 export const WITHDRAWN_STATUSES = ['WITHDRAWN', 'NO_SHOW'] as const;
 
