@@ -48,6 +48,8 @@ import {
   type RenameForumTopicInput,
   type UpdateForumPostInput,
   type UpdateForumSectionInput,
+  archiveTopicSchema,
+  type ArchiveTopicInput,
 } from '@kttf/shared/types';
 import {
   Body,
@@ -163,6 +165,18 @@ export class ForumController {
     @CurrentUserId() userId: string,
   ): Promise<ForumTopicView> {
     return this.topics.rename(id, userId, body);
+  }
+
+  /** Автор убирает свою запись в архив и возвращает её — ADR-075. */
+  @Put('topics/:id/archive')
+  @HttpCode(204)
+  @UseGuards(JwtAuthGuard)
+  async archiveTopic(
+    @Param('id', uuidParam) id: string,
+    @Body(new ZodValidationPipe(archiveTopicSchema)) body: ArchiveTopicInput,
+    @CurrentUserId() userId: string,
+  ): Promise<void> {
+    await this.topics.archive(id, userId, body.archived);
   }
 
   @Get('topics/:id/posts')

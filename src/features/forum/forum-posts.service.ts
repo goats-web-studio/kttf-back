@@ -188,6 +188,7 @@ export class ForumPostsService {
       hiddenAt: null,
       topic: {
         hiddenAt: null,
+        archivedAt: null,
         section: {
           archivedAt: null,
           ...(query.section === undefined ? {} : { slug: query.section }),

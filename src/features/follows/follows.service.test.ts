@@ -20,7 +20,8 @@ function makePrisma() {
       findMany: vi.fn().mockResolvedValue([]),
     },
     coach: {
-      findFirst: vi.fn().mockResolvedValue({ id: ID }),
+      findFirst: vi.fn().mockResolvedValue({ id: ID, userId: 'user-coach' }),
+      findUnique: vi.fn().mockResolvedValue({ playerId: 'player-of-coach' }),
       findMany: vi.fn().mockResolvedValue([]),
     },
     player: {
@@ -92,5 +93,33 @@ describe('подписки — ADR-073', () => {
     expect(list).toEqual([
       expect.objectContaining({ type: 'CLUB', id: ID, reason: 'POPULAR', city: 'Алматы' }),
     ]);
+  });
+});
+
+describe('тренер и его игрок — одна подписка (ADR-075)', () => {
+  it('подписка на страницу тренера пишется на его игрока', async () => {
+    await service.follow('COACH', ID, 'user-1');
+
+    expect(prisma.follow.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: { userId: 'user-1', targetType: 'PLAYER', targetId: 'player-of-coach' },
+      }),
+    );
+  });
+
+  it('счётчик тренера — счётчик его игрока', async () => {
+    await service.state('COACH', ID, 'user-1');
+
+    expect(prisma.follow.count).toHaveBeenCalledWith({
+      where: { targetType: 'PLAYER', targetId: 'player-of-coach' },
+    });
+  });
+
+  it('на свою страницу тренера не подписаться', async () => {
+    prisma.coach.findFirst.mockResolvedValue({ id: ID, userId: 'user-1' });
+
+    await expect(service.follow('COACH', ID, 'user-1')).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+    });
   });
 });

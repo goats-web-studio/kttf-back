@@ -5,14 +5,20 @@ import {
   FEED_PORTAL_SECTION,
   FEED_POSTS_SECTION,
   FEED_WINDOW_DAYS,
+  type AdminFeedQuery,
+  type FeedCurationInput,
   type FeedDiscussion,
   type FeedItem,
   type FeedPage,
   type FeedQuery,
   type FeedSource,
+  type PlayerPostsPage,
+  type PlayerPostsQuery,
 } from '@kttf/shared/types';
+import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import { Injectable } from '@nestjs/common';
 
+import type { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { FollowsService, type FollowedTargets } from '../follows/follows.service.js';
 import { parseImages } from '../forum/forum-views.js';
@@ -50,6 +56,8 @@ interface Candidate {
   readonly players: readonly string[];
   /** Запись игрока прошла в общие вкладки — среди самых читаемых за неделю. */
   readonly popular?: boolean;
+  /** Когда закрепили — порядок закреплённых. */
+  readonly pinnedAt?: Date | null;
   /** Видна только подписчикам игрока и ему самому — медаль, новый уровень. */
   readonly personal?: boolean;
 }
@@ -118,7 +126,6 @@ export class FeedService {
   ) {}
 
   async feed(query: FeedQuery, userId?: string, now = new Date()): Promise<FeedPage> {
-    const since = new Date(now.getTime() - FEED_WINDOW_DAYS * DAY_MS);
     const [followed, me] = await Promise.all([
       this.follows.targetsOf(userId),
       userId === undefined
@@ -126,16 +133,7 @@ export class FeedService {
         : this.prisma.player.findUnique({ where: { userId }, select: { id: true, cityId: true } }),
     ]);
 
-    const batches = await Promise.all([
-      this.clubPosts(since),
-      this.coachPosts(since),
-      this.topics(FEED_PORTAL_SECTION, since),
-      this.topics(FEED_POSTS_SECTION, since),
-      this.announced(since, now),
-      this.results(since),
-      this.levelUps(since),
-    ]);
-    const candidates = batches.flat();
+    const candidates = (await this.candidates(now)).filter((c) => !c.item.hidden);
     const popular = popularPosts(
       candidates.filter((c) => c.item.type === 'PLAYER_POST').map((c) => c.item),
       now,
@@ -149,9 +147,16 @@ export class FeedService {
     // пустела бы до первой подписки.
     const lift = (c: Candidate) =>
       query.tab === 'FOR_YOU' && relevant(c, followed, me) ? RELEVANCE_HOURS * HOUR_MS : 0;
+    // Закреплённое администратором — над всей лентой, в каждой вкладке,
+    // свежее закрепление выше (ADR-075).
     const chosen = withPopular
-      .filter((c) => this.fits(c, query.tab, followed, me, userId !== undefined))
-      .map((c) => ({ item: c.item, rank: rankOf(c.item) + lift(c) }))
+      .filter((c) => c.item.pinned || this.fits(c, query.tab, followed, me, userId !== undefined))
+      .map((c) => ({
+        item: c.item,
+        rank: c.item.pinned
+          ? Number.MAX_SAFE_INTEGER - (now.getTime() - (c.pinnedAt?.getTime() ?? 0))
+          : rankOf(c.item) + lift(c),
+      }))
       .sort((left, right) => right.rank - left.rank)
       .map((entry) => entry.item);
     const start = (query.page - 1) * query.limit;
@@ -160,6 +165,132 @@ export class FeedService {
       tab: query.tab,
       items: chosen.slice(start, start + query.limit),
       total: chosen.length,
+      page: query.page,
+      limit: query.limit,
+    };
+  }
+
+  /**
+   * Все карточки окна с решениями администратора: `pinned` и `hidden`
+   * проставлены, скрытые не выброшены — их отбрасывает тот, кому они не нужны.
+   */
+  private async candidates(now: Date): Promise<Candidate[]> {
+    const since = new Date(now.getTime() - FEED_WINDOW_DAYS * DAY_MS);
+    const batches = await Promise.all([
+      this.clubPosts(since),
+      this.coachPosts(since),
+      this.topics(FEED_PORTAL_SECTION, since),
+      this.topics(FEED_POSTS_SECTION, since),
+      this.announced(since, now),
+      this.results(since),
+      this.levelUps(since),
+    ]);
+    const all = batches.flat();
+    const curations = await this.prisma.feedCuration.findMany({
+      where: { itemId: { in: all.map((c) => c.item.id) } },
+      select: { itemId: true, pinnedAt: true, hiddenAt: true },
+    });
+    const byId = new Map(curations.map((row) => [row.itemId, row]));
+
+    return all.map((c) => {
+      const curation = byId.get(c.item.id);
+
+      return curation === undefined
+        ? c
+        : {
+            ...c,
+            item: {
+              ...c.item,
+              pinned: curation.pinnedAt !== null,
+              hidden: curation.hiddenAt !== null,
+            },
+            pinnedAt: curation.pinnedAt,
+          };
+    });
+  }
+
+  /**
+   * Лента глазами администратора — ADR-075: всё окно по времени, со скрытыми
+   * и закреплёнными, без личных медалей и уровней (их десятки, решать по
+   * ним нечего).
+   */
+  async adminFeed(query: AdminFeedQuery, now = new Date()): Promise<FeedPage> {
+    const chosen = (await this.candidates(now))
+      .filter((c) => c.personal !== true)
+      .filter((c) =>
+        query.only === 'HIDDEN' ? c.item.hidden : query.only === 'PINNED' ? c.item.pinned : true,
+      )
+      .map((c) => c.item)
+      .sort((left, right) => Date.parse(right.at) - Date.parse(left.at));
+    const start = (query.page - 1) * query.limit;
+
+    return {
+      tab: 'ALL',
+      items: chosen.slice(start, start + query.limit),
+      total: chosen.length,
+      page: query.page,
+      limit: query.limit,
+    };
+  }
+
+  /** Закрепить или скрыть карточку — решение администратора по ключу. */
+  async curate(input: FeedCurationInput, adminId: string, now = new Date()): Promise<void> {
+    const patch = {
+      ...(input.pinned === undefined ? {} : { pinnedAt: input.pinned ? now : null }),
+      ...(input.hidden === undefined ? {} : { hiddenAt: input.hidden ? now : null }),
+      updatedById: adminId,
+    };
+
+    await this.prisma.feedCuration.upsert({
+      where: { itemId: input.itemId },
+      create: { itemId: input.itemId, ...patch },
+      update: patch,
+    });
+  }
+
+  /**
+   * Стена игрока — его записи (ADR-075), свежие сверху, за всё время. Архив
+   * видит только сам автор.
+   */
+  async wall(
+    playerId: string,
+    query: PlayerPostsQuery,
+    viewerId?: string,
+  ): Promise<PlayerPostsPage> {
+    const player = await this.prisma.player.findUnique({
+      where: { id: playerId },
+      select: { userId: true },
+    });
+
+    if (player === null)
+      throw new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { playerId });
+
+    // Без аккаунта записей нет; чужой архив — не показывается.
+    const own = player.userId !== null && player.userId === viewerId;
+    const archived = query.archived === true && own;
+
+    if (player.userId === null)
+      return { items: [], total: 0, page: query.page, limit: query.limit };
+
+    const scope: Prisma.ForumTopicWhereInput = {
+      authorId: player.userId,
+      archivedAt: archived ? { not: null } : null,
+    };
+    const [rows, total] = await Promise.all([
+      this.topics(FEED_POSTS_SECTION, null, scope, {
+        skip: (query.page - 1) * query.limit,
+        take: query.limit,
+      }),
+      this.prisma.forumTopic.count({
+        where: { section: { slug: FEED_POSTS_SECTION }, hiddenAt: null, ...scope },
+      }),
+    ]);
+
+    return {
+      items: rows.flatMap((c) =>
+        c.item.type === 'PORTAL' || c.item.type === 'PLAYER_POST' ? [c.item] : [],
+      ),
+      total,
       page: query.page,
       limit: query.limit,
     };
@@ -227,6 +358,8 @@ export class FeedService {
           slug: null,
         },
         discussion: discussions.get(row.id) ?? null,
+        pinned: false,
+        hidden: false,
         kind: row.kind,
         title: row.title,
         excerpt: excerpt(row.body),
@@ -286,6 +419,8 @@ export class FeedService {
           slug: row.coach.slug,
         },
         discussion: discussions.get(row.id) ?? null,
+        pinned: false,
+        hidden: false,
         kind: row.kind,
         title: row.title,
         excerpt: excerpt(row.body),
@@ -299,22 +434,44 @@ export class FeedService {
     }));
   }
 
-  /** Новости KTTF и записи игроков — темы своих разделов форума. */
-  private async topics(section: string, since: Date): Promise<Candidate[]> {
+  /**
+   * Новости KTTF и записи игроков — темы своих разделов форума. В ленту —
+   * без архивных; стена игрока (`wall`) берёт ту же выборку по автору.
+   */
+  private async topics(
+    section: string,
+    since: Date | null,
+    scope: Prisma.ForumTopicWhereInput = { archivedAt: null },
+    page: { skip: number; take: number } = { skip: 0, take: PER_SOURCE },
+  ): Promise<Candidate[]> {
     const portal = section === FEED_PORTAL_SECTION;
     const rows = await this.prisma.forumTopic.findMany({
-      where: { section: { slug: section }, hiddenAt: null, createdAt: { gte: since } },
+      where: {
+        section: { slug: section },
+        hiddenAt: null,
+        ...(since === null ? {} : { createdAt: { gte: since } }),
+        ...scope,
+      },
       orderBy: { createdAt: 'desc' },
-      take: PER_SOURCE,
+      skip: page.skip,
+      take: page.take,
       select: {
         id: true,
         title: true,
         createdAt: true,
+        archivedAt: true,
         postsCount: true,
         viewsCount: true,
         posts: {
           where: { number: 1 },
-          select: { body: true, images: true, likesCount: true, deletedAt: true, hiddenAt: true },
+          select: {
+            id: true,
+            body: true,
+            images: true,
+            likesCount: true,
+            deletedAt: true,
+            hiddenAt: true,
+          },
         },
         author: {
           select: {
@@ -360,13 +517,17 @@ export class FeedService {
             source,
             discussion: {
               topicId: row.id,
+              postId: first.id,
               comments: Math.max(0, row.postsCount - 1),
               likes: first.likesCount,
               views: row.viewsCount,
             },
+            pinned: false,
+            hidden: false,
             title: row.title,
             excerpt: excerpt(first.body),
             images: parseImages(first.images),
+            archived: row.archivedAt !== null,
           },
           cityId: portal ? null : (player?.cityId ?? null),
           clubs: [],
@@ -409,6 +570,8 @@ export class FeedService {
         at: row.createdAt.toISOString(),
         source: clubSource(row.club),
         discussion: null,
+        pinned: false,
+        hidden: false,
         tournament: {
           id: row.id,
           name: row.name,
@@ -480,6 +643,8 @@ export class FeedService {
           at,
           source: clubSource(row.club),
           discussion: null,
+          pinned: false,
+          hidden: false,
           tournament: { ...tournament, club: { id: row.club.id, name: row.club.name } },
           participants: row._count.registrations,
           places: podium.map((entry) => ({
@@ -506,6 +671,8 @@ export class FeedService {
                   at,
                   source: playerSource(entry.player),
                   discussion: null,
+                  pinned: false,
+                  hidden: false,
                   achievement: { kind: 'MEDAL', place: entry.place, tournament },
                 },
                 cityId: row.club.cityId,
@@ -584,6 +751,8 @@ export class FeedService {
             at: last.createdAt.toISOString(),
             source: playerSource(player),
             discussion: null,
+            pinned: false,
+            hidden: false,
             achievement: {
               kind: 'LEVEL_UP',
               level,
@@ -623,7 +792,7 @@ export class FeedService {
         subjectId: true,
         postsCount: true,
         viewsCount: true,
-        posts: { where: { number: 1 }, select: { likesCount: true } },
+        posts: { where: { number: 1 }, select: { id: true, likesCount: true } },
       },
     });
 
@@ -636,6 +805,7 @@ export class FeedService {
                 topic.subjectId,
                 {
                   topicId: topic.id,
+                  postId: topic.posts[0]?.id ?? null,
                   comments: Math.max(0, topic.postsCount - 1),
                   likes: topic.posts[0]?.likesCount ?? 0,
                   views: topic.viewsCount,

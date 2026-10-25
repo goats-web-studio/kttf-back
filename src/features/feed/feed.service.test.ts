@@ -29,6 +29,8 @@ function post(id: string, at: string): FeedItem {
     at,
     source,
     discussion: null,
+    pinned: false,
+    hidden: false,
     kind: 'NEWS',
     title: 'Новость',
     excerpt: 'Текст',
@@ -43,10 +45,19 @@ function playerPost(id: string, at: string, views: number): FeedItem {
     type: 'PLAYER_POST',
     at,
     source: { kind: 'PLAYER', id: `player-${id}`, name: 'Ким Артём', imageUrl: null, slug: null },
-    discussion: { topicId: '00000000-0000-4000-8000-000000000001', comments: 0, likes: 0, views },
+    discussion: {
+      topicId: '00000000-0000-4000-8000-000000000001',
+      postId: null,
+      comments: 0,
+      likes: 0,
+      views,
+    },
+    pinned: false,
+    hidden: false,
     title: 'Запись',
     excerpt: 'Текст',
     images: [],
+    archived: false,
   };
 }
 
@@ -102,9 +113,11 @@ function makeService(
   candidates: object[],
   followed: FollowedTargets = NO_FOLLOWS,
   me: { id: string; cityId: string } | null = null,
+  curations: { itemId: string; pinnedAt: Date | null; hiddenAt: Date | null }[] = [],
 ): FeedService {
   const prisma = {
     player: { findUnique: vi.fn().mockResolvedValue(me) },
+    feedCuration: { findMany: vi.fn().mockResolvedValue(curations) },
   } as unknown as PrismaService;
   const follows = { targetsOf: vi.fn().mockResolvedValue(followed) } as unknown as FollowsService;
   const service = new FeedService(prisma, follows, {} as TournamentsService);
@@ -201,5 +214,37 @@ describe('вкладки ленты — ADR-073', () => {
 
     expect(ids(page)).toEqual(['club-post:1']);
     expect(page.total).toBe(2);
+  });
+});
+
+describe('управление лентой — ADR-075', () => {
+  const ids = (page: { items: readonly FeedItem[] }) => page.items.map((item) => item.id);
+
+  it('скрытая администратором карточка в ленту не идёт', async () => {
+    const page = await makeService([clubNews, otherCityNews], NO_FOLLOWS, null, [
+      { itemId: 'club-post:2', pinnedAt: null, hiddenAt: NOW },
+    ]).feed({ tab: 'ALL', page: 1, limit: 10 }, undefined, NOW);
+
+    expect(ids(page)).toEqual(['club-post:1']);
+  });
+
+  it('закреплённая — над свежей, с отметкой', async () => {
+    const page = await makeService([clubNews, otherCityNews], NO_FOLLOWS, null, [
+      { itemId: 'club-post:1', pinnedAt: NOW, hiddenAt: null },
+    ]).feed({ tab: 'ALL', page: 1, limit: 10 }, undefined, NOW);
+
+    expect(ids(page)).toEqual(['club-post:1', 'club-post:2']);
+    expect(page.items[0]?.pinned).toBe(true);
+  });
+
+  it('администратор видит и скрытые, фильтром — только их', async () => {
+    const service = makeService([clubNews, otherCityNews], NO_FOLLOWS, null, [
+      { itemId: 'club-post:2', pinnedAt: null, hiddenAt: NOW },
+    ]);
+
+    expect((await service.adminFeed({ page: 1, limit: 20 }, NOW)).total).toBe(2);
+    expect(ids(await service.adminFeed({ page: 1, limit: 20, only: 'HIDDEN' }, NOW))).toEqual([
+      'club-post:2',
+    ]);
   });
 });

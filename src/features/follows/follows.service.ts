@@ -1,5 +1,11 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
-import type { FollowReason, FollowState, FollowSuggestion, FollowTarget } from '@kttf/shared/types';
+import type {
+  Followed,
+  FollowReason,
+  FollowState,
+  FollowSuggestion,
+  FollowTarget,
+} from '@kttf/shared/types';
 import { Injectable } from '@nestjs/common';
 
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
@@ -35,7 +41,28 @@ function fullName(player: { lastName: string; firstName: string }): string {
 export class FollowsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async state(type: FollowTarget, id: string, viewerId?: string): Promise<FollowState> {
+  /**
+   * Куда на самом деле ведёт подписка. Страница тренера — это игрок
+   * (ADR-075): подписка и счётчик у них общие, иначе подписчик тренера не
+   * видел бы медали того же человека, а подписчик игрока — его новости.
+   */
+  private async resolve(
+    type: FollowTarget,
+    id: string,
+  ): Promise<{ type: FollowTarget; id: string } | null> {
+    if (type !== 'COACH') return { type, id };
+
+    const coach = await this.prisma.coach.findUnique({ where: { id }, select: { playerId: true } });
+
+    return coach === null ? null : { type: 'PLAYER', id: coach.playerId };
+  }
+
+  async state(asked: FollowTarget, askedId: string, viewerId?: string): Promise<FollowState> {
+    const target = await this.resolve(asked, askedId);
+
+    if (target === null) return { followers: 0, following: false };
+
+    const { type, id } = target;
     const [followers, mine] = await Promise.all([
       this.prisma.follow.count({ where: { targetType: type, targetId: id } }),
       viewerId === undefined
@@ -51,8 +78,15 @@ export class FollowsService {
     return { followers, following: mine !== null };
   }
 
-  async follow(type: FollowTarget, id: string, userId: string): Promise<FollowState> {
-    await this.assertFollowable(type, id, userId);
+  async follow(asked: FollowTarget, askedId: string, userId: string): Promise<FollowState> {
+    await this.assertFollowable(asked, askedId, userId);
+    const target = await this.resolve(asked, askedId);
+
+    if (target === null) {
+      throw new AppError(ERROR_CODES.NOT_FOUND, 'Follow target not found', { type: asked });
+    }
+
+    const { type, id } = target;
     await this.prisma.follow.upsert({
       where: { userId_targetType_targetId: { userId, targetType: type, targetId: id } },
       create: { userId, targetType: type, targetId: id },
@@ -62,10 +96,43 @@ export class FollowsService {
     return this.state(type, id, userId);
   }
 
-  async unfollow(type: FollowTarget, id: string, userId: string): Promise<FollowState> {
-    await this.prisma.follow.deleteMany({ where: { userId, targetType: type, targetId: id } });
+  async unfollow(asked: FollowTarget, askedId: string, userId: string): Promise<FollowState> {
+    const target = await this.resolve(asked, askedId);
 
-    return this.state(type, id, userId);
+    if (target !== null) {
+      await this.prisma.follow.deleteMany({
+        where: { userId, targetType: target.type, targetId: target.id },
+      });
+    }
+
+    return this.state(asked, askedId, userId);
+  }
+
+  /** На кого подписан — раздел кабинета «Подписки», свежие сверху (ADR-075). */
+  async mine(userId: string): Promise<Followed[]> {
+    const rows = await this.prisma.follow.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      select: { targetType: true, targetId: true, createdAt: true },
+    });
+    const described = await this.describe(
+      rows.map((row) => ({ type: row.targetType, id: row.targetId, reason: 'POPULAR' as const })),
+    );
+
+    return described.map((row) => ({
+      type: row.type,
+      id: row.id,
+      name: row.name,
+      imageUrl: row.imageUrl,
+      slug: row.slug,
+      city: row.city,
+      rating: row.rating,
+      followers: row.followers,
+      since: (
+        rows.find((follow) => follow.targetType === row.type && follow.targetId === row.id)
+          ?.createdAt ?? new Date(0)
+      ).toISOString(),
+    }));
   }
 
   /** На кого подписан — одним запросом, разложено по типам. */
@@ -167,7 +234,24 @@ export class FollowsService {
       }
     }
 
-    return this.describe(picks.slice(0, limit));
+    // Тренер, на чьего игрока уже подписан или кто ты сам, — не рекомендация.
+    const coachPlayers = new Map(
+      (
+        await this.prisma.coach.findMany({
+          where: {
+            id: { in: picks.filter((pick) => pick.type === 'COACH').map((pick) => pick.id) },
+          },
+          select: { id: true, playerId: true },
+        })
+      ).map((coach) => [coach.id, coach.playerId]),
+    );
+    const fresh = picks.filter((pick) => {
+      if (pick.type !== 'COACH') return true;
+      const playerId = coachPlayers.get(pick.id);
+      return playerId !== undefined && !followed.players.has(playerId) && playerId !== me?.id;
+    });
+
+    return this.describe(fresh.slice(0, limit));
   }
 
   /** Подписчиков по целям одного типа — для рекомендаций. */
@@ -184,6 +268,20 @@ export class FollowsService {
     });
 
     return new Map(rows.map((row) => [row.targetId, row._count._all]));
+  }
+
+  private async coachFollowers(coachIds: readonly string[]): Promise<Map<string, number>> {
+    if (coachIds.length === 0) return new Map();
+
+    const coaches = await this.prisma.coach.findMany({
+      where: { id: { in: [...coachIds] } },
+      select: { playerId: true },
+    });
+
+    return this.followersOf(
+      'PLAYER',
+      coaches.map((coach) => coach.playerId),
+    );
   }
 
   /** Клубы или тренеры по числу подписчиков, без подписчиков — по порядку заведения. */
@@ -260,7 +358,7 @@ export class FollowsService {
           slug: true,
           photoUrl: true,
           city,
-          player: { select: { lastName: true, firstName: true, photoUrl: true } },
+          player: { select: { id: true, lastName: true, firstName: true, photoUrl: true } },
         },
       }),
       this.prisma.player.findMany({
@@ -268,7 +366,8 @@ export class FollowsService {
         select: { id: true, lastName: true, firstName: true, photoUrl: true, rating: true, city },
       }),
       this.followersOf('CLUB', ids('CLUB')),
-      this.followersOf('COACH', ids('COACH')),
+      // Подписчики тренера — это подписчики его игрока (ADR-075).
+      this.coachFollowers(ids('COACH')),
       this.followersOf('PLAYER', ids('PLAYER')),
     ]);
 
@@ -305,7 +404,7 @@ export class FollowsService {
                 slug: coach.slug,
                 city: coach.city?.name ?? null,
                 rating: null,
-                followers: coachFans.get(coach.id) ?? 0,
+                followers: coachFans.get(coach.player.id) ?? 0,
                 reason: pick.reason,
               },
             ];
@@ -337,7 +436,7 @@ export class FollowsService {
         : type === 'COACH'
           ? await this.prisma.coach.findFirst({
               where: { id, ...VISIBLE_COACH },
-              select: { id: true },
+              select: { id: true, userId: true },
             })
           : await this.prisma.player.findFirst({
               where: { id, confirmedAt: { not: null } },

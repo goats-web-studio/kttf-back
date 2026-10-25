@@ -1,6 +1,7 @@
 import {
   followParamsSchema,
   followSuggestionsQuerySchema,
+  type Followed,
   type FollowParams,
   type FollowState,
   type FollowSuggestion,
@@ -25,6 +26,13 @@ export class FollowsController {
     @OptionalUserId() userId?: string,
   ): Promise<FollowSuggestion[]> {
     return this.follows.suggestions(userId, query.limit);
+  }
+
+  /** На кого подписан вошедший — кабинет «Подписки» (ADR-075). */
+  @Get('mine')
+  @UseGuards(JwtAuthGuard)
+  async mine(@CurrentUserId() userId: string): Promise<Followed[]> {
+    return this.follows.mine(userId);
   }
 
   @Get(':type/:id')

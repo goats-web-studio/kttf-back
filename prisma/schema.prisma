@@ -1555,6 +1555,9 @@ model ForumTopic {
   lockedAt         DateTime?
   hiddenAt         DateTime?
   hiddenReason     String?
+  // Автор убрал запись в архив — ADR-075: на стене, в ленте и в списках
+  // форума её нет, по ссылке она открывается. Не модерация: вернуть может сам.
+  archivedAt       DateTime?
   createdAt        DateTime            @default(now())
   section          ForumSection        @relation(fields: [sectionId], references: [id])
   author           User?               @relation("ForumTopicAuthor", fields: [authorId], references: [id], onDelete: SetNull)
@@ -1886,4 +1889,15 @@ enum FollowTarget {
   CLUB
   COACH
   PLAYER
+}
+
+// Решение администратора по карточке ленты — ADR-075. Ключ — id карточки
+// (`club-post:…`, `topic:…`, `result:…`): у ленты нет своей таблицы, её
+// собирают из источников, поэтому решение живёт рядом, по ключу.
+model FeedCuration {
+  itemId      String    @id
+  pinnedAt    DateTime?
+  hiddenAt    DateTime?
+  updatedById String?
+  updatedAt   DateTime  @updatedAt
 }

@@ -67,7 +67,7 @@ export class ForumTopicsService {
       where: withArchived ? {} : { archivedAt: null },
       orderBy: [{ position: 'asc' }, { title: 'asc' }],
     });
-    const visible = { hiddenAt: null } satisfies Prisma.ForumTopicWhereInput;
+    const visible = { hiddenAt: null, archivedAt: null } satisfies Prisma.ForumTopicWhereInput;
     const [counts, lasts] = await Promise.all([
       this.prisma.forumTopic.groupBy({
         by: ['sectionId'],
@@ -128,6 +128,8 @@ export class ForumTopicsService {
   ): Promise<Page<ForumTopicItem>> {
     const where: Prisma.ForumTopicWhereInput = {
       hiddenAt: null,
+      // Архив автора в списках не показывается (ADR-075).
+      archivedAt: null,
       section: {
         archivedAt: null,
         ...(query.section === undefined ? {} : { slug: query.section }),
@@ -274,6 +276,31 @@ export class ForumTopicsService {
     });
 
     return this.get(topicId, writer, now);
+  }
+
+  /**
+   * Архив — ADR-075. Автор убирает свою запись с глаз: со стены, из ленты и
+   * из списков форума; по ссылке она открывается, вернуть — тем же путём.
+   * Только своя и только без предмета: тему турнира или новости клуба в
+   * архив не убрать.
+   */
+  async archive(
+    topicId: string,
+    userId: string,
+    archived: boolean,
+    now = new Date(),
+  ): Promise<void> {
+    const writer = await this.access.writer(userId, now);
+    const topic = await this.posts.visibleTopic(topicId, writer);
+
+    if (topic.authorId !== userId || topic.subjectType !== null) {
+      throw new AppError(ERROR_CODES.FORBIDDEN, 'Only the author can archive a topic', { topicId });
+    }
+
+    await this.prisma.forumTopic.update({
+      where: { id: topicId },
+      data: { archivedAt: archived ? now : null },
+    });
   }
 
   /** Заголовок правит автор темы и администратор. */
