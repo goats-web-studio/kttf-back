@@ -617,6 +617,8 @@ describe('лист ожидания', () => {
     });
     prisma.registration.count.mockResolvedValue(7);
     prisma.registration.findFirst.mockResolvedValue({ id: 'next-in-line' });
+    // Жеребьёвки ещё нет: сняться самому можно (ADR-076).
+    prisma.stage.count.mockResolvedValue(0);
 
     const result = await call(
       'DELETE',
@@ -688,7 +690,9 @@ describe('снятие по ходу турнира — ADR-061', () => {
     expect(prisma.registration.findFirst).not.toHaveBeenCalled();
     expect(prisma.registration.update).toHaveBeenCalledTimes(1);
     expect(prisma.registration.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { status: 'WITHDRAWN' } }),
+      expect.objectContaining({
+        data: { status: 'WITHDRAWN', withdrawnAt: expect.any(Date) as Date },
+      }),
     );
   });
 
@@ -1159,7 +1163,10 @@ describe('поздняя запись и замена — ADR-062', () => {
       data: { playerBId: LATE_ID },
     });
     expect(prisma.registration.update).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: REGISTRATION_ID }, data: { status: 'WITHDRAWN' } }),
+      expect.objectContaining({
+        where: { id: REGISTRATION_ID },
+        data: { status: 'WITHDRAWN', withdrawnAt: expect.any(Date) as Date },
+      }),
     );
     expect(prisma.registration.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1784,5 +1791,27 @@ describe('тренер участника — ADR-059, T3', () => {
     expect(
       (await call('PUT', path, { body: { coachPlayerId: null, coachName: null } })).status,
     ).toBe(401);
+  });
+});
+
+describe('свободное снятие — ADR-076', () => {
+  it('после жеребьёвки сам игрок не снимается — отказ с причиной DRAWN', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(makeTournament({ maxParticipants: 8 }));
+    prisma.registration.findUnique.mockResolvedValue({
+      id: REGISTRATION_ID,
+      tournamentId: TOURNAMENT_ID,
+      status: 'CONFIRMED',
+      playerId: PLAYER_ID,
+    });
+    prisma.stage.count.mockResolvedValue(1);
+
+    const result = await call(
+      'DELETE',
+      `/tournaments/${TOURNAMENT_ID}/registrations/${REGISTRATION_ID}`,
+      { auth: true },
+    );
+
+    expect(result.status).toBe(403);
+    expect(prisma.registration.delete).not.toHaveBeenCalled();
   });
 });
