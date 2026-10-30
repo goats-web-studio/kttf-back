@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Prisma } from '../../generated/prisma/client.js';
 import type { PrismaService } from '../../infra/prisma/prisma.service.js';
 
-import { ScreenService } from './screen.service.js';
+import { controlOf, ScreenService } from './screen.service.js';
 
 /**
  * Состояние второго экрана — ТЗ 6.5.
@@ -179,6 +179,25 @@ describe('состояние по публичному токену', () => {
     prisma.tournament.findUnique.mockResolvedValue(null);
 
     await expect(service.byToken(TOKEN)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('закреплённый из консоли слайд уходит на стену, пока не истёк — ADR-082', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(
+      tournament({ screenPin: 'bracket', screenPinUntil: new Date(Date.now() + 60_000) }),
+    );
+
+    expect((await service.byToken(TOKEN)).control?.pin).toBe('bracket');
+  });
+
+  it('истёкшее закрепление — снова «Авто»', () => {
+    const now = new Date('2026-10-30T12:00:00.000Z');
+
+    expect(controlOf('bracket', new Date('2026-10-30T11:59:00.000Z'), now)).toEqual({
+      pin: null,
+      until: null,
+    });
+    expect(controlOf('ads', new Date('2026-10-30T12:05:00.000Z'), now).pin).toBeNull();
+    expect(controlOf(null, null, now).pin).toBeNull();
   });
 
   it('черновик по токену не отдаётся', async () => {

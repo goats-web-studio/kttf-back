@@ -1128,6 +1128,12 @@ model Tournament {
   // завершён до ADR-048, места досчитываются при первом обращении.
   placesAt   DateTime?
 
+  // Слайд экрана зала, закреплённый судьёй из консоли (ADR-082): tables,
+  // groups, bracket или results. Всегда до `screenPinUntil` — потом стена
+  // снова листает сама.
+  screenPin      String?
+  screenPinUntil DateTime?
+
   registrations  Registration[]
   stages         Stage[]
   matches        Match[]

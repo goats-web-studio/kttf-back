@@ -1,5 +1,5 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
-import type { ScreenView } from '@kttf/shared/types';
+import type { ScreenControlView, ScreenView } from '@kttf/shared/types';
 import { Injectable } from '@nestjs/common';
 
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
@@ -16,6 +16,23 @@ import { tournamentFields } from '../tournaments/tournaments.select.js';
  * маппер. Своей проекции у экрана нет намеренно — стена и страница результатов
  * обязаны показывать одно и то же.
  */
+const SLIDES: ReadonlySet<string> = new Set(['tables', 'groups', 'bracket', 'results']);
+
+/**
+ * Закрепление слайда в том виде, в каком его видит стена — ADR-082.
+ *
+ * Истёкшее или незнакомое (поле в базе — строка) — «Авто»: стена листает сама.
+ */
+export function controlOf(
+  pin: string | null,
+  until: Date | null,
+  now: Date = new Date(),
+): ScreenControlView {
+  return pin !== null && SLIDES.has(pin) && until !== null && until > now
+    ? { pin: pin as NonNullable<ScreenControlView['pin']>, until: until.toISOString() }
+    : { pin: null, until: null };
+}
+
 @Injectable()
 export class ScreenService {
   constructor(private readonly prisma: PrismaService) {}
@@ -30,7 +47,7 @@ export class ScreenService {
   async byToken(publicToken: string): Promise<ScreenView> {
     const tournament = await this.prisma.tournament.findUnique({
       where: { publicToken },
-      select: tournamentFields,
+      select: { ...tournamentFields, screenPin: true, screenPinUntil: true },
     });
 
     if (tournament === null || tournament.status === 'DRAFT') {
@@ -46,6 +63,7 @@ export class ScreenService {
       standings: state.standings,
       stages: state.stages.map(toStageView),
       updatedAt: new Date().toISOString(),
+      control: controlOf(tournament.screenPin, tournament.screenPinUntil),
     };
   }
 
