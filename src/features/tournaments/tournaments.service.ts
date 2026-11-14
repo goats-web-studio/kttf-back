@@ -662,9 +662,8 @@ export class TournamentsService {
           tournamentId: id,
           playerId,
           status: pending ? 'PENDING' : full ? 'WAITLIST' : 'CONFIRMED',
-          // Тренер — снимок анкеты на момент записи (ADR-059, T3).
-          coachPlayerId: player.coachPlayerId,
-          coachName: player.coachName,
+          // Тренера в записи нет, пока его не укажут (ADR-089): он решает,
+          // кому засчитаются медали, и молча брать его из анкеты нельзя.
         },
         select: registrationFields,
       });
@@ -704,8 +703,6 @@ export class TournamentsService {
           playerId,
           status: started ? 'PLAYING' : 'CONFIRMED',
           ...(started ? snapshotFields(player) : {}),
-          coachPlayerId: player.coachPlayerId,
-          coachName: player.coachName,
         },
         select: registrationFields,
       });

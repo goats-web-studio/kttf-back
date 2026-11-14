@@ -1675,7 +1675,7 @@ describe('тренер участника — ADR-059, T3', () => {
     return args?.data;
   }
 
-  it('при записи тренер копируется из анкеты', async () => {
+  it('при записи тренер из анкеты не копируется — его указывают сами (ADR-089)', async () => {
     prisma.registration.findUnique.mockResolvedValue(null);
     prisma.player.findUnique.mockResolvedValue({
       ...player,
@@ -1685,9 +1685,9 @@ describe('тренер участника — ADR-059, T3', () => {
 
     await call('POST', `/tournaments/${TOURNAMENT_ID}/registrations`, { auth: true, body: {} });
 
-    expect(prisma.registration.create.mock.calls[0]?.[0]).toMatchObject({
-      data: { coachPlayerId: COACH_ID, coachName: null },
-    });
+    const data = (prisma.registration.create.mock.calls[0]?.[0] as { data: object }).data;
+    expect(data).not.toHaveProperty('coachPlayerId');
+    expect(data).not.toHaveProperty('coachName');
   });
 
   it('состав отдаёт тренера: имя по связи, ссылка на опубликованную страницу', async () => {
