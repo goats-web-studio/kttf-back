@@ -155,6 +155,16 @@ const EQUIPMENT_SLOTS = [
 type EquipmentIds = Partial<Record<(typeof EQUIPMENT_SLOTS)[number][0], string | null | undefined>>;
 
 /** Сыгранная встреча этого игрока: без результата в истории показывать нечего. */
+/**
+ * Изменение события INITIAL — от общего старта до заданного рейтинга.
+ *
+ * Десятичным, а не вычитанием чисел: рейтинг задаётся до сотых (ADR-085), и
+ * `384.1 - 250` в двоичной плавающей точке — `134.10000000000002`.
+ */
+function startingDelta(startRating: number): Prisma.Decimal {
+  return new Prisma.Decimal(startRating).minus(START_RATING);
+}
+
 function playedBy(playerId: string) {
   return {
     OR: [{ playerAId: playerId }, { playerBId: playerId }],
@@ -479,7 +489,7 @@ export class PlayersService {
             playerId: player.id,
             type: 'INITIAL',
             ratingBefore: START_RATING,
-            delta: startRating - START_RATING,
+            delta: startingDelta(startRating),
             ratingAfter: startRating,
           },
         });
@@ -528,7 +538,7 @@ export class PlayersService {
           playerId: id,
           type: 'INITIAL',
           ratingBefore: START_RATING,
-          delta: input.startRating - START_RATING,
+          delta: startingDelta(input.startRating),
           ratingAfter: input.startRating,
         },
       });

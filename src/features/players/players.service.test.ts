@@ -311,6 +311,18 @@ describe('создание игрока', () => {
     expect(data.confirmedAt).toBeInstanceOf(Date);
   });
 
+  it('точный рейтинг до сотых — изменение INITIAL без хвоста плавающей точки (ADR-085)', async () => {
+    prisma.player.findUnique.mockResolvedValue({ id: 'player-1' });
+    prisma.clubMember.findUnique.mockResolvedValue({ role: 'ORGANIZER' });
+
+    await service.create({ ...newcomer, clubId: 'club-1', startRating: 384.1 }, 'user-1');
+
+    const event = (
+      prisma.ratingEvent.create.mock.calls[0]?.[0] as { data: { delta: { toString(): string } } }
+    ).data;
+    expect(event.delta.toString()).toBe('134.1');
+  });
+
   it('чужой профиль без рейтинга по уровню не заводится — ADR-072', async () => {
     prisma.player.findUnique.mockResolvedValue({ id: 'player-1' });
     prisma.clubMember.findUnique.mockResolvedValue({ role: 'ORGANIZER' });
@@ -923,15 +935,19 @@ describe('подтверждение анкеты — ADR-072', () => {
       where: { id: 'player-1', confirmedAt: null },
       data: { confirmedAt: expect.any(Date) as Date, rating: 425 },
     });
-    expect(prisma.ratingEvent.create).toHaveBeenCalledWith({
-      data: {
-        playerId: 'player-1',
-        type: 'INITIAL',
-        ratingBefore: 250,
-        delta: 175,
-        ratingAfter: 425,
-      },
+    const event = (
+      prisma.ratingEvent.create.mock.calls[0]?.[0] as {
+        data: { delta: { toString(): string } } & Record<string, unknown>;
+      }
+    ).data;
+    expect(event).toMatchObject({
+      playerId: 'player-1',
+      type: 'INITIAL',
+      ratingBefore: 250,
+      ratingAfter: 425,
     });
+    // Десятичным, а не числом: рейтинг задаётся до сотых (ADR-085).
+    expect(event.delta.toString()).toBe('175');
   });
 
   it('посторонний клубу не подтверждает', async () => {

@@ -12,8 +12,8 @@ importers:
         specifier: ^3.1124.0
         version: 3.1124.0
       '@kttf/shared':
-        specifier: github:goats-web-studio/kttf-shared#13dd8710303800fd05976d80ccb16210c324fb60
-        version: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/13dd8710303800fd05976d80ccb16210c324fb60(zod@4.5.1)
+        specifier: github:goats-web-studio/kttf-shared#257c61b9586a2f9ca55010e9befe92bddacd5b03
+        version: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/257c61b9586a2f9ca55010e9befe92bddacd5b03(zod@4.5.1)
       '@nestjs/common':
         specifier: ^11.2.3
         version: 11.2.3(reflect-metadata@0.2.2)(rxjs@7.8.2)
@@ -598,8 +598,8 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/13dd8710303800fd05976d80ccb16210c324fb60':
-    resolution: {gitHosted: true, integrity: sha512-tzM74l2XCWeRinbTKFU3q96i0Vrp7Y+2UonC5ToL9/I5GaIEngQ/yXVOCp+aaoO8JMtgxfcSry/6RFP3oENJFQ==, tarball: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/13dd8710303800fd05976d80ccb16210c324fb60}
+  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/257c61b9586a2f9ca55010e9befe92bddacd5b03':
+    resolution: {gitHosted: true, integrity: sha512-uJ2jQ0KVcwqybXk21r35XOnBWyxvmCyNAtABzKT/wC7zQX7596UeizqvmTZFFvNU1gXycztwyru0HDnfoUwsaA==, tarball: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/257c61b9586a2f9ca55010e9befe92bddacd5b03}
     version: 0.1.0
     engines: {node: '>=24'}
     peerDependencies:
@@ -915,6 +915,9 @@ packages:
   '@smithy/core@3.33.3':
     resolution: {integrity: sha512-CsOeKq/9kA3y6VJHt+/+VTCtBaxJ4OTFpgrjIUhPpDIKxBci1k2bJaQASF2h/ELWrulGp+t97DZ0mevfAD8idg==}
     engines: {node: '>=18.0.0'}
+    deprecated: |-
+      Deprecated due to a bug in custom logger data redaction. Upgrade to the latest version. If you used a custom logger with this
+        version, review your logs and rotate any credentials or other secrets. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
 
   '@smithy/credential-provider-imds@4.5.2':
     resolution: {integrity: sha512-A9uSdn72ozbRUSit0eib0TW7nXuNPlaeM0zcGkJ+nE6tFcSDbnmtwoxbTCFBukVQcszDAyvsd7+rTduPTXpygg==}
@@ -3051,7 +3054,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.6.0
 
-  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/13dd8710303800fd05976d80ccb16210c324fb60(zod@4.5.1)':
+  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/257c61b9586a2f9ca55010e9befe92bddacd5b03(zod@4.5.1)':
     dependencies:
       zod: 4.5.1
 

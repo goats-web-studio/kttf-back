@@ -510,10 +510,14 @@ describe('создание игрока', () => {
         data: expect.objectContaining({
           type: 'INITIAL',
           ratingBefore: 250,
-          delta: 150,
           ratingAfter: 400,
         }) as unknown,
       });
+      // Изменение — десятичным (ADR-085): рейтинг задаётся до сотых.
+      const event = (
+        prisma.ratingEvent.create.mock.calls[0]?.[0] as { data: { delta: { toString(): string } } }
+      ).data;
+      expect(event.delta.toString()).toBe('150');
     });
 
     it('даже у организатора без своего профиля игрок не становится им самим', async () => {
@@ -538,9 +542,9 @@ describe('создание игрока', () => {
       expect(prisma.player.create).not.toHaveBeenCalled();
     });
 
-    it('не кратный 25 отвергается схемой', async () => {
+    it('больше двух знаков после точки отвергается схемой — ADR-085', async () => {
       const result = await call('POST', '/players', {
-        body: { ...newcomer, startRating: 410 },
+        body: { ...newcomer, startRating: 410.125 },
         auth: true,
       });
 
