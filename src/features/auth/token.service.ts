@@ -22,6 +22,16 @@ export interface AccessTokenPayload {
  */
 @Injectable()
 export class TokenService {
+  /**
+   * Отозванные пользователи — ADR-092: id и момент, когда истекут их
+   * последние access-токены. Токен проверяется без базы, и без этого
+   * удалённый аккаунт работал бы ещё до 15 минут. В памяти, как и
+   * `LoginThrottle`: API живёт одним процессом. После перезапуска токен
+   * удалённого доходит лишь до маршрутов, где отсутствие пользователя даёт
+   * 401 или 404.
+   */
+  private readonly revoked = new Map<string, number>();
+
   constructor(
     @Inject(ENV) _env: Env,
     private readonly jwt: JwtService,
@@ -34,10 +44,22 @@ export class TokenService {
   }
 
   /** Возвращает идентификатор пользователя или `null`, если токен негоден. */
-  verifyAccessToken(token: string): string | null {
+  /** Обрывает все выданные пользователю access-токены — ADR-092. */
+  revokeUser(userId: string, now = Date.now()): void {
+    for (const [id, until] of this.revoked) {
+      if (until <= now) this.revoked.delete(id);
+    }
+
+    this.revoked.set(userId, now + ACCESS_TOKEN_TTL_SECONDS * 1000);
+  }
+
+  verifyAccessToken(token: string, now = Date.now()): string | null {
     try {
       const payload = this.jwt.verify<AccessTokenPayload>(token);
-      return typeof payload.sub === 'string' && payload.sub.length > 0 ? payload.sub : null;
+      if (typeof payload.sub !== 'string' || payload.sub.length === 0) return null;
+
+      const until = this.revoked.get(payload.sub);
+      return until !== undefined && until > now ? null : payload.sub;
     } catch {
       // Истёк, подделан, обрезан — для вызывающего это один и тот же ответ.
       // Пустой catch запрещён брифом 3.5, поэтому исход возвращается явно.

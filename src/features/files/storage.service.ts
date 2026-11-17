@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import {
   CreateBucketCommand,
+  DeleteObjectsCommand,
   GetObjectCommand,
   HeadBucketCommand,
   PutObjectCommand,
@@ -119,6 +120,29 @@ export class StorageService implements OnModuleInit {
       if (error instanceof AppError) throw error;
 
       throw new AppError(ERROR_CODES.NOT_FOUND, 'File not found', { key });
+    }
+  }
+
+  /**
+   * Удаляет файлы по ключам — ADR-092, удаление аккаунта. Отсутствующий ключ
+   * не ошибка: варианты картинки перечисляются с запасом.
+   */
+  async remove(keys: readonly string[]): Promise<void> {
+    if (keys.length === 0) return;
+
+    const client = this.required();
+
+    // Предел S3 — тысяча ключей за запрос.
+    for (let start = 0; start < keys.length; start += 1000) {
+      await client.send(
+        new DeleteObjectsCommand({
+          Bucket: this.env.S3_BUCKET,
+          Delete: {
+            Objects: keys.slice(start, start + 1000).map((Key) => ({ Key })),
+            Quiet: true,
+          },
+        }),
+      );
     }
   }
 

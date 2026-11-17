@@ -98,3 +98,24 @@ describe('refresh-токен', () => {
     expect(service.hashRefreshToken(token)).not.toBe(token);
   });
 });
+
+describe('отзыв при удалении аккаунта — ADR-092', () => {
+  it('выданный токен перестаёт проходить сразу', () => {
+    const service = makeService();
+    const token = service.issueAccessToken('user-1');
+
+    service.revokeUser('user-1');
+
+    expect(service.verifyAccessToken(token)).toBeNull();
+    expect(service.verifyAccessToken(service.issueAccessToken('user-2'))).toBe('user-2');
+  });
+
+  it('отзыв живёт не дольше токена', () => {
+    const service = makeService();
+    const now = Date.now();
+
+    service.revokeUser('user-1', now - ACCESS_TOKEN_TTL_SECONDS * 1000 - 1);
+
+    expect(service.verifyAccessToken(service.issueAccessToken('user-1'), now)).toBe('user-1');
+  });
+});

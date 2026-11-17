@@ -216,13 +216,14 @@ describe('список игроков', () => {
   it('без фильтров — только игровые профили, анкет без рейтинга нет (ADR-072)', async () => {
     await service.list({ page: 1, limit: 20 });
 
-    expect(listWhere()).toEqual({ confirmedAt: { not: null } });
+    expect(listWhere()).toEqual({ deletedAt: null, confirmedAt: { not: null } });
   });
 
   it('организатор, ищущий пришедшего, видит и анкеты без рейтинга', async () => {
     await service.list({ page: 1, limit: 20, withUnconfirmed: true });
 
-    expect(listWhere()).toEqual({});
+    // Удалённых нет нигде, даже у организатора (ADR-092).
+    expect(listWhere()).toEqual({ deletedAt: null });
   });
 
   it('порядок по рейтингу вверх — по запросу', async () => {
@@ -1017,7 +1018,7 @@ describe('привязка к игровому профилю — ADR-072', () =
     await service.claim('player-1', 'user-1');
 
     expect(prisma.player.updateMany).toHaveBeenCalledWith({
-      where: { id: 'player-1', userId: null },
+      where: { id: 'player-1', userId: null, deletedAt: null },
       data: { userId: 'user-1' },
     });
     expect(prisma.player.delete).not.toHaveBeenCalled();

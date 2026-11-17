@@ -29,6 +29,8 @@ export const playerFields = {
   isProvisional: true,
   confirmedAt: true,
   createdAt: true,
+  // Удалённый игрок — ADR-092: в составе и результатах «Удалённый игрок».
+  deletedAt: true,
 } as const;
 
 /** Статусы, занимающие место в составе — лист ожидания и снятые не занимают. */

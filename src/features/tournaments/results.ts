@@ -19,6 +19,7 @@ import { Prisma } from '../../generated/prisma/client.js';
 
 import { byBracketPosition } from './finish.js';
 import { toRegistrationCoach, toStageView, toTournamentView } from './tournaments.mapper.js';
+import { isDeletedPlayer } from '../players/deleted-player.js';
 import type {
   MatchRecord,
   RegistrationRecord,
@@ -204,6 +205,7 @@ function toPlayer(registration: RegistrationRecord): ResultParticipantView['play
     isProvisional: player.isProvisional,
     confirmed: player.confirmedAt !== null,
     createdAt: player.createdAt.toISOString(),
+    deleted: isDeletedPlayer(player),
   };
 }
 

@@ -41,6 +41,7 @@ import {
 } from '../catalog/catalog-views.js';
 import { assertCoachExists, publicCoachSlug } from './coach-ref.js';
 import { followProfileCoach, switchCoach } from './coach-tenure.js';
+import { isDeletedPlayer, LIVE_PLAYER } from './deleted-player.js';
 import { buildRatingPoints, ratingEventRowFields, summarize, toPlayerMatch } from './history.js';
 import { ratingBounds } from './rating-band.js';
 
@@ -60,6 +61,7 @@ export const playerFields = {
   isProvisional: true,
   confirmedAt: true,
   createdAt: true,
+  deletedAt: true,
 } as const;
 
 /**
@@ -200,6 +202,9 @@ export class PlayersService {
 
   async list(query: ListPlayersQuery): Promise<Page<PlayerListItemView>> {
     const where = {
+      // Удалённые (ADR-092) — не в рейтинге, не в поиске и не в выборе себя
+      // при регистрации: их история осталась, а человека нет.
+      ...LIVE_PLAYER,
       ...(query.cityId === undefined ? {} : { cityId: { in: query.cityId } }),
       ...(query.clubId === undefined ? {} : { clubId: query.clubId }),
       ...(query.gender === undefined ? {} : { gender: query.gender }),
@@ -356,7 +361,9 @@ export class PlayersService {
   async findById(id: string, viewerId?: string): Promise<PlayerProfileView> {
     const player = await this.prisma.player.findUnique({ where: { id }, select: profileFields });
 
-    if (player === null) {
+    // Страницы удалённого игрока нет (ADR-092): в чужих результатах он
+    // остаётся подписью без ссылки.
+    if (player === null || isDeletedPlayer(player)) {
       throw new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { id });
     }
 
@@ -561,7 +568,10 @@ export class PlayersService {
     const claimed = await this.prisma.$transaction(async (tx) => {
       const target = await tx.player.findUnique({ where: { id }, select: mergeFields });
 
-      if (target === null) throw new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { id });
+      // Удалённый игрок (ADR-092) — история без хозяина, присвоить её нельзя.
+      if (target === null || isDeletedPlayer(target)) {
+        throw new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { id });
+      }
 
       if (target.userId !== null) throw claimInvalid('TAKEN');
 
@@ -578,7 +588,7 @@ export class PlayersService {
       // Условие на пустоту: между чтением и записью тем же профилем мог
       // назваться кто-то ещё.
       const linked = await tx.player.updateMany({
-        where: { id, userId: null },
+        where: { id, userId: null, ...LIVE_PLAYER },
         data: { userId: actorId },
       });
 
@@ -742,10 +752,10 @@ export class PlayersService {
   private async load(id: string): Promise<{ id: string; rating: Prisma.Decimal }> {
     const player = await this.prisma.player.findUnique({
       where: { id },
-      select: { id: true, rating: true },
+      select: { id: true, rating: true, deletedAt: true },
     });
 
-    if (player === null) {
+    if (player === null || isDeletedPlayer(player)) {
       throw new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { id });
     }
 
@@ -783,6 +793,7 @@ const mergeFields = {
   id: true,
   userId: true,
   confirmedAt: true,
+  deletedAt: true,
   birthYear: true,
   birthDate: true,
   birthYearOnly: true,
@@ -896,6 +907,7 @@ export interface PlayerRecord {
   isProvisional: boolean;
   confirmedAt: Date | null;
   createdAt: Date;
+  deletedAt: Date | null;
 }
 
 interface ProfileRecord extends PlayerRecord {
@@ -1108,5 +1120,6 @@ export function toPlayerView(player: PlayerRecord): PlayerView {
     isProvisional: player.isProvisional,
     confirmed: player.confirmedAt !== null,
     createdAt: player.createdAt.toISOString(),
+    deleted: isDeletedPlayer(player),
   };
 }

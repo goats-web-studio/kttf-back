@@ -22,6 +22,7 @@ import { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { TournamentsService } from '../tournaments/tournaments.service.js';
 
 import { chainBounds } from './history.js';
+import { isDeletedPlayer } from './deleted-player.js';
 import { playerFields, toPlayerView } from './players.service.js';
 
 /** Лучших побед в профиле — как у RTTF, пять строк. */
@@ -392,14 +393,15 @@ export class PlayerProfileService {
   private async load(id: string): Promise<{ id: string; rating: Prisma.Decimal }> {
     const player = await this.prisma.player.findUnique({
       where: { id },
-      select: { id: true, rating: true },
+      select: { id: true, rating: true, deletedAt: true },
     });
 
-    if (player === null) {
+    // Страницы удалённого игрока нет — ADR-092.
+    if (player === null || isDeletedPlayer(player)) {
       throw new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { id });
     }
 
-    return player;
+    return { id: player.id, rating: player.rating };
   }
 }
 

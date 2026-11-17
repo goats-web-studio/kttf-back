@@ -13,6 +13,7 @@ import {
 
 import type { Prisma } from '../../generated/prisma/client.js';
 import { publicCoachSlug } from '../players/coach-ref.js';
+import { isDeletedPlayer } from '../players/deleted-player.js';
 
 import type {
   MatchRecord,
@@ -95,6 +96,7 @@ export function toPlayerView(player: RegistrationRecord['player']): PlayerView {
     isProvisional: player.isProvisional,
     confirmed: player.confirmedAt !== null,
     createdAt: player.createdAt.toISOString(),
+    deleted: isDeletedPlayer(player),
   };
 }
 

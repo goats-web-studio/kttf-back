@@ -35,6 +35,6 @@ import { TokenService } from './token.service.js';
     // Глобально: общий предел запросов ТС 8.3 (ADR-056).
     { provide: APP_INTERCEPTOR, useClass: RateLimitInterceptor },
   ],
-  exports: [TokenService, JwtAuthGuard, OptionalJwtGuard, AdminGuard],
+  exports: [TokenService, JwtAuthGuard, OptionalJwtGuard, AdminGuard, LoginThrottle],
 })
 export class AuthModule {}

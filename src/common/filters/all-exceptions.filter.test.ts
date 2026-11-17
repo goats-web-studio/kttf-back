@@ -113,6 +113,8 @@ describe('AllExceptionsFilter', () => {
       DUEL_SCORE_INVALID: 400,
       PLAYER_NOT_CONFIRMED: 403,
       PLAYER_CLAIM_INVALID: 409,
+      WRONG_PASSWORD: 403,
+      ACCOUNT_DELETE_BLOCKED: 409,
     };
 
     for (const code of Object.values(ERROR_CODES)) {
