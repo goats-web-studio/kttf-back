@@ -19,30 +19,34 @@ datasource db {
 // ============ Пользователи ============
 
 model User {
-  id            String    @id @default(uuid())
-  phone         String    @unique // E.164, +7XXXXXXXXXX
+  id                    String    @id @default(uuid())
+  phone                 String    @unique // E.164, +7XXXXXXXXXX
   // Логин — второй способ войти (ADR-034). Необязателен: аккаунты, заведённые
   // до перехода на пароль, живут без него.
-  login         String?   @unique
+  login                 String?   @unique
   // scrypt с солью на пользователя, средствами node:crypto. Пустой означает,
   // что войти этим аккаунтом пока нельзя.
-  passwordHash  String?
-  phoneVerified Boolean   @default(false)
-  email         String?   @unique
-  locale        Locale    @default(RU)
+  passwordHash          String?
+  phoneVerified         Boolean   @default(false)
+  email                 String?   @unique
+  locale                Locale    @default(RU)
   // Числовой chat_id Telegram. Уведомления — V2 (ТЗ 10), но собирается такое
   // годами, а понадобится сразу, поэтому поле заводится заранее. По @имени
   // бот писать не может, отсюда число, а не ник.
-  telegramId    String?
+  telegramId            String?
   // Администратор платформы — ТЗ 1, ADR-046. Ведёт справочники. Выдаётся
   // скриптом scripts/set-admin.mjs: маршрута, который делает человека
   // администратором, наружу нет.
-  isAdmin       Boolean   @default(false)
+  isAdmin               Boolean   @default(false)
   // Последнее посещение — ADR-050. Пишется на запросах с токеном не чаще
   // раза в пять минут: точнее «в сети» не нужно, а запись на каждый запрос
   // превратила бы чтение сайта в поток UPDATE.
-  lastSeenAt    DateTime?
-  createdAt     DateTime  @default(now())
+  lastSeenAt            DateTime?
+  createdAt             DateTime  @default(now())
+  // Согласие на обработку персональных данных — ADR-091: когда дано и с какой
+  // редакцией политики. Пусто у аккаунтов, заведённых до ADR-091.
+  privacyConsentAt      DateTime?
+  privacyConsentVersion String?
 
   player           Player?
   clubRoles        ClubMember[]
@@ -156,17 +160,20 @@ model Player {
 
   // Проекция рейтинга. Источник истины — RatingEvent, это материализованное
   // представление для быстрых выборок (ТС 1.4).
-  rating           Decimal @default(250) @db.Decimal(8, 2)
-  ratedMatches     Int     @default(0)
+  rating           Decimal   @default(250) @db.Decimal(8, 2)
+  ratedMatches     Int       @default(0)
   // Сыграно рейтинговых турниров. Меньше пяти — новичок, ADR-069.
-  ratedTournaments Int     @default(0)
-  isProvisional    Boolean @default(true)
-  trustScore       Decimal @default(100) @db.Decimal(5, 2)
+  ratedTournaments Int       @default(0)
+  isProvisional    Boolean   @default(true)
+  trustScore       Decimal   @default(100) @db.Decimal(5, 2)
   // Игровой профиль — ADR-072. Ставится, когда профиль заводит организатор
   // или подтверждает анкету, которую человек завёл сам, задав рейтинг по
   // уровню игры. Пусто — анкета без рейтинга: `rating` выше у неё лишь
   // умолчание, в рейтинг и на турниры она не идёт.
   confirmedAt      DateTime?
+  // Аккаунт удалён — ADR-092. Персональные данные стёрты (имя — пустые строки),
+  // остаётся спортивная история: регистрации, встречи, события рейтинга.
+  deletedAt        DateTime?
 
   createdAt DateTime @default(now())
 
@@ -1176,7 +1183,7 @@ model Registration {
   // фиксируются на момент старта турнира. Без снимка расчёт зависит от
   // порядка обработки встреч, и локальный расчёт консоли расходится
   // с серверным. Заполняются при переходе турнира в RUNNING.
-  ratingAtStart      Decimal? @db.Decimal(8, 2)
+  ratingAtStart      Decimal?  @db.Decimal(8, 2)
   matchesAtStart     Int?
   tournamentsAtStart Int? // ratedTournaments на старте — ADR-069
   // Когда снялся или отмечен неявкой — ADR-077. Снялись оба участника

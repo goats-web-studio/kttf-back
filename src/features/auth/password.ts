@@ -80,3 +80,12 @@ export function verifyPassword(password: string, stored: string): boolean {
   // Постоянное время: обычное `===` выдаёт длину совпадения.
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
+
+/**
+ * Хеш, с которым сверяется пароль несуществующего пользователя.
+ *
+ * Считается один раз при загрузке модуля: сверка обязана занимать одинаковое
+ * время и для знакомого логина, и для незнакомого, иначе перебор находит
+ * существующие аккаунты по времени ответа.
+ */
+export const DUMMY_HASH = hashPassword(randomBytes(32).toString('hex'));

@@ -1,7 +1,5 @@
-import { randomBytes } from 'node:crypto';
-
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
-import { PHONE_PATTERN } from '@kttf/shared/types';
+import { PHONE_PATTERN, PRIVACY_POLICY_VERSION } from '@kttf/shared/types';
 import type {
   AuthSession,
   AuthUserView,
@@ -16,18 +14,10 @@ import { Injectable } from '@nestjs/common';
 
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { SESSION_TTL_MS } from './auth.constants.js';
-import { hashPassword, verifyPassword } from './password.js';
+import { DUMMY_HASH, hashPassword, verifyPassword } from './password.js';
 import { LoginThrottle } from './login-throttle.js';
+import { isDeletedPlayer } from '../players/deleted-player.js';
 import { TokenService } from './token.service.js';
-
-/**
- * Хеш, с которым сверяется пароль несуществующего пользователя.
- *
- * Считается один раз при загрузке модуля: сверка обязана занимать одинаковое
- * время и для знакомого логина, и для незнакомого, иначе перебор находит
- * существующие аккаунты по времени ответа.
- */
-const DUMMY_HASH = hashPassword(randomBytes(32).toString('hex'));
 
 /** Пользователь с тем, что нужно для ответа. Форма выборки в одном месте. */
 const userView = {
@@ -109,10 +99,12 @@ export class AuthService {
     if (input.playerId !== undefined) {
       const player = await this.prisma.player.findUnique({
         where: { id: input.playerId },
-        select: { userId: true, confirmedAt: true },
+        select: { userId: true, confirmedAt: true, deletedAt: true },
       });
 
-      if (player === null) {
+      // Удалённый игрок (ADR-092) — чужая спортивная история без хозяина:
+      // привязаться к ней значило бы присвоить себе человека, которого нет.
+      if (player === null || isDeletedPlayer(player)) {
         throw new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { id: input.playerId });
       }
 
@@ -137,7 +129,15 @@ export class AuthService {
 
     const account = await this.prisma.$transaction(async (tx) => {
       const created = await tx.user.create({
-        data: { phone: input.phone, login: input.login, passwordHash },
+        data: {
+          phone: input.phone,
+          login: input.login,
+          passwordHash,
+          // Согласие — ADR-091: схема пропускает только `consent: true`, а
+          // редакцию пишет сервер, ссылки на сайте всегда ведут на неё.
+          privacyConsentAt: new Date(),
+          privacyConsentVersion: PRIVACY_POLICY_VERSION,
+        },
         include: userView,
       });
 
@@ -145,7 +145,7 @@ export class AuthService {
         // Привязка условием на пустоту: между проверкой выше и этой строкой
         // тем же игроком мог назваться кто-то ещё.
         const linked = await tx.player.updateMany({
-          where: { id: input.playerId, userId: null, confirmedAt: { not: null } },
+          where: { id: input.playerId, userId: null, confirmedAt: { not: null }, deletedAt: null },
           data: { userId: created.id },
         });
 
@@ -361,6 +361,8 @@ interface UserRecord {
   telegramId: string | null;
   isAdmin: boolean;
   createdAt: Date;
+  privacyConsentAt: Date | null;
+  privacyConsentVersion: string | null;
   player: { id: string } | null;
   clubRoles: { clubId: string; role: string }[];
   coaches: CoachRef[];
@@ -379,5 +381,7 @@ function toView(user: UserRecord): AuthUserView {
     clubRoles: user.clubRoles.map((member) => ({ clubId: member.clubId, role: member.role })),
     isAdmin: user.isAdmin,
     coach: user.coaches[0] ?? null,
+    privacyConsentAt: user.privacyConsentAt?.toISOString() ?? null,
+    privacyConsentVersion: user.privacyConsentVersion,
   };
 }

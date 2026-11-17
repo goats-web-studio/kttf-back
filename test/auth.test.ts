@@ -171,13 +171,26 @@ describe('POST /auth/login', () => {
 });
 
 describe('POST /auth/sign-up', () => {
-  const body = { login: 'novyi', password: PASSWORD, phone: '+77015550102' };
+  const body = { login: 'novyi', password: PASSWORD, phone: '+77015550102', consent: true };
 
   it('заводит аккаунт и сразу отдаёт сессию', async () => {
     const result = await post('/sign-up', body);
 
     expect(result.status).toBe(201);
     expect(result.body).toMatchObject({ user: { id: 'user-1' } });
+  });
+
+  it('без согласия регистрации нет — ADR-091', async () => {
+    const missing = await post('/sign-up', {
+      login: body.login,
+      password: body.password,
+      phone: body.phone,
+    });
+    const refused = await post('/sign-up', { ...body, consent: false });
+
+    expect(missing.status).toBe(400);
+    expect(refused.status).toBe(400);
+    expect(prisma.user.create).not.toHaveBeenCalled();
   });
 
   it('короткий пароль не доходит до сервиса', async () => {

@@ -1,4 +1,5 @@
 import { isAppError } from '@kttf/shared/errors';
+import { PRIVACY_POLICY_VERSION } from '@kttf/shared/types';
 import { JwtService } from '@nestjs/jwt';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -33,6 +34,8 @@ const account = {
   player: null,
   clubRoles: [],
   coaches: [],
+  privacyConsentAt: new Date('2026-11-17T00:00:00.000Z'),
+  privacyConsentVersion: '2026-11-17',
 };
 
 function makePrisma() {
@@ -44,7 +47,9 @@ function makePrisma() {
       update: vi.fn().mockResolvedValue(account),
     },
     player: {
-      findUnique: vi.fn().mockResolvedValue({ userId: null, confirmedAt: new Date() }),
+      findUnique: vi
+        .fn()
+        .mockResolvedValue({ userId: null, confirmedAt: new Date(), deletedAt: null }),
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
     session: {
@@ -163,7 +168,12 @@ describe('вход', () => {
 
 describe('регистрация', () => {
   let prisma: ReturnType<typeof makePrisma>;
-  const input = { login: 'aslan', password: PASSWORD, phone: '+70000000000' };
+  const input = {
+    login: 'aslan',
+    password: PASSWORD,
+    phone: '+70000000000',
+    consent: true as const,
+  };
 
   beforeEach(() => {
     prisma = makePrisma();
@@ -176,6 +186,33 @@ describe('регистрация', () => {
 
     expect(session.accessToken).not.toBe('');
     expect(prisma.session.create).toHaveBeenCalledOnce();
+  });
+
+  it('согласие записывается с датой и редакцией политики — ADR-091', async () => {
+    const { service } = makeService(prisma);
+
+    const session = await service.signUp(input);
+
+    const created = prisma.user.create.mock.calls[0]?.[0] as {
+      data: { privacyConsentAt?: unknown; privacyConsentVersion?: unknown };
+    };
+    expect(created.data.privacyConsentAt).toBeInstanceOf(Date);
+    expect(created.data.privacyConsentVersion).toBe(PRIVACY_POLICY_VERSION);
+    expect(session.user.privacyConsentVersion).toBe('2026-11-17');
+  });
+
+  it('удалённого игрока занять нельзя — ADR-092', async () => {
+    prisma.player.findUnique.mockResolvedValue({
+      userId: null,
+      confirmedAt: new Date(),
+      deletedAt: new Date(),
+    });
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.signUp({ ...input, playerId: '00000000-0000-4000-8000-000000000009' }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(prisma.user.create).not.toHaveBeenCalled();
   });
 
   it('пароль в базу открытым не попадает', async () => {
@@ -205,7 +242,7 @@ describe('регистрация', () => {
 
     expect(prisma.player.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'player-1', userId: null, confirmedAt: { not: null } },
+        where: { id: 'player-1', userId: null, confirmedAt: { not: null }, deletedAt: null },
       }),
     );
     expect(session.user.playerId).toBe('player-1');
