@@ -83,7 +83,10 @@ function makePrisma() {
       }),
       update: vi.fn().mockResolvedValue({}),
     },
-    user: { findUnique: vi.fn().mockResolvedValue({ phone: PHONE }) },
+    user: {
+      findUnique: vi.fn().mockResolvedValue({ phone: PHONE }),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+    },
     player: {
       findUnique: vi.fn(),
       findUniqueOrThrow: vi.fn().mockResolvedValue({ ...merge, id: ARCHIVED, userId: null }),
@@ -171,7 +174,12 @@ describe('одобрение восстановления', () => {
     expect(prisma.player.update).toHaveBeenCalledWith({
       where: { id: ARCHIVED },
       data: { userId: USER },
+      select: { cityId: true },
     });
+    // Город аккаунта — из вернувшегося профиля, если своего нет (ADR-093).
+    expect(prisma.user.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: USER, cityId: null } }),
+    );
     expect(prisma.playerArchive.delete).toHaveBeenCalledWith({ where: { playerId: ARCHIVED } });
     expect(prisma.accountRequest.update).toHaveBeenCalledWith({
       where: { id: REQUEST },

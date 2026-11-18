@@ -93,7 +93,16 @@ export class AccountRestoreService {
           await mergeInto(tx, own, restored);
         }
 
-        await tx.player.update({ where: { id: playerId }, data: { userId } });
+        const relinked = await tx.player.update({
+          where: { id: playerId },
+          data: { userId },
+          select: { cityId: true },
+        });
+        // Города у аккаунта нет — город вернувшегося профиля (ADR-093).
+        await tx.user.updateMany({
+          where: { id: userId, cityId: null },
+          data: { cityId: relinked.cityId },
+        });
         await tx.playerArchive.delete({ where: { playerId } });
         await tx.accountRequest.update({
           where: { id: requestId },
