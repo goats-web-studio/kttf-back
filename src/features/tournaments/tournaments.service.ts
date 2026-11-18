@@ -145,12 +145,13 @@ export class TournamentsService {
       this.prisma.tournament.count({ where }),
     ]);
 
-    const averages = await this.averageRatings(rows.map((row) => row.id));
+    const averages = await this.fieldAverages(rows);
 
     return pageOf(
       rows.map((row) => ({
         ...toTournamentView(row),
-        averageRating: averages.get(row.id) ?? null,
+        averageRating: averages.get(row.id)?.rating ?? null,
+        averageAge: averages.get(row.id)?.age ?? null,
         matchesPlayed: row._count.matches,
       })),
       total,
@@ -165,33 +166,56 @@ export class TournamentsService {
    * снимка ещё нет, берётся нынешний рейтинг записанного. Снятые и
    * отклонённые заявки в поле не входят. Округление до целого: это мера
    * силы поля, а не чей-то рейтинг.
+   *
+   * Средний возраст — ADR-094: год турнира минус год рождения, как при
+   * допуске в категорию, тоже до целого.
    */
-  private async averageRatings(ids: readonly string[]): Promise<Map<string, number>> {
+  private async fieldAverages(
+    tournaments: readonly { id: string; startsAt: Date }[],
+  ): Promise<Map<string, { rating: number; age: number }>> {
+    const ids = tournaments.map((tournament) => tournament.id);
+    const yearOf = new Map(
+      tournaments.map((tournament) => [tournament.id, tournament.startsAt.getUTCFullYear()]),
+    );
+
     if (ids.length === 0) {
       return new Map();
     }
 
     const entries = await this.prisma.registration.findMany({
       where: { tournamentId: { in: [...ids] }, status: { in: OCCUPYING_STATUSES } },
-      select: { tournamentId: true, ratingAtStart: true, player: { select: { rating: true } } },
+      select: {
+        tournamentId: true,
+        ratingAtStart: true,
+        player: { select: { rating: true, birthYear: true } },
+      },
     });
-    const sums = new Map<string, { sum: Prisma.Decimal; count: number }>();
+    const sums = new Map<string, { sum: Prisma.Decimal; ages: number; count: number }>();
 
     for (const entry of entries) {
       const rating = entry.ratingAtStart ?? entry.player.rating;
-      const current = sums.get(entry.tournamentId) ?? { sum: new Prisma.Decimal(0), count: 0 };
+      const current = sums.get(entry.tournamentId) ?? {
+        sum: new Prisma.Decimal(0),
+        ages: 0,
+        count: 0,
+      };
+      const age = (yearOf.get(entry.tournamentId) ?? 0) - entry.player.birthYear;
       // Через строку: Decimal из базы складывается точно, а значение другого
       // вида (заглушка, число из соседнего кода) не роняет календарь.
       sums.set(entry.tournamentId, {
         sum: current.sum.plus(rating.toString()),
+        ages: current.ages + age,
         count: current.count + 1,
       });
     }
 
     return new Map(
-      [...sums].map(([id, { sum, count }]) => [
+      [...sums].map(([id, { sum, ages, count }]) => [
         id,
-        sum.dividedBy(count).toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP).toNumber(),
+        {
+          rating: sum.dividedBy(count).toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP).toNumber(),
+          age: Math.max(0, Math.round(ages / count)),
+        },
       ]),
     );
   }
