@@ -36,6 +36,7 @@ const account = {
   coaches: [],
   privacyConsentAt: new Date('2026-11-17T00:00:00.000Z'),
   privacyConsentVersion: '2026-11-17',
+  city: null,
 };
 
 function makePrisma() {
@@ -58,6 +59,7 @@ function makePrisma() {
       update: vi.fn().mockResolvedValue({}),
       deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
     },
+    city: { findFirst: vi.fn().mockResolvedValue({ id: 'city-1' }) },
     $transaction: vi.fn(),
   };
 
@@ -248,6 +250,40 @@ describe('регистрация', () => {
     expect(session.user.playerId).toBe('player-1');
   });
 
+  it('город гостя переезжает в аккаунт — ADR-093', async () => {
+    const { service } = makeService(prisma);
+
+    await service.signUp({ ...input, cityId: 'city-1' });
+
+    const data = (prisma.user.create.mock.calls[0]?.[0] as { data: { cityId?: string } }).data;
+    expect(data.cityId).toBe('city-1');
+  });
+
+  it('без города гостя берётся город профиля, к которому привязались — ADR-093', async () => {
+    prisma.player.findUnique.mockResolvedValue({
+      userId: null,
+      confirmedAt: new Date(),
+      deletedAt: null,
+      cityId: 'city-2',
+    });
+    const { service } = makeService(prisma);
+
+    await service.signUp({ ...input, playerId: 'player-1' });
+
+    const data = (prisma.user.create.mock.calls[0]?.[0] as { data: { cityId?: string } }).data;
+    expect(data.cityId).toBe('city-2');
+  });
+
+  it('скрытый город при регистрации — отказ — ADR-093', async () => {
+    prisma.city.findFirst.mockResolvedValue(null);
+    const { service } = makeService(prisma);
+
+    await expect(service.signUp({ ...input, cityId: 'city-9' })).rejects.toMatchObject({
+      code: 'CITY_UNAVAILABLE',
+    });
+    expect(prisma.user.create).not.toHaveBeenCalled();
+  });
+
   it('к чужой анкете без рейтинга не привязывает — ADR-072', async () => {
     prisma.player.findUnique.mockResolvedValue({ userId: null, confirmedAt: null });
     const { service } = makeService(prisma);
@@ -434,6 +470,30 @@ describe('настройки аккаунта', () => {
     const where = (prisma.user.findFirst.mock.calls[0]?.[0] as { where: { NOT: unknown } }).where;
 
     expect(where.NOT).toEqual({ id: 'user-1' });
+  });
+
+  it('мой город меняется и сбрасывается — ADR-093', async () => {
+    const { service } = makeService(prisma);
+
+    await service.updateAccount('user-1', { cityId: 'city-1' });
+    expect(prisma.user.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({ data: { cityId: 'city-1' } }),
+    );
+
+    await service.updateAccount('user-1', { cityId: null });
+    expect(prisma.user.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({ data: { cityId: null } }),
+    );
+  });
+
+  it('скрытый город своим не сделать — ADR-093', async () => {
+    prisma.city.findFirst.mockResolvedValue(null);
+    const { service } = makeService(prisma);
+
+    await expect(service.updateAccount('user-1', { cityId: 'city-9' })).rejects.toMatchObject({
+      code: 'CITY_UNAVAILABLE',
+    });
+    expect(prisma.user.update).not.toHaveBeenCalled();
   });
 
   it('null очищает почту, отсутствие поля её не трогает', async () => {

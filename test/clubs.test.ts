@@ -132,7 +132,10 @@ function makePrisma() {
     ratingEvent: { create: vi.fn().mockResolvedValue({}) },
     clubCoach: { groupBy: vi.fn().mockResolvedValue([]) },
     training: { findMany: vi.fn().mockResolvedValue([]) },
-    user: { findUnique: vi.fn().mockResolvedValue({ id: USER_ID }) },
+    user: {
+      findUnique: vi.fn().mockResolvedValue({ id: USER_ID }),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+    },
     city: { findFirst: vi.fn().mockResolvedValue({ id: CITY_ID }) },
     product: { findMany: vi.fn().mockResolvedValue([{ id: TABLE_ID }]) },
     clubTable: { deleteMany: vi.fn(), createMany: vi.fn() },

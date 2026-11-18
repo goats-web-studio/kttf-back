@@ -29,6 +29,8 @@ const cityFields = {
   nameKk: true,
   sortOrder: true,
   isActive: true,
+  lat: true,
+  lng: true,
 } as const;
 
 /** Столицы впереди по заданному порядку, дальше по алфавиту. */

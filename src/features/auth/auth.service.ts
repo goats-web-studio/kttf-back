@@ -17,11 +17,13 @@ import { SESSION_TTL_MS } from './auth.constants.js';
 import { DUMMY_HASH, hashPassword, verifyPassword } from './password.js';
 import { LoginThrottle } from './login-throttle.js';
 import { isDeletedPlayer } from '../players/deleted-player.js';
+import { cityRefFields } from '../places/place.fields.js';
 import { TokenService } from './token.service.js';
 
 /** Пользователь с тем, что нужно для ответа. Форма выборки в одном месте. */
 const userView = {
   player: { select: { id: true } },
+  city: { select: cityRefFields },
   clubRoles: { select: { clubId: true, role: true } },
   // Своя страница тренера — ADR-059. Одна на профиль игрока, а профиль один
   // на аккаунт; порядок — на случай, если ссылок окажется больше.
@@ -96,10 +98,16 @@ export class AuthService {
       });
     }
 
+    await this.assertCityAvailable(input.cityId);
+
+    // Город не выбран гостем — берётся из профиля, к которому привязываются
+    // (ADR-093): человек из него и играет.
+    let cityId = input.cityId;
+
     if (input.playerId !== undefined) {
       const player = await this.prisma.player.findUnique({
         where: { id: input.playerId },
-        select: { userId: true, confirmedAt: true, deletedAt: true },
+        select: { userId: true, confirmedAt: true, deletedAt: true, cityId: true },
       });
 
       // Удалённый игрок (ADR-092) — чужая спортивная история без хозяина:
@@ -122,6 +130,8 @@ export class AuthService {
           field: 'playerId',
         });
       }
+
+      cityId ??= player.cityId;
     }
 
     const refreshToken = this.tokens.generateRefreshToken();
@@ -137,6 +147,7 @@ export class AuthService {
           // редакцию пишет сервер, ссылки на сайте всегда ведут на неё.
           privacyConsentAt: new Date(),
           privacyConsentVersion: PRIVACY_POLICY_VERSION,
+          ...(cityId === undefined ? {} : { cityId }),
         },
         include: userView,
       });
@@ -285,9 +296,18 @@ export class AuthService {
       }
     }
 
+    if (input.cityId !== undefined && input.cityId !== null) {
+      const current = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { cityId: true },
+      });
+      await this.assertCityAvailable(input.cityId, current?.cityId ?? undefined);
+    }
+
     const user = await this.prisma.user.update({
       where: { id: userId },
       data: {
+        ...(input.cityId === undefined ? {} : { cityId: input.cityId }),
         ...(input.login === undefined ? {} : { login: input.login }),
         ...(input.email === undefined ? {} : { email: input.email }),
         ...(input.locale === undefined ? {} : { locale: input.locale }),
@@ -349,6 +369,25 @@ export class AuthService {
 
     return { accessToken: this.tokens.issueAccessToken(userId), refreshToken };
   }
+
+  /**
+   * Город можно сделать своим — то же правило, что у `PlacesService`.
+   *
+   * Повторено, а не взято оттуда: модуль мест сам зависит от модуля входа
+   * (охрана администратора), и обратная ссылка замкнула бы их в круг.
+   */
+  private async assertCityAvailable(cityId: string | undefined, current?: string): Promise<void> {
+    if (cityId === undefined || cityId === current) return;
+
+    const city = await this.prisma.city.findFirst({
+      where: { id: cityId, isActive: true, country: { isActive: true } },
+      select: { id: true },
+    });
+
+    if (city === null) {
+      throw new AppError(ERROR_CODES.CITY_UNAVAILABLE, 'City is unknown or hidden', { cityId });
+    }
+  }
 }
 
 interface UserRecord {
@@ -364,6 +403,7 @@ interface UserRecord {
   privacyConsentAt: Date | null;
   privacyConsentVersion: string | null;
   player: { id: string } | null;
+  city: { id: string; name: string; nameKk: string | null } | null;
   clubRoles: { clubId: string; role: string }[];
   coaches: CoachRef[];
 }
@@ -383,5 +423,6 @@ function toView(user: UserRecord): AuthUserView {
     coach: user.coaches[0] ?? null,
     privacyConsentAt: user.privacyConsentAt?.toISOString() ?? null,
     privacyConsentVersion: user.privacyConsentVersion,
+    city: user.city,
   };
 }

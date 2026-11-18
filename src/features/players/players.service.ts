@@ -504,6 +504,15 @@ export class PlayersService {
 
       await switchCoach(tx, player.id, null, player.coachPlayerId);
 
+      // Своя анкета, а города у аккаунта нет — город анкеты становится
+      // городом аккаунта (ADR-093). Выбранный раньше не трогается.
+      if (!forSomeoneElse) {
+        await tx.user.updateMany({
+          where: { id: actorId, cityId: null },
+          data: { cityId: profile.cityId },
+        });
+      }
+
       return tx.player.findUniqueOrThrow({ where: { id: player.id }, select: profileFields });
     });
 
