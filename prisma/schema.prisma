@@ -47,6 +47,10 @@ model User {
   // редакцией политики. Пусто у аккаунтов, заведённых до ADR-091.
   privacyConsentAt      DateTime?
   privacyConsentVersion String?
+  // Мой город — ADR-093: что сайт показывает по умолчанию. Не город анкеты:
+  // посмотреть турниры другого города не значит туда переехать.
+  cityId                String?
+  city                  City?     @relation(fields: [cityId], references: [id])
 
   player           Player?
   clubRoles        ClubMember[]
@@ -263,9 +267,13 @@ model City {
   // Столицы впереди, остальное по алфавиту: порядок задаёт администратор.
   sortOrder Int     @default(100)
   isActive  Boolean @default(true)
+  // Центр города — ADR-093: по нему браузер находит ближайший к человеку.
+  lat       Float?
+  lng       Float?
 
   clubs   Club[]
   players Player[]
+  users   User[]
   coaches Coach[]
   duels   Duel[]
 

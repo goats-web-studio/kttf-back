@@ -130,6 +130,30 @@ describe('список турниров: порядок, средний рейт
     });
   });
 
+  it('средний возраст — год турнира минус год рождения, до целого (ADR-094)', async () => {
+    const { service } = makeService(
+      [row(UPCOMING, 0)],
+      [
+        {
+          tournamentId: UPCOMING,
+          ratingAtStart: null,
+          player: { rating: decimal('300'), birthYear: 2010 },
+        },
+        {
+          tournamentId: UPCOMING,
+          ratingAtStart: null,
+          player: { rating: decimal('300'), birthYear: 1981 },
+        },
+      ],
+    );
+
+    const page = await service.list({ page: 1, limit: 20, order: 'asc' });
+    const year =
+      page.items[0] === undefined ? 0 : new Date(page.items[0].startsAt).getUTCFullYear();
+
+    expect(page.items[0]?.averageAge).toBe(Math.round((year - 2010 + year - 1981) / 2));
+  });
+
   it('без участников среднего нет — null, а не ноль', async () => {
     const { service } = makeService([row(UPCOMING, 0)], []);
 

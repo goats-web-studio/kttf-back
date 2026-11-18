@@ -64,6 +64,7 @@ function makePrisma() {
       delete: vi.fn(),
     },
     coachTenure: { create: vi.fn(), updateMany: vi.fn() },
+    user: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     coach: { updateMany: vi.fn() },
     duel: { updateMany: vi.fn() },
     duelResponse: { updateMany: vi.fn() },
@@ -283,6 +284,26 @@ describe('создание игрока', () => {
     expect(
       (prisma.player.create.mock.calls[0]?.[0] as { data: { userId?: string } }).data.userId,
     ).toBe('user-1');
+  });
+
+  it('своя анкета даёт город аккаунту, если его не было — ADR-093', async () => {
+    prisma.player.findUnique.mockResolvedValue(null);
+
+    await service.create(newcomer, 'user-1');
+
+    expect(prisma.user.updateMany).toHaveBeenCalledWith({
+      where: { id: 'user-1', cityId: null },
+      data: { cityId: newcomer.cityId },
+    });
+  });
+
+  it('чужой профиль город аккаунта не трогает — ADR-093', async () => {
+    prisma.player.findUnique.mockResolvedValue({ id: 'player-1' });
+    prisma.clubMember.findUnique.mockResolvedValue({ role: 'ORGANIZER' });
+
+    await service.create({ ...newcomer, clubId: 'club-1', startRating: 400 }, 'user-1');
+
+    expect(prisma.user.updateMany).not.toHaveBeenCalled();
   });
 
   it('рейтинг при создании не задаётся: он проекция журнала', async () => {
