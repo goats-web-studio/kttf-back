@@ -1,16 +1,17 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
-import type { DeleteAccountInput } from '@kttf/shared/types';
-import { Injectable, Logger } from '@nestjs/common';
+import { ARCHIVE_PERSONAL_DATA_DAYS } from '@kttf/shared/types';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 
 import type { Prisma } from '../../generated/prisma/client.js';
+import { ENV, type Env } from '../../infra/config/env.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
-import { LoginThrottle } from '../auth/login-throttle.js';
-import { DUMMY_HASH, verifyPassword } from '../auth/password.js';
 import { TokenService } from '../auth/token.service.js';
 import { fileKeysOf } from '../files/file-keys.js';
 import { StorageService } from '../files/storage.service.js';
 import { duelSubject } from '../forum/forum-subjects.service.js';
 import { DELETED_PLAYER_TITLE_RU } from '../players/deleted-player.js';
+import { lockPendingRequest, snapshotFields, snapshotOf } from './archive-snapshot.js';
+import { phoneHash } from './phone-hash.js';
 
 /** Дуэли, которые ещё не сыграны: их отменяют, а не хранят. */
 const ACTIVE_DUEL = ['OPEN', 'CHALLENGE', 'SCHEDULED'] as const;
@@ -18,15 +19,19 @@ const ACTIVE_DUEL = ['OPEN', 'CHALLENGE', 'SCHEDULED'] as const;
 /** Предел заголовка темы форума. */
 const TOPIC_TITLE_MAX = 150;
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 /**
- * Удаление аккаунта — ADR-092.
+ * Удаление аккаунта по одобренной заявке — ADR-092, ADR-095.
  *
- * Строка `User` удаляется целиком: телефон, логин и почта освобождаются, а
- * сессии и всё личное уходят каскадом. Игрок со спортивной историей остаётся
- * обезличенным «Удалённым игроком» (`Player.deletedAt`, имя — пустые строки):
- * встречи, места и события рейтинга — это и история соперников, а пересчёт
- * рейтинга обязан давать тот же результат (бриф, запрет №3). Игрок без истории
- * удаляется вместе с аккаунтом.
+ * Сам человек аккаунт не удаляет: он подаёт заявку, а этот путь проводит
+ * администратор. Строка `User` удаляется целиком: телефон, логин и почта
+ * освобождаются, а сессии и всё личное уходят каскадом. Игрок со спортивной
+ * историей остаётся обезличенным «Удалённым игроком» (`Player.deletedAt`,
+ * имя — пустые строки): встречи, места и события рейтинга — это и история
+ * соперников (бриф, запрет №3). Перед обезличиванием личные поля пишутся
+ * снимком в `PlayerArchive` с хешем телефона: вернувшийся человек сможет
+ * попросить историю назад. Игрок без истории удаляется, архива у него нет.
  */
 @Injectable()
 export class AccountDeletionService {
@@ -35,48 +40,53 @@ export class AccountDeletionService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tokens: TokenService,
-    private readonly throttle: LoginThrottle,
     private readonly storage: StorageService,
+    @Inject(ENV) private readonly env: Env,
   ) {}
 
-  async deleteAccount(userId: string, input: DeleteAccountInput, ip: string): Promise<void> {
-    const throttleKey = `delete:${userId}`;
-
-    // Пароль подбирать перебором так же нельзя, как при входе (ADR-056).
-    this.throttle.assertAllowed(throttleKey, ip);
-
-    const account = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { passwordHash: true },
-    });
-
-    if (account === null) {
-      throw new AppError(ERROR_CODES.UNAUTHORIZED, 'User no longer exists');
-    }
-
-    // Без пароля аккаунтом не войти (ADR-034), и удалить его так тоже нельзя:
-    // сверка с подставным хешем всегда ложна, а время ответа то же.
-    if (!verifyPassword(input.password, account.passwordHash ?? DUMMY_HASH)) {
-      this.throttle.recordFailure(throttleKey, ip);
-      throw new AppError(ERROR_CODES.WRONG_PASSWORD, 'Password is wrong');
-    }
-
-    this.throttle.recordSuccess(throttleKey);
-
-    const fileKeys = await this.prisma.$transaction(
+  /** Одобрить заявку на удаление: архив и обезличивание одной транзакцией. */
+  async approve(requestId: string, adminId: string, now = new Date()): Promise<void> {
+    const { userId, fileKeys } = await this.prisma.$transaction(
       async (tx) => {
-        // Блокировка строки: два одновременных удаления не идут параллельно,
-        // второе увидит, что пользователя уже нет.
-        const locked = await tx.$queryRaw<{ id: string }[]>`
-          SELECT id FROM "User" WHERE id = ${userId} FOR UPDATE`;
+        const request = await lockPendingRequest(tx, requestId, 'DELETE');
+        const userId = request.userId;
 
-        if (locked.length === 0) {
-          throw new AppError(ERROR_CODES.UNAUTHORIZED, 'User no longer exists');
+        if (userId === null) {
+          throw new AppError(ERROR_CODES.NOT_FOUND, 'Account no longer exists', { requestId });
         }
 
+        // Блокировка строки: заявка и удаление не идут параллельно с другим
+        // удалением того же аккаунта.
+        const locked = await tx.$queryRaw<{ id: string; phone: string }[]>`
+          SELECT id, phone FROM "User" WHERE id = ${userId} FOR UPDATE`;
+        const user = locked[0];
+
+        if (user === undefined) {
+          throw new AppError(ERROR_CODES.NOT_FOUND, 'Account no longer exists', { requestId });
+        }
+
+        // Последний владелец клуба и последний администратор проверяются при
+        // одобрении: за время ожидания заявки всё могло измениться.
         await assertDeletable(tx, userId);
 
-        return eraseAccount(tx, userId, new Date());
+        // Прочие заявки этого человека теряют смысл вместе с аккаунтом.
+        await tx.accountRequest.updateMany({
+          where: { userId, status: 'PENDING', NOT: { id: requestId } },
+          data: { status: 'CANCELLED', decidedAt: now },
+        });
+        await tx.accountRequest.update({
+          where: { id: requestId },
+          data: { status: 'APPROVED', decidedAt: now, decidedById: adminId },
+        });
+
+        const fileKeys = await eraseAccount(tx, userId, now, {
+          actorId: adminId,
+          requestId,
+          phoneHash: phoneHash(this.env.JWT_SECRET, user.phone),
+          purgeAt: new Date(now.getTime() + ARCHIVE_PERSONAL_DATA_DAYS * DAY_MS),
+        });
+
+        return { userId, fileKeys };
       },
       { timeout: 30_000, maxWait: 5_000 },
     );
@@ -91,6 +101,8 @@ export class AccountDeletionService {
    * файл без ссылки на него никто не найдёт; в журнал — чтобы дочистить.
    */
   private async removeFiles(keys: readonly string[]): Promise<void> {
+    if (keys.length === 0) return;
+
     try {
       await this.storage.remove(keys);
     } catch (error) {
@@ -99,8 +111,12 @@ export class AccountDeletionService {
   }
 }
 
-/** Последний владелец клуба и последний администратор аккаунт не удаляют. */
-async function assertDeletable(tx: Prisma.TransactionClient, userId: string): Promise<void> {
+/**
+ * Последний владелец клуба и последний администратор аккаунт не удаляют.
+ *
+ * При заявке — как ранняя подсказка, при одобрении — как решающая проверка.
+ */
+export async function assertDeletable(tx: Prisma.TransactionClient, userId: string): Promise<void> {
   const owned = await tx.clubMember.findMany({
     where: { userId, role: 'OWNER' },
     select: { clubId: true },
@@ -135,21 +151,31 @@ async function assertDeletable(tx: Prisma.TransactionClient, userId: string): Pr
   }
 }
 
+/** Кто удаляет и куда кладётся архив — ADR-095. */
+interface ArchiveTarget {
+  actorId: string;
+  requestId: string;
+  phoneHash: string;
+  purgeAt: Date;
+}
+
 /**
  * Стирает аккаунт внутри транзакции и отдаёт ключи файлов для удаления.
  *
  * Порядок важен: страница тренера ссылается на пользователя без каскада и
  * удаляется первой, а сама строка `User` — последней, когда всё, что надо
- * обезличить вручную, уже обезличено.
+ * обезличить вручную, уже обезличено. Снимок для архива читается до
+ * обезличивания, а пишется после: только тогда известно, остался ли игрок.
  */
 async function eraseAccount(
   tx: Prisma.TransactionClient,
   userId: string,
   now: Date,
+  archive: ArchiveTarget,
 ): Promise<string[]> {
   const player = await tx.player.findUnique({
     where: { userId },
-    select: { id: true, photoUrl: true },
+    select: { id: true, ...snapshotFields },
   });
   const playerId = player?.id ?? null;
 
@@ -188,7 +214,6 @@ async function eraseAccount(
   const trialIds = trials.map((trial) => trial.id);
 
   const fileKeys = [
-    ...fileKeysOf(player?.photoUrl),
     ...coaches.flatMap((coach) => [
       ...fileKeysOf(coach.photoUrl),
       ...fileKeysOf(coach.coverUrl),
@@ -214,8 +239,37 @@ async function eraseAccount(
     await tx.coach.deleteMany({ where: { id: { in: coachIds } } });
   }
 
-  if (playerId !== null) {
-    await erasePlayer(tx, playerId, duelIds, now);
+  let archived = false;
+
+  if (player !== null) {
+    archived = await erasePlayer(tx, player.id, duelIds, now);
+    const photoKeys = fileKeysOf(player.photoUrl);
+
+    if (archived) {
+      // Фото лежит в хранилище до конца срока архива: иначе восстановленный
+      // в первые 30 дней профиль вернулся бы без него (ADR-095).
+      const snapshot = snapshotOf(player);
+      await tx.playerArchive.upsert({
+        where: { playerId: player.id },
+        create: {
+          playerId: player.id,
+          phoneHash: archive.phoneHash,
+          snapshot,
+          photoKey: photoKeys[0] ?? null,
+          archivedAt: now,
+          purgeAt: archive.purgeAt,
+        },
+        update: {
+          phoneHash: archive.phoneHash,
+          snapshot,
+          photoKey: photoKeys[0] ?? null,
+          archivedAt: now,
+          purgeAt: archive.purgeAt,
+        },
+      });
+    } else {
+      fileKeys.push(...photoKeys);
+    }
   }
 
   // Форум: свои сообщения — заглушка «удалено», как при удалении автором;
@@ -251,11 +305,11 @@ async function eraseAccount(
   // хранить то, что удалено.
   await tx.auditLog.create({
     data: {
-      actorId: userId,
+      actorId: archive.actorId,
       action: 'account.deleted',
       entityType: 'User',
       entityId: userId,
-      after: { playerId, coachIds },
+      after: { playerId, coachIds, requestId: archive.requestId, archived },
     },
   });
 
@@ -281,14 +335,15 @@ async function duelsOf(tx: Prisma.TransactionClient, playerId: string): Promise<
 
 /**
  * Игрок: связи с другими людьми рвутся, личное стирается, спорт остаётся.
- * Без спортивной истории строка удаляется целиком.
+ * Без спортивной истории строка удаляется целиком. Возвращает, остался ли
+ * игрок: архив заводится только ему.
  */
 async function erasePlayer(
   tx: Prisma.TransactionClient,
   playerId: string,
   duelIds: readonly string[],
   now: Date,
-): Promise<void> {
+): Promise<boolean> {
   // Тренер и ученики: связь — это сведения о двух людях, а один из них ушёл.
   await tx.coachTenure.deleteMany({
     where: { OR: [{ playerId }, { coachPlayerId: playerId }] },
@@ -360,7 +415,7 @@ async function erasePlayer(
 
   if (!hasHistory) {
     await tx.player.delete({ where: { id: playerId } });
-    return;
+    return false;
   }
 
   // Год рождения, пол и город остаются: по ним в снимках идущих турниров
@@ -391,6 +446,8 @@ async function erasePlayer(
       coachVisibility: 'ALL',
     },
   });
+
+  return true;
 }
 
 /** Темы дуэлей подписаны фамилиями (ADR-068) — подпись пересобирается. */

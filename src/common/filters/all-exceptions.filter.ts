@@ -117,6 +117,11 @@ const STATUS_BY_CODE: Readonly<Record<ErrorCode, number>> = {
   // обновляют токен и повторяют запрос.
   WRONG_PASSWORD: HttpStatus.FORBIDDEN,
   ACCOUNT_DELETE_BLOCKED: HttpStatus.CONFLICT,
+
+  // Заявки на удаление и восстановление — ADR-095: вторая ожидающая и
+  // восстановление, которому мешает то, что уже есть, — конфликт с данными.
+  ACCOUNT_REQUEST_PENDING: HttpStatus.CONFLICT,
+  ACCOUNT_RESTORE_INVALID: HttpStatus.CONFLICT,
 };
 
 const CODE_BY_STATUS: Readonly<Record<number, ErrorCode>> = {

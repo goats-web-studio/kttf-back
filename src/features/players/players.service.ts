@@ -789,7 +789,7 @@ const MERGED_FIELDS = [
   'bio',
 ] as const;
 
-const mergeFields = {
+export const mergeFields = {
   id: true,
   userId: true,
   confirmedAt: true,
@@ -815,7 +815,7 @@ const mergeFields = {
   bio: true,
 } as const satisfies Prisma.PlayerSelect & Record<(typeof MERGED_FIELDS)[number], true>;
 
-type MergeRecord = Prisma.PlayerGetPayload<{ select: typeof mergeFields }>;
+export type MergeRecord = Prisma.PlayerGetPayload<{ select: typeof mergeFields }>;
 
 function claimInvalid(
   reason: 'TAKEN' | 'OWN_CONFIRMED' | 'NOT_CONFIRMED' | 'COACH_PAGE',
@@ -831,7 +831,7 @@ function claimInvalid(
  * анкеты, тренера с историей, страницу тренера, учеников и дуэли. Остальное
  * уходит каскадом вместе с самой анкетой.
  */
-async function mergeInto(
+export async function mergeInto(
   tx: Prisma.TransactionClient,
   own: MergeRecord,
   target: MergeRecord,

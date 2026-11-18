@@ -115,6 +115,8 @@ describe('AllExceptionsFilter', () => {
       PLAYER_CLAIM_INVALID: 409,
       WRONG_PASSWORD: 403,
       ACCOUNT_DELETE_BLOCKED: 409,
+      ACCOUNT_REQUEST_PENDING: 409,
+      ACCOUNT_RESTORE_INVALID: 409,
     };
 
     for (const code of Object.values(ERROR_CODES)) {

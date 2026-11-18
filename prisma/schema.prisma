@@ -74,6 +74,8 @@ model User {
   duelsResolved    Duel[]              @relation("DuelResolver")
   duelsAnnulled    Duel[]              @relation("DuelAnnuller")
   follows          Follow[]
+  accountRequests  AccountRequest[]    @relation("AccountRequester")
+  accountDecisions AccountRequest[]    @relation("AccountDecider")
 }
 
 enum Locale {
@@ -177,20 +179,23 @@ model Player {
 
   createdAt DateTime @default(now())
 
-  registrations  Registration[]
+  registrations   Registration[]
   // Записи на турниры, где игрок указан тренером участника (T3).
-  coachedEntries Registration[] @relation("RegistrationCoach")
-  ratingEvents   RatingEvent[]
+  coachedEntries  Registration[]   @relation("RegistrationCoach")
+  ratingEvents    RatingEvent[]
   // Страница тренера на этом профиле — ADR-059. Не путать с `coach`:
   // там тренер, которого игрок выбрал себе в анкете.
-  coachPage      Coach?
+  coachPage       Coach?
   // История тренеров — T2 (ADR-059): свои периоды и периоды учеников
-  coachTenures   CoachTenure[]  @relation("TenurePlayer")
-  studentTenures CoachTenure[]  @relation("TenureCoach")
+  coachTenures    CoachTenure[]    @relation("TenurePlayer")
+  studentTenures  CoachTenure[]    @relation("TenureCoach")
   // Дуэли и спарринги — ADR-065: предложенные, принятые, отклики
-  duelsAuthored  Duel[]         @relation("DuelAuthor")
-  duelsOpposed   Duel[]         @relation("DuelOpponent")
-  duelResponses  DuelResponse[]
+  duelsAuthored   Duel[]           @relation("DuelAuthor")
+  duelsOpposed    Duel[]           @relation("DuelOpponent")
+  duelResponses   DuelResponse[]
+  // Архив удалённого аккаунта — ADR-095
+  archive         PlayerArchive?
+  accountRequests AccountRequest[]
 
   @@index([rating(sort: Desc)])
   @@index([cityId, rating(sort: Desc)])
@@ -1916,4 +1921,68 @@ model FeedCuration {
   hiddenAt    DateTime?
   updatedById String?
   updatedAt   DateTime  @updatedAt
+}
+
+// ============ Заявки на удаление и восстановление аккаунта — ADR-095 ============
+
+// Сам человек аккаунт не удаляет: он просит, решает администратор. Тем же
+// путём вернувшийся человек просит вернуть ему архивный профиль.
+model AccountRequest {
+  id               String               @id @default(uuid())
+  kind             AccountRequestKind
+  status           AccountRequestStatus @default(PENDING)
+  // Аккаунт пропадает при одобрении удаления (строка `User` удаляется
+  // целиком, ADR-092), а заявка остаётся как след решения.
+  userId           String?
+  user             User?                @relation("AccountRequester", fields: [userId], references: [id], onDelete: SetNull)
+  // У удаления — свой профиль просящего, у восстановления — архивный.
+  playerId         String?
+  player           Player?              @relation(fields: [playerId], references: [id], onDelete: SetNull)
+  reason           String?
+  // Имя, которое назвал просящий восстановление: им называется профиль,
+  // если личные данные архива уже стёрты.
+  claimedLastName  String?
+  claimedFirstName String?
+  // Ответ администратора при отказе.
+  answer           String?
+  createdAt        DateTime             @default(now())
+  decidedAt        DateTime?
+  decidedById      String?
+  decidedBy        User?                @relation("AccountDecider", fields: [decidedById], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt(sort: Desc)])
+  @@index([userId, kind, createdAt(sort: Desc)])
+  @@index([playerId])
+}
+
+enum AccountRequestKind {
+  DELETE
+  RESTORE
+}
+
+enum AccountRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+// Архив профиля удалённого аккаунта — ADR-095. Снимок личных полей живёт
+// ARCHIVE_PERSONAL_DATA_DAYS дней, затем стирается вместе с фото. Хеш
+// телефона и ссылка на профиль остаются бессрочно: по ним вернувшийся
+// человек находит свою историю. Сам телефон не хранится.
+model PlayerArchive {
+  playerId   String   @id
+  player     Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  // HMAC SHA-256 номера на JWT_SECRET, как хеш IP.
+  phoneHash  String
+  // Личные поля профиля до обезличивания; `null` — срок вышел, стёрто.
+  snapshot   Json?
+  // Ключ фото профиля в хранилище: файл лежит до конца срока.
+  photoKey   String?
+  archivedAt DateTime @default(now())
+  purgeAt    DateTime
+
+  @@index([phoneHash])
+  @@index([purgeAt])
 }
