@@ -9,6 +9,7 @@ import {
   type AdminFeedQuery,
   type FeedCurationInput,
   type FeedDiscussion,
+  type FeedFilter,
   type FeedItem,
   type FeedPage,
   type FeedQuery,
@@ -22,7 +23,7 @@ import { Injectable } from '@nestjs/common';
 import type { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { FollowsService, type FollowedTargets } from '../follows/follows.service.js';
-import { parseImages } from '../forum/forum-views.js';
+import { authorName, parseImages } from '../forum/forum-views.js';
 import { OCCUPYING_STATUSES } from '../tournaments/tournaments.select.js';
 import { TournamentsService } from '../tournaments/tournaments.service.js';
 
@@ -42,7 +43,15 @@ const BOOST_HOURS: Readonly<Record<FeedItem['type'], number>> = {
   RESULT: 12,
   ACHIEVEMENT: 0,
   PLAYER_POST: 0,
+  // Тема форума и так поднимается каждым ответом — веса ей не нужно.
+  FORUM: 0,
 };
+
+/** Тем форума в ленте без фильтра — самые обсуждаемые за неделю (ADR-097). */
+export const FEED_HOT_TOPICS = 5;
+
+/** Темы предмета, у которых своя карточка в ленте: новости и акции клубов и тренеров. */
+const OWN_CARD_SUBJECTS = ['CLUB_POST', 'COACH_POST'] as const;
 
 /** На сколько часов «Для вас» поднимает своё: подписки, свой город, своё. */
 const RELEVANCE_HOURS = 48;
@@ -55,8 +64,10 @@ interface Candidate {
   readonly clubs: readonly string[];
   readonly coaches: readonly string[];
   readonly players: readonly string[];
-  /** Запись игрока прошла в общие вкладки — среди самых читаемых за неделю. */
+  /** Запись игрока или тема форума прошла в общие вкладки — среди самых читаемых и обсуждаемых. */
   readonly popular?: boolean;
+  /** Ответов в теме форума за последнюю неделю — по ним отбираются горячие. */
+  readonly weekReplies?: number;
   /** Когда закрепили — порядок закреплённых. */
   readonly pinnedAt?: Date | null;
   /** Видна только подписчикам игрока и ему самому — медаль, новый уровень. */
@@ -113,6 +124,45 @@ export function popularPosts(
 }
 
 /**
+ * Горячие темы форума — ADR-097: больше всего ответов за неделю, при равенстве
+ * свежее. Тема без ответов за неделю горячей не бывает.
+ */
+export function hotTopics(
+  topics: readonly { id: string; at: string; weekReplies: number }[],
+): Set<string> {
+  return new Set(
+    topics
+      .filter((topic) => topic.weekReplies > 0)
+      .sort(
+        (left, right) =>
+          right.weekReplies - left.weekReplies || Date.parse(right.at) - Date.parse(left.at),
+      )
+      .slice(0, FEED_HOT_TOPICS)
+      .map((topic) => topic.id),
+  );
+}
+
+/** Подходит ли карточка под фильтр «Что показывать» (ADR-097). Без фильтра — всё. */
+export function matchesFilter(item: FeedItem, filter: FeedFilter | undefined): boolean {
+  switch (filter) {
+    case undefined:
+      return true;
+    case 'KTTF':
+      return item.type === 'PORTAL';
+    case 'CLUBS':
+      return item.type === 'POST' && item.source.kind === 'CLUB';
+    case 'COACHES':
+      return item.type === 'POST' && item.source.kind === 'COACH';
+    case 'PLAYERS':
+      return item.type === 'PLAYER_POST';
+    case 'TOURNAMENTS':
+      return item.type === 'TOURNAMENT' || item.type === 'RESULT' || item.type === 'ACHIEVEMENT';
+    case 'FORUM':
+      return item.type === 'FORUM';
+  }
+}
+
+/**
  * Лента главной — ADR-073.
  *
  * Собирается на лету из своих таблиц за окно в 60 дней: на пилотной базе это
@@ -135,13 +185,24 @@ export class FeedService {
         : this.prisma.player.findUnique({ where: { userId }, select: { id: true, cityId: true } }),
     ]);
 
-    const candidates = (await this.candidates(now)).filter((c) => !c.item.hidden);
+    const candidates = (await this.candidates(now)).filter(
+      (c) => !c.item.hidden && matchesFilter(c.item, query.filter),
+    );
     const popular = popularPosts(
       candidates.filter((c) => c.item.type === 'PLAYER_POST').map((c) => c.item),
       now,
     );
+    const hot = hotTopics(
+      candidates.flatMap((c) =>
+        c.item.type === 'FORUM' ? [{ ...c.item, weekReplies: c.weekReplies ?? 0 }] : [],
+      ),
+    );
     const withPopular = candidates.map((c) =>
-      c.item.type === 'PLAYER_POST' ? { ...c, popular: popular.has(c.item.id) } : c,
+      c.item.type === 'PLAYER_POST'
+        ? { ...c, popular: popular.has(c.item.id) }
+        : c.item.type === 'FORUM'
+          ? { ...c, popular: hot.has(c.item.id) }
+          : c,
     );
 
     // «Для вас» не прячет общее, а поднимает своё: подписки, свой город и
@@ -150,9 +211,13 @@ export class FeedService {
     const lift = (c: Candidate) =>
       query.tab === 'FOR_YOU' && relevant(c, followed, me) ? RELEVANCE_HOURS * HOUR_MS : 0;
     // Закреплённое администратором — над всей лентой, в каждой вкладке,
-    // свежее закрепление выше (ADR-075).
+    // свежее закрепление выше (ADR-075). Под фильтром — только подходящее.
     const chosen = withPopular
-      .filter((c) => c.item.pinned || this.fits(c, query.tab, followed, me, userId !== undefined))
+      .filter(
+        (c) =>
+          c.item.pinned ||
+          this.fits(c, query.tab, query.filter, followed, me, userId !== undefined),
+      )
       .map((c) => ({
         item: c.item,
         rank: c.item.pinned
@@ -165,6 +230,7 @@ export class FeedService {
 
     return {
       tab: query.tab,
+      filter: query.filter ?? null,
       items: chosen.slice(start, start + query.limit),
       total: chosen.length,
       page: query.page,
@@ -186,6 +252,7 @@ export class FeedService {
       this.announced(since, now),
       this.results(since),
       this.levelUps(since),
+      this.forumTopics(since, now),
     ]);
     const all = batches.flat();
     const curations = await this.prisma.feedCuration.findMany({
@@ -228,6 +295,7 @@ export class FeedService {
 
     return {
       tab: 'ALL',
+      filter: null,
       items: chosen.slice(start, start + query.limit),
       total: chosen.length,
       page: query.page,
@@ -302,6 +370,7 @@ export class FeedService {
   private fits(
     candidate: Candidate,
     tab: FeedQuery['tab'],
+    filter: FeedFilter | undefined,
     followed: FollowedTargets,
     me: { id: string; cityId: string } | null,
     signedIn: boolean,
@@ -312,12 +381,20 @@ export class FeedService {
       candidate.coaches.some((id) => followed.coaches.has(id)) ||
       candidate.players.some((id) => followed.players.has(id));
 
+    const type = candidate.item.type;
+
+    // Без фильтра «Форум» темы форума только подмешиваются — самые
+    // обсуждаемые за неделю, в любой вкладке: лента главной та же (ADR-097).
+    if (type === 'FORUM' && filter !== 'FORUM' && candidate.popular !== true) return false;
+
     if (tab === 'FOLLOWING') return signedIn && follows;
 
     // Медаль и уровень — личное: подписчикам игрока и ему самому.
     if (candidate.personal === true) return tab === 'FOR_YOU' && (follows || mine);
 
-    const general = candidate.item.type !== 'PLAYER_POST' || candidate.popular === true;
+    // Записи игроков в общей ленте — только самые читаемые; в фильтре
+    // «Записи игроков» — все (ADR-097).
+    const general = type !== 'PLAYER_POST' || candidate.popular === true || filter === 'PLAYERS';
 
     // «Для вас» — всё общее и записи тех, на кого подписан; своё
     // поднимается выше при сортировке.
@@ -535,6 +612,113 @@ export class FeedService {
           clubs: [],
           coaches: [],
           players: portal || player === null ? [] : [player.id],
+        },
+      ];
+    });
+  }
+
+  /**
+   * Темы форума — ADR-097: все разделы, кроме новостей KTTF и записей игроков,
+   * с последним сообщением в окне. Видимость — как в списках форума: тема не
+   * скрыта модератором, не в архиве автора, раздел не в архиве. Темы новостей
+   * и акций клубов и тренеров не берутся: у них своя карточка `POST` с тем же
+   * обсуждением. Темы турниров, клубов, тренеров, инвентаря и дуэлей — да: их
+   * заводит первый ответ на странице предмета, это живой разговор.
+   */
+  private async forumTopics(since: Date, now: Date): Promise<Candidate[]> {
+    const rows = await this.prisma.forumTopic.findMany({
+      where: {
+        hiddenAt: null,
+        archivedAt: null,
+        lastPostAt: { gte: since },
+        section: {
+          archivedAt: null,
+          slug: { notIn: [FEED_PORTAL_SECTION, FEED_POSTS_SECTION] },
+        },
+        OR: [{ subjectType: null }, { subjectType: { notIn: [...OWN_CARD_SUBJECTS] } }],
+      },
+      orderBy: { lastPostAt: 'desc' },
+      take: PER_SOURCE,
+      select: {
+        id: true,
+        title: true,
+        createdAt: true,
+        lastPostAt: true,
+        postsCount: true,
+        viewsCount: true,
+        section: { select: { slug: true, title: true } },
+        posts: {
+          where: { number: 1 },
+          select: { id: true, body: true, likesCount: true, deletedAt: true, hiddenAt: true },
+        },
+        author: {
+          select: {
+            player: { select: { id: true, lastName: true, firstName: true, photoUrl: true } },
+          },
+        },
+      },
+    });
+    const replies =
+      rows.length === 0
+        ? []
+        : await this.prisma.forumPost.groupBy({
+            by: ['topicId'],
+            where: {
+              topicId: { in: rows.map((row) => row.id) },
+              number: { gt: 1 },
+              createdAt: { gte: new Date(now.getTime() - 7 * DAY_MS) },
+              deletedAt: null,
+              hiddenAt: null,
+            },
+            _count: { _all: true },
+          });
+    const weekReplies = new Map(replies.map((row) => [row.topicId, row._count._all]));
+
+    return rows.flatMap((row): Candidate[] => {
+      const first = row.posts[0];
+
+      // Первое сообщение стёрто или скрыто — показывать в карточке нечего.
+      if (first?.deletedAt !== null || first.hiddenAt !== null) return [];
+
+      const player = row.author?.player ?? null;
+      const source: FeedSource =
+        player === null
+          ? {
+              kind: 'KTTF',
+              id: null,
+              name: authorName(row.author) ?? 'KTTF',
+              imageUrl: null,
+              slug: null,
+            }
+          : playerSource(player);
+
+      return [
+        {
+          item: {
+            id: `forum:${row.id}`,
+            type: 'FORUM',
+            at: row.lastPostAt.toISOString(),
+            source,
+            discussion: {
+              topicId: row.id,
+              postId: first.id,
+              comments: Math.max(0, row.postsCount - 1),
+              likes: first.likesCount,
+              views: row.viewsCount,
+            },
+            pinned: false,
+            hidden: false,
+            section: { slug: row.section.slug, title: row.section.title },
+            title: row.title,
+            excerpt: excerpt(first.body),
+            isNew: row.createdAt >= since,
+          },
+          // Тема форума — не про место: свой город её не поднимает.
+          cityId: null,
+          clubs: [],
+          coaches: [],
+          players: player === null ? [] : [player.id],
+          weekReplies: weekReplies.get(row.id) ?? 0,
         },
       ];
     });
