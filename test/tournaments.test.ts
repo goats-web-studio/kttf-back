@@ -253,6 +253,30 @@ describe('календарь — ТЗ 9.2', () => {
     );
   });
 
+  it('несколько городов через запятую — любой из них (ADR-096)', async () => {
+    const other = '88888888-8888-4888-8888-888888888888';
+    const city = player.city.id;
+
+    const result = await call('GET', `/tournaments?cityId=${city},${other}`);
+
+    expect(result.status).toBe(200);
+    expect(JSON.stringify(prisma.tournament.findMany.mock.calls[0]?.[0])).toContain(
+      JSON.stringify({ club: { cityId: { in: [city, other] } } }),
+    );
+  });
+
+  it('больше 100 городов — 400', async () => {
+    const ids = Array.from(
+      { length: 101 },
+      (_, index) => `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+    );
+
+    expect(await call('GET', `/tournaments?cityId=${ids.join(',')}`)).toMatchObject({
+      status: 400,
+      body: { error: { code: 'VALIDATION_FAILED' } },
+    });
+  });
+
   it('карточка открыта без токена', async () => {
     expect((await call('GET', `/tournaments/${TOURNAMENT_ID}`)).status).toBe(200);
   });

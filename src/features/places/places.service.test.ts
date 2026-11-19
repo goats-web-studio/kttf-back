@@ -12,9 +12,19 @@ const country = {
   isActive: true,
 };
 
+const region = {
+  id: 'region-1',
+  countryId: 'country-1',
+  name: 'Карагандинская область',
+  nameKk: 'Қарағанды облысы',
+  sortOrder: 100,
+  isActive: true,
+};
+
 const city = {
   id: 'city-1',
   countryId: 'country-1',
+  regionId: null,
   name: 'Алматы',
   nameKk: null,
   sortOrder: 20,
@@ -28,6 +38,13 @@ function makePrisma() {
       findUnique: vi.fn().mockResolvedValue(country),
       create: vi.fn().mockResolvedValue(country),
       update: vi.fn().mockResolvedValue(country),
+    },
+    region: {
+      findMany: vi.fn().mockResolvedValue([region]),
+      findUnique: vi.fn().mockResolvedValue(region),
+      findFirst: vi.fn().mockResolvedValue(null),
+      create: vi.fn().mockResolvedValue(region),
+      update: vi.fn().mockResolvedValue(region),
     },
     city: {
       findMany: vi.fn().mockResolvedValue([city]),
@@ -54,6 +71,29 @@ describe('списки', () => {
     expect(prisma.city.findMany.mock.calls[0]?.[0]).toMatchObject({
       where: { isActive: true, country: { isActive: true } },
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+    });
+  });
+
+  it('области — только доступные, той же сортировкой (ADR-096)', async () => {
+    await service.listRegions({ countryId: 'country-1' });
+
+    expect(prisma.region.findMany.mock.calls[0]?.[0]).toMatchObject({
+      where: { countryId: 'country-1', isActive: true, country: { isActive: true } },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+    });
+  });
+
+  it('области у администратора — со скрытыми', async () => {
+    await service.listRegions({}, true);
+
+    expect(prisma.region.findMany.mock.calls[0]?.[0]).toMatchObject({ where: {} });
+  });
+
+  it('город отдаётся с областью', async () => {
+    await service.listCities({});
+
+    expect(prisma.city.findMany.mock.calls[0]?.[0]).toMatchObject({
+      select: { regionId: true },
     });
   });
 
@@ -119,6 +159,124 @@ describe('город', () => {
 
     expect(prisma.city.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: { isActive: false } }),
+    );
+  });
+});
+
+describe('область', () => {
+  it('заводится в существующей стране', async () => {
+    await service.createRegion({ countryId: 'country-1', name: 'Улытауская область' });
+
+    expect(prisma.region.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { countryId: 'country-1', name: 'Улытауская область' } }),
+    );
+  });
+
+  it('в несуществующую страну не заводится', async () => {
+    prisma.country.findUnique.mockResolvedValue(null);
+
+    await expect(
+      service.createRegion({ countryId: 'нет', name: 'Улытауская область' }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(prisma.region.create).not.toHaveBeenCalled();
+  });
+
+  it('дубликат в стране ищется без учёта регистра', async () => {
+    prisma.region.findFirst.mockResolvedValue({ id: 'region-2' });
+
+    await expect(
+      service.createRegion({ countryId: 'country-1', name: 'карагандинская область' }),
+    ).rejects.toMatchObject({ code: 'PLACE_ALREADY_EXISTS' });
+    expect(prisma.region.findFirst.mock.calls[0]?.[0]).toMatchObject({
+      where: {
+        countryId: 'country-1',
+        name: { equals: 'карагандинская область', mode: 'insensitive' },
+      },
+    });
+  });
+
+  it('переименование в занятое — PLACE_ALREADY_EXISTS', async () => {
+    prisma.region.findFirst.mockResolvedValue({ id: 'region-2' });
+
+    await expect(
+      service.updateRegion('region-1', { name: 'Абайская область' }),
+    ).rejects.toMatchObject({ code: 'PLACE_ALREADY_EXISTS' });
+    expect(prisma.region.update).not.toHaveBeenCalled();
+  });
+
+  it('скрывается правкой, смена регистра — не дубликат', async () => {
+    await service.updateRegion('region-1', { name: 'КАРАГАНДИНСКАЯ ОБЛАСТЬ', isActive: false });
+
+    expect(prisma.region.findFirst).not.toHaveBeenCalled();
+    expect(prisma.region.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'region-1' },
+        data: { name: 'КАРАГАНДИНСКАЯ ОБЛАСТЬ', isActive: false },
+      }),
+    );
+  });
+
+  it('несуществующая — NOT_FOUND', async () => {
+    prisma.region.findUnique.mockResolvedValue(null);
+
+    await expect(service.updateRegion('нет', { isActive: false })).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+  });
+});
+
+describe('город в области', () => {
+  it('заводится в область своей страны', async () => {
+    prisma.region.findFirst.mockResolvedValue({ id: 'region-1' });
+
+    await service.createCity({ countryId: 'country-1', regionId: 'region-1', name: 'Темиртау' });
+
+    expect(prisma.region.findFirst.mock.calls[0]?.[0]).toMatchObject({
+      where: { id: 'region-1', countryId: 'country-1' },
+    });
+    expect(prisma.city.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { countryId: 'country-1', regionId: 'region-1', name: 'Темиртау' },
+      }),
+    );
+  });
+
+  it('область другой страны или несуществующая — VALIDATION_FAILED', async () => {
+    await expect(
+      service.createCity({ countryId: 'country-1', regionId: 'region-uz', name: 'Темиртау' }),
+    ).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+      details: { fields: [{ path: 'regionId' }] },
+    });
+    expect(prisma.city.create).not.toHaveBeenCalled();
+  });
+
+  it('правкой переносится в область страны города', async () => {
+    prisma.region.findFirst.mockResolvedValue({ id: 'region-1' });
+
+    await service.updateCity('city-1', { regionId: 'region-1' });
+
+    expect(prisma.region.findFirst.mock.calls[0]?.[0]).toMatchObject({
+      where: { id: 'region-1', countryId: 'country-1' },
+    });
+    expect(prisma.city.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { regionId: 'region-1' } }),
+    );
+  });
+
+  it('правкой в область чужой страны не переносится', async () => {
+    await expect(service.updateCity('city-1', { regionId: 'region-uz' })).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+    });
+    expect(prisma.city.update).not.toHaveBeenCalled();
+  });
+
+  it('null выводит из области без проверки', async () => {
+    await service.updateCity('city-1', { regionId: null });
+
+    expect(prisma.region.findFirst).not.toHaveBeenCalled();
+    expect(prisma.city.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { regionId: null } }),
     );
   });
 });

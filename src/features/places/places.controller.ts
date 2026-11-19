@@ -2,16 +2,23 @@ import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common
 import {
   createCitySchema,
   createCountrySchema,
+  createRegionSchema,
   listCitiesSchema,
+  listRegionsSchema,
   updateCitySchema,
   updateCountrySchema,
+  updateRegionSchema,
   type CityView,
   type CountryView,
   type CreateCityInput,
   type CreateCountryInput,
+  type CreateRegionInput,
   type ListCitiesQuery,
+  type ListRegionsQuery,
+  type RegionView,
   type UpdateCityInput,
   type UpdateCountryInput,
+  type UpdateRegionInput,
 } from '@kttf/shared/types';
 import { z } from 'zod';
 
@@ -34,6 +41,14 @@ export class PlacesController {
   @Get('countries')
   async countries(): Promise<CountryView[]> {
     return this.places.listCountries();
+  }
+
+  /** Области — ADR-096: фильтры выбирают область целиком. */
+  @Get('regions')
+  async regions(
+    @Query(new ZodValidationPipe(listRegionsSchema)) query: ListRegionsQuery,
+  ): Promise<RegionView[]> {
+    return this.places.listRegions(query);
   }
 
   @Get('cities')
@@ -68,6 +83,28 @@ export class PlacesAdminController {
     @Body(new ZodValidationPipe(updateCountrySchema)) body: UpdateCountryInput,
   ): Promise<CountryView> {
     return this.places.updateCountry(id, body);
+  }
+
+  @Get('regions')
+  async regions(
+    @Query(new ZodValidationPipe(listRegionsSchema)) query: ListRegionsQuery,
+  ): Promise<RegionView[]> {
+    return this.places.listRegions(query, true);
+  }
+
+  @Post('regions')
+  async createRegion(
+    @Body(new ZodValidationPipe(createRegionSchema)) body: CreateRegionInput,
+  ): Promise<RegionView> {
+    return this.places.createRegion(body);
+  }
+
+  @Patch('regions/:id')
+  async updateRegion(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @Body(new ZodValidationPipe(updateRegionSchema)) body: UpdateRegionInput,
+  ): Promise<RegionView> {
+    return this.places.updateRegion(id, body);
   }
 
   @Get('cities')

@@ -133,7 +133,8 @@ export class DuelsService {
 
     const viewer = await this.viewer(userId);
     const filters: Prisma.DuelWhereInput = {
-      ...(query.cityId === undefined ? {} : { cityId: query.cityId }),
+      // Несколько городов — любой из них; область раскрывает клиент (ADR-096).
+      ...(query.cityId === undefined ? {} : { cityId: { in: query.cityId } }),
       ...(query.clubId === undefined ? {} : { clubId: query.clubId }),
       ...(query.kind === undefined ? {} : { kind: query.kind }),
       ...(query.rated === undefined ? {} : { rated: query.rated }),

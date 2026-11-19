@@ -255,13 +255,34 @@ model Country {
   sortOrder Int     @default(100)
   isActive  Boolean @default(true)
 
+  regions Region[]
+  cities  City[]
+}
+
+// ADR-096. Область: Астана, Алматы и Шымкент — города республиканского
+// значения, в области не входят, поэтому город без области — норма.
+// Область и её города — одной страны. Скрывается, а не удаляется, как город.
+model Region {
+  id        String  @id @default(uuid())
+  countryId String
+  country   Country @relation(fields: [countryId], references: [id])
+  name      String
+  nameKk    String?
+  sortOrder Int     @default(100)
+  isActive  Boolean @default(true)
+
   cities City[]
+
+  @@unique([countryId, name])
 }
 
 model City {
   id        String  @id @default(uuid())
   countryId String
   country   Country @relation(fields: [countryId], references: [id])
+  // Область — ADR-096. Пусто у городов республиканского значения.
+  regionId  String?
+  region    Region? @relation(fields: [regionId], references: [id], onDelete: Restrict)
   name      String
   nameKk    String?
   // Столицы впереди, остальное по алфавиту: порядок задаёт администратор.
@@ -277,7 +298,10 @@ model City {
   coaches Coach[]
   duels   Duel[]
 
+  clubApplications ClubApplication[]
+
   @@unique([countryId, name])
+  @@index([regionId])
 }
 
 // ============ Клубы ============
@@ -522,9 +546,13 @@ model ClubApplication {
   // Телефон или email как написал человек: формат не навязывается.
   contact     String
   clubName    String
-  // Строкой, не ссылкой на справочник: заявки приходят и из городов,
-  // которых в справочнике ещё нет.
+  // Строкой обязательно: заявки приходят и из городов, которых
+  // в справочнике ещё нет (ADR-047).
   city        String
+  // Город, выбранный из справочника, — ADR-096: по нему «Создать клуб»
+  // подставляет город. Пусто, если город вписан руками.
+  cityId      String?
+  cityRef     City?                 @relation(fields: [cityId], references: [id], onDelete: SetNull)
   address     String?
   tableCount  Int?
   tournaments String?

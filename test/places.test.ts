@@ -30,6 +30,7 @@ const env: Env = {
 const USER_ID = '22222222-2222-4222-8222-222222222222';
 const COUNTRY_ID = '66666666-6666-4666-8666-666666666666';
 const CITY_ID = '55555555-5555-4555-8555-555555555555';
+const REGION_ID = '77777777-7777-4777-8777-777777777777';
 
 const country = {
   id: COUNTRY_ID,
@@ -40,9 +41,19 @@ const country = {
   isActive: true,
 };
 
+const region = {
+  id: REGION_ID,
+  countryId: COUNTRY_ID,
+  name: 'Карагандинская область',
+  nameKk: 'Қарағанды облысы',
+  sortOrder: 100,
+  isActive: true,
+};
+
 const city = {
   id: CITY_ID,
   countryId: COUNTRY_ID,
+  regionId: null,
   name: 'Алматы',
   nameKk: null,
   sortOrder: 20,
@@ -57,6 +68,13 @@ function makePrisma() {
       findUnique: vi.fn().mockResolvedValue(null),
       create: vi.fn().mockResolvedValue(country),
       update: vi.fn().mockResolvedValue(country),
+    },
+    region: {
+      findMany: vi.fn().mockResolvedValue([region]),
+      findUnique: vi.fn().mockResolvedValue(region),
+      findFirst: vi.fn().mockResolvedValue(null),
+      create: vi.fn().mockResolvedValue(region),
+      update: vi.fn().mockResolvedValue(region),
     },
     city: {
       findMany: vi.fn().mockResolvedValue([city]),
@@ -126,6 +144,23 @@ describe('справочник для выбора', () => {
     expect(await call('GET', '/cities')).toMatchObject({ status: 200, body: [city] });
   });
 
+  it('области открыты без токена, скрытые не попадают (ADR-096)', async () => {
+    expect(await call('GET', `/regions?countryId=${COUNTRY_ID}`)).toMatchObject({
+      status: 200,
+      body: [region],
+    });
+    expect(prisma.region.findMany.mock.calls[0]?.[0]).toMatchObject({
+      where: { countryId: COUNTRY_ID, isActive: true, country: { isActive: true } },
+    });
+  });
+
+  it('кривая страна в фильтре областей — 400', async () => {
+    expect(await call('GET', '/regions?countryId=kz')).toMatchObject({
+      status: 400,
+      body: { error: { code: 'VALIDATION_FAILED' } },
+    });
+  });
+
   it('скрытое в открытый список не попадает', async () => {
     await call('GET', `/cities?countryId=${COUNTRY_ID}`);
 
@@ -140,6 +175,9 @@ describe('ведение справочника', () => {
     ['GET', '/admin/countries', undefined],
     ['POST', '/admin/countries', { code: 'UZ', name: 'Узбекистан' }],
     ['PATCH', `/admin/countries/${COUNTRY_ID}`, { isActive: false }],
+    ['GET', '/admin/regions', undefined],
+    ['POST', '/admin/regions', { countryId: COUNTRY_ID, name: 'Улытауская область' }],
+    ['PATCH', `/admin/regions/${REGION_ID}`, { isActive: false }],
     ['GET', '/admin/cities', undefined],
     ['POST', '/admin/cities', { countryId: COUNTRY_ID, name: 'Каскелен' }],
     ['PATCH', `/admin/cities/${CITY_ID}`, { name: 'Алма-Ата' }],
@@ -156,6 +194,8 @@ describe('ведение справочника', () => {
     });
     expect(prisma.country.create).not.toHaveBeenCalled();
     expect(prisma.city.update).not.toHaveBeenCalled();
+    expect(prisma.region.create).not.toHaveBeenCalled();
+    expect(prisma.region.update).not.toHaveBeenCalled();
   });
 
   it('администратор видит и скрытое', async () => {
@@ -194,6 +234,112 @@ describe('ведение справочника', () => {
       status: 409,
       body: { error: { code: 'PLACE_ALREADY_EXISTS' } },
     });
+  });
+
+  it('администратор видит скрытые области', async () => {
+    asAdmin();
+
+    expect((await call('GET', '/admin/regions', { auth: true })).status).toBe(200);
+    expect(prisma.region.findMany.mock.calls[0]?.[0]).toMatchObject({ where: {} });
+  });
+
+  it('администратор заводит область', async () => {
+    asAdmin();
+    prisma.country.findUnique.mockResolvedValue(country);
+
+    const result = await call('POST', '/admin/regions', {
+      body: { countryId: COUNTRY_ID, name: 'Улытауская область', nameKk: 'Ұлытау облысы' },
+      auth: true,
+    });
+
+    expect(result).toMatchObject({ status: 201, body: region });
+    expect(prisma.region.create).toHaveBeenCalledWith({
+      data: { countryId: COUNTRY_ID, name: 'Улытауская область', nameKk: 'Ұлытау облысы' },
+      select: expect.any(Object) as unknown,
+    });
+  });
+
+  it('область-дубликат — 409', async () => {
+    asAdmin();
+    prisma.country.findUnique.mockResolvedValue(country);
+    prisma.region.findFirst.mockResolvedValue({ id: REGION_ID });
+
+    const result = await call('POST', '/admin/regions', {
+      body: { countryId: COUNTRY_ID, name: 'карагандинская область' },
+      auth: true,
+    });
+
+    expect(result).toMatchObject({
+      status: 409,
+      body: { error: { code: 'PLACE_ALREADY_EXISTS' } },
+    });
+    expect(prisma.region.create).not.toHaveBeenCalled();
+  });
+
+  it('администратор скрывает область', async () => {
+    asAdmin();
+
+    const result = await call('PATCH', `/admin/regions/${REGION_ID}`, {
+      body: { isActive: false },
+      auth: true,
+    });
+
+    expect(result.status).toBe(200);
+    expect(prisma.region.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: REGION_ID }, data: { isActive: false } }),
+    );
+  });
+
+  it('несуществующая область — 404', async () => {
+    asAdmin();
+    prisma.region.findUnique.mockResolvedValue(null);
+
+    expect(
+      await call('PATCH', `/admin/regions/${REGION_ID}`, { body: { isActive: false }, auth: true }),
+    ).toMatchObject({ status: 404, body: { error: { code: 'NOT_FOUND' } } });
+  });
+
+  it('город в область чужой страны — 400 по полю regionId', async () => {
+    asAdmin();
+    prisma.country.findUnique.mockResolvedValue(country);
+
+    const result = await call('POST', '/admin/cities', {
+      body: { countryId: COUNTRY_ID, regionId: REGION_ID, name: 'Темиртау' },
+      auth: true,
+    });
+
+    expect(result).toMatchObject({
+      status: 400,
+      body: { error: { code: 'VALIDATION_FAILED', details: { fields: [{ path: 'regionId' }] } } },
+    });
+    expect(prisma.region.findFirst.mock.calls[0]?.[0]).toMatchObject({
+      where: { id: REGION_ID, countryId: COUNTRY_ID },
+    });
+    expect(prisma.city.create).not.toHaveBeenCalled();
+  });
+
+  it('город ставится в область и выводится из неё', async () => {
+    asAdmin();
+    prisma.region.findFirst.mockResolvedValue({ id: REGION_ID });
+    prisma.city.update.mockResolvedValue({ ...city, regionId: REGION_ID });
+
+    const placed = await call('PATCH', `/admin/cities/${CITY_ID}`, {
+      body: { regionId: REGION_ID },
+      auth: true,
+    });
+
+    expect(placed).toMatchObject({ status: 200, body: { regionId: REGION_ID } });
+
+    prisma.city.update.mockResolvedValue(city);
+    const cleared = await call('PATCH', `/admin/cities/${CITY_ID}`, {
+      body: { regionId: null },
+      auth: true,
+    });
+
+    expect(cleared).toMatchObject({ status: 200, body: { regionId: null } });
+    expect(prisma.city.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({ data: { regionId: null } }),
+    );
   });
 
   it('удаления нет', async () => {

@@ -13,6 +13,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { pageOf, skipOf } from '../../common/pagination.js';
 import { ENV, type Env } from '../../infra/config/env.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
+import { PlacesService } from '../places/places.service.js';
 
 /** Заявок с одного адреса за час — больше живой человек не пишет. */
 export const APPLICATIONS_PER_HOUR = 5;
@@ -24,6 +25,7 @@ const fields = {
   contact: true,
   clubName: true,
   city: true,
+  cityId: true,
   address: true,
   tableCount: true,
   tournaments: true,
@@ -52,6 +54,7 @@ type Row = Omit<ClubApplicationView, 'createdAt' | 'handledAt'> & {
 export class ClubApplicationsService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly places: PlacesService,
     @Inject(ENV) private readonly env: Env,
   ) {}
 
@@ -75,12 +78,18 @@ export class ClubApplicationsService {
       throw new AppError(ERROR_CODES.RATE_LIMITED, 'too many club applications from one address');
     }
 
+    // Город из справочника — ADR-096: ссылка только на доступный город,
+    // иначе «Создать клуб» подставил бы скрытый. Строка `city` остаётся
+    // как прислали: её читает администратор.
+    await this.places.assertCityAvailable(input.cityId);
+
     await this.prisma.clubApplication.create({
       data: {
         name: input.name,
         contact: input.contact,
         clubName: input.clubName,
         city: input.city,
+        cityId: input.cityId ?? null,
         address: input.address ?? null,
         tableCount: input.tableCount ?? null,
         tournaments: input.tournaments ?? null,

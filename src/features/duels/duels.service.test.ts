@@ -1538,3 +1538,28 @@ describe('напоминание за 3 часа', () => {
     expect(notified()).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------- доска (ADR-096)
+
+describe('доска — фильтр по городам', () => {
+  const OTHER_CITY = '40000000-0000-4000-8000-000000000003';
+
+  it('несколько городов — любой из них: область раскрыта клиентом', async () => {
+    await service.list(
+      { page: 1, limit: 20, scope: 'open', cityId: [CITY, OTHER_CITY] },
+      undefined,
+      NOW,
+    );
+
+    const args = prisma.duel.findMany.mock.calls.at(-1)?.[0] as { where: Row };
+    expect(args.where).toMatchObject({ cityId: { in: [CITY, OTHER_CITY] }, status: 'OPEN' });
+    expect(prisma.duel.count).toHaveBeenLastCalledWith({ where: args.where });
+  });
+
+  it('без городов — условия по городу нет', async () => {
+    await service.list({ page: 1, limit: 20, scope: 'recent' }, undefined, NOW);
+
+    const args = prisma.duel.findMany.mock.calls.at(-1)?.[0] as { where: Row };
+    expect(args.where).not.toHaveProperty('cityId');
+  });
+});

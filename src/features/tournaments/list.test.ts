@@ -83,6 +83,32 @@ describe('список турниров по статусу', () => {
   });
 });
 
+/** Фильтр по городам: область раскрывается в свои города на клиенте — ADR-096. */
+describe('список турниров по городам', () => {
+  const ALMATY = '00000000-0000-4000-8000-0000000000d1';
+  const KASKELEN = '00000000-0000-4000-8000-0000000000d2';
+
+  it('несколько городов — клуб-организатор в любом из них', async () => {
+    const { service, tournament } = makeService();
+
+    await service.list({ page: 1, limit: 20, order: 'asc', cityId: [ALMATY, KASKELEN] });
+
+    const where = tournament.findMany.mock.calls[0]?.[0].where;
+    expect(where?.AND).toContainEqual({ club: { cityId: { in: [ALMATY, KASKELEN] } } });
+    expect(tournament.count.mock.calls[0]?.[0]).toEqual({ where });
+  });
+
+  it('один город — тот же список из одного', async () => {
+    const { service, tournament } = makeService();
+
+    await service.list({ page: 1, limit: 20, order: 'asc', cityId: [ALMATY] });
+
+    expect(tournament.findMany.mock.calls[0]?.[0].where.AND).toContainEqual({
+      club: { cityId: { in: [ALMATY] } },
+    });
+  });
+});
+
 /** Календарь и список как у RTTF — ADR-052. */
 describe('список турниров: порядок, средний рейтинг, игры', () => {
   it('прошедшие — от свежих: порядок задаёт запрос, при равной дате — по id', async () => {

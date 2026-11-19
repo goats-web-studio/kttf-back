@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Env } from '../../infra/config/env.js';
 import type { PrismaService } from '../../infra/prisma/prisma.service.js';
+import { PlacesService } from '../places/places.service.js';
 import { APPLICATIONS_PER_HOUR, ClubApplicationsService } from './club-applications.service.js';
 import { clientIp } from '../../common/client-ip.js';
 
@@ -12,9 +13,12 @@ const INPUT = {
   city: 'Караганда',
 };
 
+const CITY_ID = '00000000-0000-4000-8000-0000000000c1';
+
 const row = {
   id: '00000000-0000-4000-8000-000000000001',
   ...INPUT,
+  cityId: null,
   address: null,
   tableCount: 6,
   tournaments: null,
@@ -34,6 +38,8 @@ function makePrisma() {
       findUnique: vi.fn().mockResolvedValue({ id: row.id }),
       update: vi.fn().mockResolvedValue(row),
     },
+    // Сверка города заявки со справочником (ADR-096).
+    city: { findFirst: vi.fn().mockResolvedValue({ id: CITY_ID }) },
   };
 }
 
@@ -54,7 +60,8 @@ let service: ClubApplicationsService;
 
 beforeEach(() => {
   prisma = makePrisma();
-  service = new ClubApplicationsService(prisma as unknown as PrismaService, env);
+  const db = prisma as unknown as PrismaService;
+  service = new ClubApplicationsService(db, new PlacesService(db), env);
 });
 
 describe('приём заявки', () => {
@@ -64,6 +71,35 @@ describe('приём заявки', () => {
     expect(prisma.clubApplication.create.mock.calls[0]?.[0]).toMatchObject({
       data: { ...INPUT, tableCount: 6, address: null, userId: 'user-1' },
     });
+  });
+
+  it('город строкой без ссылки — cityId пустой, справочник не трогается', async () => {
+    await service.create(INPUT, undefined, '10.0.0.1');
+
+    expect(prisma.clubApplication.create.mock.calls[0]?.[0]).toMatchObject({
+      data: { city: 'Караганда', cityId: null },
+    });
+    expect(prisma.city.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('город из справочника — сохраняется и ссылкой (ADR-096)', async () => {
+    await service.create({ ...INPUT, cityId: CITY_ID }, undefined, '10.0.0.1');
+
+    expect(prisma.city.findFirst.mock.calls[0]?.[0]).toMatchObject({
+      where: { id: CITY_ID, isActive: true, country: { isActive: true } },
+    });
+    expect(prisma.clubApplication.create.mock.calls[0]?.[0]).toMatchObject({
+      data: { city: 'Караганда', cityId: CITY_ID },
+    });
+  });
+
+  it('неизвестный или скрытый город — CITY_UNAVAILABLE, заявка не сохраняется', async () => {
+    prisma.city.findFirst.mockResolvedValue(null);
+
+    await expect(
+      service.create({ ...INPUT, cityId: CITY_ID }, undefined, '10.0.0.1'),
+    ).rejects.toMatchObject({ code: 'CITY_UNAVAILABLE' });
+    expect(prisma.clubApplication.create).not.toHaveBeenCalled();
   });
 
   it('адрес не хранится — только ключевой хэш', async () => {
@@ -109,12 +145,16 @@ describe('разбор у администратора', () => {
     const page = await service.list({ page: 2, limit: 10, status: 'NEW' });
 
     expect(prisma.clubApplication.findMany.mock.calls[0]?.[0]).toMatchObject({
+      select: { city: true, cityId: true },
+    });
+    expect(prisma.clubApplication.findMany.mock.calls[0]?.[0]).toMatchObject({
       where: { status: 'NEW' },
       orderBy: { createdAt: 'desc' },
       skip: 10,
       take: 10,
     });
     expect(page.items[0]?.createdAt).toBe('2026-10-18T10:00:00.000Z');
+    expect(page.items[0]?.cityId).toBeNull();
   });
 
   it('обработано — с отметкой времени, вернули в новые — без неё', async () => {
