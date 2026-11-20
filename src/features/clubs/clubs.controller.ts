@@ -16,8 +16,8 @@ import {
   addMemberSchema,
   clubEventSchema,
   clubStatsQuerySchema,
-  createClubSchema,
   listClubsSchema,
+  newClubSchema,
   setClubHiddenSchema,
   setClubHoursSchema,
   setClubPricesSchema,
@@ -83,13 +83,14 @@ export class ClubsController {
 
   /**
    * Клуб заводит администратор платформы по заявке «Напишите нам» — ADR-049.
-   * Заведший становится владельцем и передаёт клуб представителю зала
+   * С `applicationId` владелец — подавший заявку, если подавал вошедшим
+   * (ADR-100); иначе — сам заведший, и он передаёт клуб представителю зала
    * через состав (`POST /clubs/:id/members`).
    */
   @Post()
   @RequireAdmin()
   async create(
-    @Body(new ZodValidationPipe(createClubSchema)) body: CreateClubInput,
+    @Body(new ZodValidationPipe(newClubSchema)) body: CreateClubInput,
     @CurrentUserId() userId: string,
   ): Promise<ClubView> {
     return this.clubs.create(body, userId);

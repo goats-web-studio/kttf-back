@@ -222,6 +222,71 @@ describe('создание клуба', () => {
   });
 });
 
+describe('клуб из заявки — ADR-100', () => {
+  function withApplication(userId: string | null, handled = 1) {
+    return Object.assign(prisma, {
+      clubApplication: {
+        updateMany: vi.fn().mockResolvedValue({ count: handled }),
+        findUnique: vi.fn().mockResolvedValue({ id: 'app-1' }),
+        findUniqueOrThrow: vi.fn().mockResolvedValue({ userId }),
+      },
+    });
+  }
+
+  it('владелец — подавший заявку, а не администратор, который её разобрал', async () => {
+    withApplication('applicant-1');
+
+    await service.create({ name: 'Winners', cityId: 'city-1', applicationId: 'app-1' }, 'admin-1');
+
+    expect(prisma.clubMember.create).toHaveBeenCalledOnce();
+    expect(prisma.clubMember.create).toHaveBeenCalledWith({
+      data: { clubId: 'club-1', userId: 'applicant-1', role: 'OWNER' },
+    });
+  });
+
+  it('анонимная заявка — владелец администратор: передаст клуб через состав', async () => {
+    withApplication(null);
+
+    await service.create({ name: 'Winners', cityId: 'city-1', applicationId: 'app-1' }, 'admin-1');
+
+    expect(prisma.clubMember.create).toHaveBeenCalledWith({
+      data: { clubId: 'club-1', userId: 'admin-1', role: 'OWNER' },
+    });
+  });
+
+  it('заявка отмечается обработанной в той же транзакции, номер заявки в клуб не пишется', async () => {
+    const db = withApplication('applicant-1');
+
+    await service.create({ name: 'Winners', cityId: 'city-1', applicationId: 'app-1' }, 'admin-1');
+
+    expect(db.clubApplication.updateMany).toHaveBeenCalledWith({
+      where: { id: 'app-1', status: 'NEW' },
+      data: { status: 'DONE', handledAt: expect.any(Date) as Date },
+    });
+    expect(prisma.$transaction).toHaveBeenCalledOnce();
+    const data = (prisma.club.create.mock.calls[0]?.[0] as { data: object }).data;
+    expect(data).not.toHaveProperty('applicationId');
+  });
+
+  it('уже обработанная заявка — отказ, второй клуб не заводится', async () => {
+    withApplication('applicant-1', 0);
+
+    await expect(
+      service.create({ name: 'Winners', cityId: 'city-1', applicationId: 'app-1' }, 'admin-1'),
+    ).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    expect(prisma.club.create).not.toHaveBeenCalled();
+  });
+
+  it('несуществующая заявка — NOT_FOUND', async () => {
+    const db = withApplication('applicant-1', 0);
+    db.clubApplication.findUnique.mockResolvedValue(null);
+
+    await expect(
+      service.create({ name: 'Winners', cityId: 'city-1', applicationId: 'app-9' }, 'admin-1'),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+});
+
 describe('изменение клуба', () => {
   it('несуществующий клуб — NOT_FOUND, а не отказ базы', async () => {
     prisma.club.findUnique.mockResolvedValue(null);

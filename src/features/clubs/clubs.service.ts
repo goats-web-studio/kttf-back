@@ -151,16 +151,52 @@ export class ClubsService {
   /**
    * Создание клуба.
    *
-   * Создатель сразу становится владельцем: иначе клуб появляется без единого
-   * человека, который может им управлять, и назначить владельца некому. Кто
-   * вправе создавать клуб, ТЗ не оговаривает — сейчас это любой пользователь
-   * с подтверждённым телефоном. Записано как ОВ-13.
+   * У клуба сразу есть владелец: иначе он появляется без единого человека,
+   * который может им управлять, и назначить владельца некому.
+   *
+   * Клуб из заявки (ADR-100) отдаётся тому, кто её подал, если подавал он
+   * вошедшим: заводит администратор, а клуб — не его. Анонимная заявка или
+   * клуб без заявки — владелец заведший, он передаст клуб через состав.
+   * Заявка отмечается обработанной той же транзакцией: второе нажатие
+   * «Создать клуб» второго клуба не заводит.
    */
-  async create(input: CreateClubInput, ownerId: string): Promise<ClubView> {
-    await this.places.assertCityAvailable(input.cityId);
+  async create(input: CreateClubInput, actorId: string): Promise<ClubView> {
+    const { applicationId, ...fields } = input;
+
+    await this.places.assertCityAvailable(fields.cityId);
 
     const club = await this.prisma.$transaction(async (tx) => {
-      const created = await tx.club.create({ data: defined(input), select: clubFields });
+      let ownerId = actorId;
+
+      if (applicationId !== undefined) {
+        // Условие на статус: два администратора разбирают одну заявку разом.
+        const handled = await tx.clubApplication.updateMany({
+          where: { id: applicationId, status: 'NEW' },
+          data: { status: 'DONE', handledAt: new Date() },
+        });
+
+        if (handled.count === 0) {
+          const exists = await tx.clubApplication.findUnique({
+            where: { id: applicationId },
+            select: { id: true },
+          });
+
+          throw exists === null
+            ? new AppError(ERROR_CODES.NOT_FOUND, 'Club application not found', { applicationId })
+            : new AppError(ERROR_CODES.VALIDATION_FAILED, 'Club application is already handled', {
+                applicationId,
+              });
+        }
+
+        const application = await tx.clubApplication.findUniqueOrThrow({
+          where: { id: applicationId },
+          select: { userId: true },
+        });
+
+        ownerId = application.userId ?? actorId;
+      }
+
+      const created = await tx.club.create({ data: defined(fields), select: clubFields });
 
       await tx.clubMember.create({
         data: { clubId: created.id, userId: ownerId, role: 'OWNER' },
