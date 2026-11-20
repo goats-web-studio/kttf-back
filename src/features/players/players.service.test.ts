@@ -276,6 +276,11 @@ describe('список игроков', () => {
 });
 
 describe('создание игрока', () => {
+  beforeEach(() => {
+    // Тёзок нет: проверка дублей — отдельный блок ниже (ADR-100).
+    prisma.player.findMany.mockResolvedValue([]);
+  });
+
   it('первый профиль привязывается к вошедшему — регистрация по ТЗ 2.2', async () => {
     prisma.player.findUnique.mockResolvedValue(null);
 
@@ -402,6 +407,85 @@ describe('создание игрока', () => {
       },
     );
     expect(prisma.player.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('дубль чужого профиля — ADR-100', () => {
+  const namesake = {
+    id: 'player-7',
+    lastName: 'Халилов',
+    firstName: 'Родион',
+    birthYear: 2002,
+    rating: { toString: () => '900.00', valueOf: () => 900 },
+  };
+
+  beforeEach(() => {
+    prisma.player.findUnique.mockResolvedValue({ id: 'player-1' });
+    prisma.clubMember.findUnique.mockResolvedValue({ role: 'ORGANIZER' });
+  });
+
+  const someoneElse = {
+    ...newcomer,
+    lastName: ' халилов ',
+    firstName: 'РОДИОН',
+    birthYear: 2002,
+    clubId: 'club-1',
+    startRating: 900,
+  };
+
+  it('тёзка с тем же годом — отказ со списком найденных, профиль не заводится', async () => {
+    prisma.player.findMany.mockResolvedValue([namesake]);
+
+    await expect(service.create(someoneElse, 'user-1')).rejects.toMatchObject({
+      code: 'PLAYER_DUPLICATE',
+      details: {
+        players: [
+          {
+            id: 'player-7',
+            lastName: 'Халилов',
+            firstName: 'Родион',
+            birthYear: 2002,
+            rating: 900,
+          },
+        ],
+      },
+    });
+    expect(prisma.player.create).not.toHaveBeenCalled();
+  });
+
+  it('сравнение без регистра и пробелов по краям, только среди живых', async () => {
+    prisma.player.findMany.mockResolvedValue([]);
+
+    await service.create(someoneElse, 'user-1');
+
+    expect(prisma.player.findMany.mock.calls[0]?.[0]).toMatchObject({
+      where: {
+        deletedAt: null,
+        lastName: { equals: 'халилов', mode: 'insensitive' },
+        firstName: { equals: 'РОДИОН', mode: 'insensitive' },
+        birthYear: 2002,
+      },
+    });
+  });
+
+  it('allowDuplicate — тёзку всё-таки заводят, флаг в базу не уходит', async () => {
+    prisma.player.findMany.mockResolvedValue([namesake]);
+
+    await service.create({ ...someoneElse, allowDuplicate: true }, 'user-1');
+
+    expect(prisma.player.create).toHaveBeenCalledOnce();
+    expect((prisma.player.create.mock.calls[0]?.[0] as { data: object }).data).not.toHaveProperty(
+      'allowDuplicate',
+    );
+  });
+
+  it('своя анкета тёзок не проверяет: человек заводит себя', async () => {
+    prisma.player.findUnique.mockResolvedValue(null);
+    prisma.player.findMany.mockResolvedValue([namesake]);
+
+    await service.create(newcomer, 'user-1');
+
+    expect(prisma.player.create).toHaveBeenCalledOnce();
   });
 });
 
@@ -948,6 +1032,11 @@ describe('кому виден тренер — ADR-066', () => {
 });
 
 describe('подтверждение анкеты — ADR-072', () => {
+  beforeEach(() => {
+    // Тёзок с игровым профилем нет: этот случай — отдельный блок (ADR-100).
+    prisma.player.findMany.mockResolvedValue([]);
+  });
+
   it('организатор задаёт рейтинг событием INITIAL от общего старта', async () => {
     prisma.clubMember.findUnique.mockResolvedValue({ role: 'ORGANIZER' });
 
@@ -987,6 +1076,61 @@ describe('подтверждение анкеты — ADR-072', () => {
       service.confirm('player-1', { clubId: 'club-1', startRating: 425 }, 'user-1'),
     ).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
     expect(prisma.ratingEvent.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('анкета того, у кого профиль уже есть — ADR-100', () => {
+  const rated = {
+    id: 'player-7',
+    lastName: 'Двойнов',
+    firstName: 'Иван',
+    birthYear: 2000,
+    rating: { toString: () => '600.00', valueOf: () => 600 },
+    confirmedAt: new Date('2026-11-20T10:00:00.000Z'),
+  };
+
+  beforeEach(() => {
+    prisma.clubMember.findUnique.mockResolvedValue({ role: 'ORGANIZER' });
+    prisma.player.findUnique.mockResolvedValue({
+      lastName: 'Двойнов',
+      firstName: 'Иван',
+      birthYear: 2000,
+    });
+  });
+
+  it('подтверждение отказывает и называет профиль: второй рейтинг одному человеку не даётся', async () => {
+    prisma.player.findMany.mockResolvedValue([rated]);
+
+    await expect(
+      service.confirm('sheet-1', { clubId: 'club-1', startRating: 600 }, 'user-1'),
+    ).rejects.toMatchObject({
+      code: 'PLAYER_DUPLICATE',
+      details: { players: [{ id: 'player-7', confirmed: true, rating: 600 }] },
+    });
+    expect(prisma.player.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('ищутся только игровые профили и не сама анкета', async () => {
+    prisma.player.findMany.mockResolvedValue([]);
+
+    await service.confirm('sheet-1', { clubId: 'club-1', startRating: 600 }, 'user-1');
+
+    expect(prisma.player.findMany.mock.calls[0]?.[0]).toMatchObject({
+      where: { id: { not: 'sheet-1' }, confirmedAt: { not: null }, birthYear: 2000 },
+    });
+  });
+
+  it('allowDuplicate — другой человек, анкета подтверждается', async () => {
+    prisma.player.findMany.mockResolvedValue([rated]);
+
+    await service.confirm(
+      'sheet-1',
+      { clubId: 'club-1', startRating: 600, allowDuplicate: true },
+      'user-1',
+    );
+
+    expect(prisma.player.findMany).not.toHaveBeenCalled();
+    expect(prisma.player.updateMany).toHaveBeenCalledOnce();
   });
 });
 

@@ -443,7 +443,7 @@ export class PlayersService {
    * обязателен (ADR-062).
    */
   async create(input: CreatePlayerInput, actorId: string): Promise<PlayerProfileView> {
-    const { startRating, ...profile } = input;
+    const { startRating, allowDuplicate, ...profile } = input;
 
     await this.places.assertCityAvailable(profile.cityId);
     await this.assertClubExists(profile.clubId);
@@ -473,6 +473,8 @@ export class PlayersService {
           field: 'startRating',
         });
       }
+
+      if (allowDuplicate !== true) await this.assertNoNamesake(profile);
     }
 
     // Тренер из анкеты открывает период истории — той же транзакцией (ADR-059).
@@ -532,6 +534,18 @@ export class PlayersService {
     actorId: string,
   ): Promise<PlayerProfileView> {
     await this.assertClubStaff(input.clubId, actorId);
+
+    // Анкета того, у кого игровой профиль уже есть (ADR-100): подтверждение
+    // дало бы человеку второй рейтинг и вторую запись на тот же турнир.
+    // Правильный путь — человек привязывается к профилю, анкета вольётся сама.
+    if (input.allowDuplicate !== true) {
+      const sheet = await this.prisma.player.findUnique({
+        where: { id },
+        select: { lastName: true, firstName: true, birthYear: true },
+      });
+
+      if (sheet !== null) await this.assertNoNamesake(sheet, { exceptId: id, confirmedOnly: true });
+    }
 
     const confirmed = await this.prisma.$transaction(async (tx) => {
       // Условие на пустоту: второе подтверждение переписало бы рейтинг мимо
@@ -681,6 +695,54 @@ export class PlayersService {
    * Судья не в счёт: по ТЗ 1 он ведёт конкретный турнир, управление клубом в
    * его доступ не входит.
    */
+  /**
+   * Такой человек уже есть — ADR-100.
+   *
+   * Чужой профиль заводят из состава турнира, и повтор нажатия там — норма:
+   * запись отказала, организатор жмёт ещё раз. Так на пилоте появилось
+   * четыре одинаковых профиля, человек привязался к одному, а в турнире
+   * стоял другой. Совпадение — фамилия, имя (без регистра и пробелов по
+   * краям) и год рождения у живого профиля: этого хватает, чтобы поймать
+   * повтор, и не хватает, чтобы спутать разных людей с одной фамилией.
+   */
+  private async assertNoNamesake(
+    profile: { readonly lastName: string; readonly firstName: string; readonly birthYear: number },
+    options: { readonly exceptId?: string; readonly confirmedOnly?: boolean } = {},
+  ): Promise<void> {
+    const namesakes = await this.prisma.player.findMany({
+      where: {
+        ...LIVE_PLAYER,
+        lastName: { equals: profile.lastName.trim(), mode: 'insensitive' },
+        firstName: { equals: profile.firstName.trim(), mode: 'insensitive' },
+        birthYear: profile.birthYear,
+        ...(options.exceptId === undefined ? {} : { id: { not: options.exceptId } }),
+        ...(options.confirmedOnly === true ? { confirmedAt: { not: null } } : {}),
+      },
+      select: {
+        id: true,
+        lastName: true,
+        firstName: true,
+        birthYear: true,
+        rating: true,
+        confirmedAt: true,
+      },
+      orderBy: { createdAt: 'asc' },
+      take: 5,
+    });
+
+    if (namesakes.length === 0) return;
+
+    // `confirmed`: анкету без рейтинга не записывают, а подтверждают —
+    // форма предлагает то действие, которое пройдёт.
+    throw new AppError(ERROR_CODES.PLAYER_DUPLICATE, 'Player already exists', {
+      players: namesakes.map(({ confirmedAt, ...player }) => ({
+        ...player,
+        rating: Number(player.rating),
+        confirmed: confirmedAt !== null,
+      })),
+    });
+  }
+
   private async isClubStaff(clubId: string, userId: string): Promise<boolean> {
     const membership = await this.prisma.clubMember.findUnique({
       where: { clubId_userId: { clubId, userId } },

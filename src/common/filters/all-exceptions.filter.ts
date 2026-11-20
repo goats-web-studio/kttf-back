@@ -112,6 +112,8 @@ const STATUS_BY_CODE: Readonly<Record<ErrorCode, number>> = {
   // кривой запрос; привязка к занятому или к анкете — конфликт с данными.
   PLAYER_NOT_CONFIRMED: HttpStatus.FORBIDDEN,
   PLAYER_CLAIM_INVALID: HttpStatus.CONFLICT,
+  // Такой игрок уже есть — ADR-100: конфликт с данными, а не кривой запрос.
+  PLAYER_DUPLICATE: HttpStatus.CONFLICT,
 
   // Удаление аккаунта — ADR-092. Неверный пароль — не 401: на 401 клиенты
   // обновляют токен и повторяют запрос.
