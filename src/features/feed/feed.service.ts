@@ -6,7 +6,6 @@ import {
   FEED_POSTS_SECTION,
   FEED_WINDOW_DAYS,
   FORUM_BRAND_NAME,
-  forumImageSchema,
   isKttfVoice,
   markupToPlain,
   siteLocaleSchema,
@@ -615,8 +614,8 @@ export class FeedService {
           },
         },
         translations: {
-          orderBy: { createdAt: 'asc' },
-          select: { locale: true, title: true, body: true, image: true },
+          orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
+          select: { locale: true, title: true, body: true, images: true },
         },
       },
     });
@@ -1096,11 +1095,11 @@ function coauthorOf(
 
 /** Версии новости для карточки — заголовок, начало текста, обложка (ADR-098). */
 function feedTranslations(
-  rows: readonly { locale: string; title: string; body: string; image: Prisma.JsonValue }[],
+  rows: readonly { locale: string; title: string; body: string; images: Prisma.JsonValue }[],
 ): FeedTranslation[] {
   return rows.flatMap((row) => {
     const locale = siteLocaleSchema.safeParse(row.locale);
-    const image = forumImageSchema.safeParse(row.image);
+    const images = parseImages(row.images);
 
     return locale.success
       ? [
@@ -1108,7 +1107,8 @@ function feedTranslations(
             locale: locale.data,
             title: row.title,
             excerpt: excerpt(row.body),
-            image: image.success ? image.data : null,
+            images,
+            image: images[0] ?? null,
           },
         ]
       : [];

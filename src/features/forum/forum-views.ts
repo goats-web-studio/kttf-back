@@ -286,25 +286,29 @@ export function toPostView(
 
 // ---------------------------------------------------------------- версии новости (ADR-098)
 
-/** Строка версии новости; язык вне контракта — версии нет, обложка вне контракта — без неё. */
+/**
+ * Строка версии новости; язык вне контракта — версии нет, фото вне контракта —
+ * без них. `image` — первое фото для клиентов до ADR-099.
+ */
 export function toTranslation(row: {
   locale: string;
   title: string;
   body: string;
-  image: Prisma.JsonValue;
+  images: Prisma.JsonValue;
   updatedAt: Date;
 }): ForumTranslation | null {
   const locale = siteLocaleSchema.safeParse(row.locale);
 
   if (!locale.success) return null;
 
-  const image = forumImageSchema.safeParse(row.image);
+  const images = parseImages(row.images);
 
   return {
     locale: locale.data,
     title: row.title,
     body: row.body,
-    image: image.success ? image.data : null,
+    images,
+    image: images[0] ?? null,
     updatedAt: row.updatedAt.toISOString(),
   };
 }

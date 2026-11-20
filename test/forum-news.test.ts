@@ -104,10 +104,17 @@ const translation = {
   locale: 'kk',
   title: 'KTTF ашылды',
   body: 'Платформа ашық',
-  image: null,
+  images: [],
+  position: 0,
   createdAt: NOW,
   updatedAt: NOW,
 };
+
+const photo = (n: number) => ({
+  url: `/api/v1/files/forum/9999999${String(n)}-9999-4999-8999-999999999999.webp`,
+  width: 1600,
+  height: 900,
+});
 
 function makePrisma() {
   const prisma = {
@@ -151,6 +158,7 @@ function makePrisma() {
       findUnique: vi.fn().mockResolvedValue(null),
       upsert: vi.fn(),
       deleteMany: vi.fn(),
+      aggregate: vi.fn().mockResolvedValue({ _max: { position: null } }),
     },
     notification: {
       createMany: vi.fn(),
@@ -378,7 +386,9 @@ describe('публично человек скрыт (ADR-098)', () => {
 
     expect(response.body).toMatchObject({
       locale: 'ru',
-      translations: [{ locale: 'kk', title: 'KTTF ашылды', body: 'Платформа ашық', image: null }],
+      translations: [
+        { locale: 'kk', title: 'KTTF ашылды', body: 'Платформа ашық', images: [], image: null },
+      ],
     });
   });
 
@@ -478,8 +488,9 @@ describe('версии новости (ADR-098)', () => {
     ).toBe(401);
   });
 
-  it('модератор добавляет версию: обложки нет — null в колонке', async () => {
+  it('модератор добавляет версию: без фото — пустой список, место — в конце', async () => {
     asAdmin();
+    prisma.forumTopicTranslation.aggregate.mockResolvedValue({ _max: { position: 1 } });
 
     const response = await call('PUT', `/forum/topics/${TOPIC_ID}/translations/en`, {
       auth: true,
@@ -489,7 +500,7 @@ describe('версии новости (ADR-098)', () => {
     expect(response.status).toBe(200);
     const args = prisma.forumTopicTranslation.upsert.mock.calls[0]?.[0] as {
       where: object;
-      create: { image: unknown };
+      create: object;
       update: object;
     };
     expect(args.where).toEqual({ topicId_locale: { topicId: TOPIC_ID, locale: 'en' } });
@@ -497,27 +508,26 @@ describe('версии новости (ADR-098)', () => {
       topicId: TOPIC_ID,
       locale: 'en',
       title: 'KTTF is open',
+      images: [],
+      position: 2,
       updatedById: USER_ID,
     });
-    expect(args.create.image).not.toBeUndefined();
+    // Существующая версия остаётся на своём месте.
+    expect(args.update).not.toHaveProperty('position');
     expect(args.update).toMatchObject({ title: 'KTTF is open', body: 'The platform is open' });
   });
 
-  it('с обложкой — фото форума', async () => {
+  it('с фото — фото форума по порядку (ADR-099)', async () => {
     asAdmin();
-    const image = {
-      url: '/api/v1/files/forum/99999999-9999-4999-8999-999999999999.webp',
-      width: 1600,
-      height: 900,
-    };
 
     await call('PUT', `/forum/topics/${TOPIC_ID}/translations/zh`, {
       auth: true,
-      body: { ...version, image },
+      body: { ...version, images: [photo(2), photo(1)] },
     });
 
     expect(prisma.forumTopicTranslation.upsert.mock.calls[0]?.[0]).toMatchObject({
-      create: { image },
+      create: { images: [photo(2), photo(1)] },
+      update: { images: [photo(2), photo(1)] },
     });
   });
 
@@ -579,5 +589,268 @@ describe('версии новости (ADR-098)', () => {
     expect(
       await call('PUT', `/forum/topics/${TOPIC_ID}/locale`, { auth: true, body: { locale: 'kk' } }),
     ).toMatchObject(invalid);
+  });
+});
+
+describe('редактор новостей: языки при создании и в правке (ADR-099)', () => {
+  const kk = {
+    locale: 'kk',
+    title: 'KTTF ашылды',
+    body: 'Платформа ашық',
+    images: [photo(1), photo(2)],
+  };
+  const en = {
+    locale: 'en',
+    title: 'KTTF is open',
+    body: 'The platform is open',
+    images: [photo(3)],
+  };
+  const news = {
+    sectionId: NEWS_SECTION,
+    title: 'KTTF открыт',
+    body: 'Платформа открыта',
+    images: [photo(4), photo(5)],
+    locale: 'ru',
+  };
+
+  function newsSection(): void {
+    prisma.forumSection.findUnique.mockResolvedValue({
+      id: NEWS_SECTION,
+      slug: 'kttf',
+      archivedAt: null,
+      manualTopics: false,
+    });
+  }
+
+  /** Транзакция отдаёт свой клиент: видно, что запись версий — внутри неё. */
+  function separateTx() {
+    const tx = {
+      ...prisma,
+      forumTopicTranslation: {
+        ...prisma.forumTopicTranslation,
+        upsert: vi.fn(),
+        deleteMany: vi.fn(),
+      },
+    };
+
+    prisma.$transaction.mockImplementation(async (work: (client: typeof tx) => Promise<unknown>) =>
+      work(tx),
+    );
+
+    return tx;
+  }
+
+  it('тема создаётся вместе с версиями и их фото — в одной транзакции, по порядку', async () => {
+    asAdmin();
+    newsSection();
+    const tx = separateTx();
+
+    const response = await call('POST', '/forum/topics', {
+      auth: true,
+      body: { ...news, translations: [kk, en] },
+    });
+
+    expect(response.status).toBe(201);
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.forumTopicTranslation.upsert).not.toHaveBeenCalled();
+    expect(
+      tx.forumTopicTranslation.upsert.mock.calls.map((args: unknown[]) => args[0]),
+    ).toMatchObject([
+      {
+        where: { topicId_locale: { topicId: TOPIC_ID, locale: 'kk' } },
+        create: {
+          topicId: TOPIC_ID,
+          locale: 'kk',
+          title: 'KTTF ашылды',
+          images: [photo(1), photo(2)],
+          position: 0,
+          updatedById: USER_ID,
+        },
+      },
+      { create: { locale: 'en', images: [photo(3)], position: 1 } },
+    ]);
+    expect(prisma.forumTopic.create.mock.calls[0]?.[0]).toMatchObject({ data: { locale: 'ru' } });
+    expect(prisma.forumPost.create.mock.calls[0]?.[0]).toMatchObject({
+      data: { images: [photo(4), photo(5)] },
+    });
+  });
+
+  it('версия не записалась — ошибка всего запроса, тема не отдаётся', async () => {
+    asAdmin();
+    newsSection();
+    const tx = separateTx();
+    tx.forumTopicTranslation.upsert.mockRejectedValue(new Error('db down'));
+
+    const response = await call('POST', '/forum/topics', {
+      auth: true,
+      body: { ...news, translations: [kk] },
+    });
+
+    expect(response.status).toBe(500);
+    expect(prisma.forumTopic.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('не модератор — 403, тема не заводится', async () => {
+    prisma.forumSection.findUnique.mockResolvedValue({
+      id: POSTS_SECTION,
+      slug: 'tennis',
+      archivedAt: null,
+      manualTopics: true,
+    });
+
+    expect(
+      await call('POST', '/forum/topics', {
+        auth: true,
+        body: { ...news, sectionId: POSTS_SECTION, locale: undefined, translations: [kk] },
+      }),
+    ).toMatchObject(forbidden);
+    expect(prisma.forumTopic.create).not.toHaveBeenCalled();
+  });
+
+  it('язык дважды, язык оригинала, язык вне списка, пятое фото, не новость — ошибка', async () => {
+    asAdmin();
+    newsSection();
+
+    for (const translations of [
+      [kk, kk],
+      [{ ...en, locale: 'ru' }],
+      [{ ...en, locale: 'de' }],
+      [{ ...en, images: [1, 2, 3, 4, 5].map(photo) }],
+      [{ ...en, title: '' }],
+    ]) {
+      expect(
+        await call('POST', '/forum/topics', { auth: true, body: { ...news, translations } }),
+      ).toMatchObject(invalid);
+    }
+
+    // Язык оригинала не прислан — русский: русская версия не годится.
+    expect(
+      await call('POST', '/forum/topics', {
+        auth: true,
+        body: { ...news, locale: undefined, translations: [{ ...en, locale: 'ru' }] },
+      }),
+    ).toMatchObject(invalid);
+
+    prisma.forumSection.findUnique.mockResolvedValue({
+      id: POSTS_SECTION,
+      slug: 'tennis',
+      archivedAt: null,
+      manualTopics: true,
+    });
+    expect(
+      await call('POST', '/forum/topics', {
+        auth: true,
+        body: { ...news, sectionId: POSTS_SECTION, locale: undefined, translations: [kk] },
+      }),
+    ).toMatchObject(invalid);
+    expect(prisma.forumTopic.create).not.toHaveBeenCalled();
+  });
+
+  it('правка первого сообщения заменяет весь набор версий и язык оригинала', async () => {
+    asAdmin();
+    const tx = separateTx();
+
+    const response = await call('PATCH', `/forum/posts/${POST_ID}`, {
+      auth: true,
+      body: { body: 'Мәтін', locale: 'kk', translations: [en, { ...kk, locale: 'ru' }] },
+    });
+
+    expect(response.status).toBe(200);
+    expect(tx.forumTopicTranslation.deleteMany).toHaveBeenCalledWith({
+      where: { topicId: TOPIC_ID, locale: { notIn: ['en', 'ru'] } },
+    });
+    expect(
+      tx.forumTopicTranslation.upsert.mock.calls.map((args: unknown[]) => args[0]),
+    ).toMatchObject([
+      { create: { locale: 'en', position: 0 }, update: { images: [photo(3)], position: 0 } },
+      { create: { locale: 'ru', position: 1 }, update: { title: 'KTTF ашылды', position: 1 } },
+    ]);
+    expect(prisma.forumTopic.update).toHaveBeenCalledWith({
+      where: { id: TOPIC_ID },
+      data: { locale: 'kk' },
+    });
+    expect(prisma.forumPost.update.mock.calls[0]?.[0]).toMatchObject({ data: { body: 'Мәтін' } });
+  });
+
+  it('пустой набор убирает все версии; без поля версии не трогаются', async () => {
+    asAdmin();
+
+    await call('PATCH', `/forum/posts/${POST_ID}`, {
+      auth: true,
+      body: { body: 'Текст', translations: [] },
+    });
+
+    expect(prisma.forumTopicTranslation.deleteMany).toHaveBeenCalledWith({
+      where: { topicId: TOPIC_ID, locale: { notIn: [] } },
+    });
+
+    prisma.forumTopicTranslation.deleteMany.mockClear();
+    await call('PATCH', `/forum/posts/${POST_ID}`, { auth: true, body: { body: 'Текст' } });
+
+    expect(prisma.forumTopicTranslation.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.forumTopicTranslation.upsert).not.toHaveBeenCalled();
+  });
+
+  it('в правке: версия на языке оригинала темы, ответ, не новость — ошибка поля', async () => {
+    asAdmin();
+
+    // Язык оригинала не прислан — сервер берёт язык темы (ru).
+    expect(
+      await call('PATCH', `/forum/posts/${POST_ID}`, {
+        auth: true,
+        body: { body: 'Текст', translations: [{ ...en, locale: 'ru' }] },
+      }),
+    ).toMatchObject(invalid);
+
+    // Новый язык оригинала совпал с существующей версией, набор не прислан.
+    prisma.forumTopicTranslation.findUnique.mockResolvedValue({ locale: 'kk' });
+    expect(
+      await call('PATCH', `/forum/posts/${POST_ID}`, {
+        auth: true,
+        body: { body: 'Текст', locale: 'kk' },
+      }),
+    ).toMatchObject(invalid);
+
+    prisma.forumPost.findUnique.mockResolvedValue(postRow({ number: 2 }));
+    expect(
+      await call('PATCH', `/forum/posts/${POST_ID}`, {
+        auth: true,
+        body: { body: 'Текст', translations: [en] },
+      }),
+    ).toMatchObject(invalid);
+
+    prisma.forumPost.findUnique.mockResolvedValue(
+      postRow({
+        topic: topicRow({
+          locale: null,
+          section: { id: POSTS_SECTION, slug: 'tennis', title: 'Теннис' },
+        }),
+      }),
+    );
+    expect(
+      await call('PATCH', `/forum/posts/${POST_ID}`, {
+        auth: true,
+        body: { body: 'Текст', translations: [en] },
+      }),
+    ).toMatchObject(invalid);
+    expect(prisma.forumTopicTranslation.upsert).not.toHaveBeenCalled();
+    expect(prisma.forumPost.update).not.toHaveBeenCalled();
+  });
+
+  it('не модератор правит свою новость «от себя», но не её версии', async () => {
+    prisma.forumPost.findUnique.mockResolvedValue(postRow({ authoredAs: 'SELF' }));
+
+    expect(
+      await call('PATCH', `/forum/posts/${POST_ID}`, {
+        auth: true,
+        body: { body: 'Текст', translations: [en] },
+      }),
+    ).toMatchObject(forbidden);
+    expect(prisma.forumPost.update).not.toHaveBeenCalled();
+
+    expect(
+      (await call('PATCH', `/forum/posts/${POST_ID}`, { auth: true, body: { body: 'Текст' } }))
+        .status,
+    ).toBe(200);
   });
 });

@@ -32,6 +32,7 @@ import {
   topicNotFound,
 } from './forum-posts.service.js';
 import { ForumSubjectsService } from './forum-subjects.service.js';
+import { assertCanTranslate, assertVersions, replaceTranslations } from './forum-translations.js';
 import {
   nameFields,
   toTopicItem,
@@ -274,6 +275,15 @@ export class ForumTopicsService {
       });
     }
 
+    // Версии на других языках — вместе с темой, одной транзакцией (ADR-099).
+    const locale = news ? (input.locale ?? DEFAULT_NEWS_LOCALE) : null;
+    const translations = input.translations ?? [];
+
+    if (translations.length > 0) {
+      assertCanTranslate(writer, section.slug, 'translations');
+      assertVersions(locale ?? DEFAULT_NEWS_LOCALE, translations);
+    }
+
     await this.access.assertLimit(writer, 'TOPICS', now);
     await this.access.assertLimit(writer, 'POSTS', now);
 
@@ -284,7 +294,7 @@ export class ForumTopicsService {
           authorId: userId,
           title: input.title,
           authoredAs,
-          locale: news ? (input.locale ?? DEFAULT_NEWS_LOCALE) : null,
+          locale,
           createdAt: now,
           lastPostAt: now,
         },
@@ -298,6 +308,10 @@ export class ForumTopicsService {
         { body: input.body, images: input.images ?? [], quote: null, authoredAs },
         now,
       );
+
+      if (translations.length > 0) {
+        await replaceTranslations(tx, topic.id, translations, userId, now);
+      }
 
       return topic.id;
     });
@@ -531,7 +545,7 @@ export class ForumTopicsService {
         ? []
         : this.prisma.forumTopicTranslation.findMany({
             where: { topicId: row.id },
-            orderBy: { createdAt: 'asc' },
+            orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
           }),
     ]);
 

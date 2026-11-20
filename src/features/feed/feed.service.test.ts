@@ -758,13 +758,19 @@ describe('от лица KTTF и версии новости — ADR-098', () => 
     expect(self?.item.source).toMatchObject({ kind: 'PLAYER', id: 'player-1' });
   });
 
-  it('карточка новости несёт язык оригинала и версии: заголовок, начало текста, обложку', async () => {
+  it('карточка новости несёт язык оригинала и версии: заголовок, начало текста, фото (ADR-099)', async () => {
+    const second = { ...image, url: image.url.replace(/.{5}\.webp$/, '22222.webp') };
     const { feed } = service([
       topicRow('kttf', 'KTTF', {
         translations: [
-          { locale: 'kk', title: 'KTTF ашылды', body: 'Платформа **ашық**', image },
-          { locale: 'xx', title: 'нет', body: 'нет', image: null },
-          { locale: 'en', title: 'KTTF is open', body: 'Open', image: { url: 'bad' } },
+          {
+            locale: 'kk',
+            title: 'KTTF ашылды',
+            body: 'Платформа **ашық**',
+            images: [image, second],
+          },
+          { locale: 'xx', title: 'нет', body: 'нет', images: [] },
+          { locale: 'en', title: 'KTTF is open', body: 'Open', images: [{ url: 'bad' }] },
         ],
       }),
     ]);
@@ -775,8 +781,14 @@ describe('от лица KTTF и версии новости — ADR-098', () => 
     expect(card?.item).toMatchObject({
       locale: 'ru',
       translations: [
-        { locale: 'kk', title: 'KTTF ашылды', excerpt: 'Платформа ашық', image },
-        { locale: 'en', title: 'KTTF is open', excerpt: 'Open', image: null },
+        {
+          locale: 'kk',
+          title: 'KTTF ашылды',
+          excerpt: 'Платформа ашық',
+          images: [image, second],
+          image,
+        },
+        { locale: 'en', title: 'KTTF is open', excerpt: 'Open', images: [], image: null },
       ],
     });
   });

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -350,29 +352,65 @@ describe('от чьего лица — ADR-098', () => {
   });
 });
 
-describe('toTranslation — ADR-098', () => {
+describe('toTranslation — ADR-098, ADR-099', () => {
+  const second = { ...IMAGE, width: 640 };
   const row = {
     locale: 'kk',
     title: 'KTTF ашылды',
     body: 'Мәтін',
-    image: IMAGE,
+    images: [IMAGE, second],
     updatedAt: NOW,
   };
 
-  it('версия с обложкой', () => {
+  it('версия с фото по порядку; первое — ещё и `image` для старых клиентов', () => {
     expect(toTranslation(row)).toEqual({
       locale: 'kk',
       title: 'KTTF ашылды',
       body: 'Мәтін',
+      images: [IMAGE, second],
       image: IMAGE,
       updatedAt: NOW.toISOString(),
     });
   });
 
-  it('обложка вне контракта — без неё; язык вне списка — версии нет', () => {
-    expect(toTranslation({ ...row, image: { url: 'https://evil' } })?.image).toBeNull();
-    expect(toTranslation({ ...row, image: null })?.image).toBeNull();
+  it('фото вне контракта — без них; язык вне списка — версии нет', () => {
+    expect(toTranslation({ ...row, images: [{ url: 'https://evil' }] })).toMatchObject({
+      images: [],
+      image: null,
+    });
+    expect(toTranslation({ ...row, images: [] })?.image).toBeNull();
     expect(toTranslation({ ...row, locale: 'de' })).toBeNull();
+  });
+});
+
+describe('миграция 20261120120000_news_translation_images — ADR-099', () => {
+  const sql = readFileSync(
+    new URL(
+      '../../../prisma/migrations/20261120120000_news_translation_images/migration.sql',
+      import.meta.url,
+    ),
+    'utf8',
+  );
+
+  it('старая обложка — первым фото версии, без обложки — пустой список', () => {
+    expect(sql).toMatch(/"images" JSONB NOT NULL DEFAULT '\[\]'/);
+    expect(sql).toMatch(
+      /SET "images" = jsonb_build_array\("image"\)\s+WHERE "image" IS NOT NULL AND jsonb_typeof\("image"\) = 'object';/,
+    );
+  });
+
+  it('место версии — по времени создания внутри темы', () => {
+    expect(sql).toMatch(/"position" INTEGER NOT NULL DEFAULT 0/);
+    expect(sql).toMatch(/PARTITION BY "topicId" ORDER BY "createdAt", "locale"/);
+  });
+
+  it('колонка обложки убирается только после переноса', () => {
+    expect(sql.indexOf('jsonb_build_array("image")')).toBeLessThan(
+      sql.indexOf('DROP COLUMN "image"'),
+    );
+    expect(sql.indexOf('ADD COLUMN     "images"')).toBeLessThan(
+      sql.indexOf('jsonb_build_array("image")'),
+    );
   });
 });
 

@@ -1,5 +1,6 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import {
+  DEFAULT_NEWS_LOCALE,
   FEED_POSTS_SECTION,
   FORUM_BRAND_NAME,
   isKttfVoice,
@@ -24,6 +25,7 @@ import type { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { NotificationsService } from '../notifications/notifications.service.js';
 import { ForumAccessService, type Writer } from './forum-access.service.js';
+import { assertCanTranslate, assertVersions, replaceTranslations } from './forum-translations.js';
 import {
   ForumSubjectsService,
   type SubjectRef,
@@ -433,6 +435,7 @@ export class ForumPostsService {
           select: {
             ...topicStateFields,
             postsCount: true,
+            locale: true,
             section: { select: { slug: true } },
           },
         },
@@ -476,7 +479,22 @@ export class ForumPostsService {
       });
     }
 
+    // Язык оригинала и версии новости — только у её первого сообщения и
+    // только модератору (ADR-099).
+    const versions = await this.newsVersions(post, writer, input);
+
     await this.prisma.$transaction(async (tx) => {
+      if (versions.locale !== null) {
+        await tx.forumTopic.update({
+          where: { id: post.topic.id },
+          data: { locale: versions.locale },
+        });
+      }
+
+      if (input.translations !== undefined) {
+        await replaceTranslations(tx, post.topic.id, input.translations, writer.userId, now);
+      }
+
       await tx.forumPost.update({
         where: { id: postId },
         data: {
@@ -501,6 +519,55 @@ export class ForumPostsService {
     });
 
     return this.one(postId, writer);
+  }
+
+  /**
+   * Правка языка оригинала и версий новости KTTF вместе с её первым
+   * сообщением — ADR-099. Ничего из этого не прислали — ничего не проверяет.
+   * Возвращает новый язык оригинала, если он меняется.
+   */
+  private async newsVersions(
+    post: {
+      number: number;
+      topic: { id: string; locale: string | null; section: { slug: string } };
+    },
+    writer: Writer,
+    input: UpdateForumPostInput,
+  ): Promise<{ locale: string | null }> {
+    if (input.locale === undefined && input.translations === undefined) return { locale: null };
+
+    const field = input.translations === undefined ? 'locale' : 'translations';
+
+    assertCanTranslate(writer, post.topic.section.slug, field);
+
+    if (post.number !== 1) {
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Versions belong to the first post', {
+        field,
+      });
+    }
+
+    const original = input.locale ?? post.topic.locale ?? DEFAULT_NEWS_LOCALE;
+
+    if (input.translations !== undefined) {
+      assertVersions(original, input.translations);
+    } else {
+      // Набор версий не меняется — новый язык оригинала не должен совпасть с версией.
+      const clash = await this.prisma.forumTopicTranslation.findUnique({
+        where: { topicId_locale: { topicId: post.topic.id, locale: original } },
+        select: { locale: true },
+      });
+
+      if (clash !== null) {
+        throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'A version in this language exists', {
+          field: 'locale',
+        });
+      }
+    }
+
+    return {
+      locale:
+        input.locale !== undefined && input.locale !== post.topic.locale ? input.locale : null,
+    };
   }
 
   /**

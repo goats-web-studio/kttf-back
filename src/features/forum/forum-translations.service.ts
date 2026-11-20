@@ -7,17 +7,17 @@ import {
 } from '@kttf/shared/types';
 import { Injectable } from '@nestjs/common';
 
-import { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { ForumAccessService, type Writer } from './forum-access.service.js';
 import { canSeeTopic, topicNotFound } from './forum-posts.service.js';
 import { ForumTopicsService } from './forum-topics.service.js';
 
 /**
- * Версии новости KTTF на языках сайта — ADR-098 §8. Оригинал — сама тема и
- * её первое сообщение, язык — `ForumTopic.locale`; версии — отдельные
+ * Версии новости KTTF на языках сайта по одной — ADR-098 §8. Оригинал — сама
+ * тема и её первое сообщение, язык — `ForumTopic.locale`; версии — отдельные
  * строки. Ведёт модератор (администратор платформы); только у тем раздела
- * «Новости KTTF».
+ * «Новости KTTF». Весь набор сразу — при создании темы и в правке первого
+ * сообщения (ADR-099, `forum-translations.ts`).
  */
 @Injectable()
 export class ForumTranslationsService {
@@ -43,17 +43,28 @@ export class ForumTranslationsService {
       });
     }
 
-    // Без обложки — `null` в колонке: версия показывает фото оригинала.
+    // Фото по порядку; без фото — `[]`: версия показывает фото оригинала
+    // (ADR-099). Новая версия — в конец, существующая остаётся на месте.
     const data = {
       title: input.title,
       body: input.body,
-      image: input.image === undefined || input.image === null ? Prisma.DbNull : { ...input.image },
+      images: (input.images ?? []).map((image) => ({ ...image })),
       updatedById: userId,
     };
+    const last = await this.prisma.forumTopicTranslation.aggregate({
+      where: { topicId },
+      _max: { position: true },
+    });
 
     await this.prisma.forumTopicTranslation.upsert({
       where: { topicId_locale: { topicId, locale } },
-      create: { topicId, locale, ...data, createdAt: now },
+      create: {
+        topicId,
+        locale,
+        ...data,
+        position: (last._max.position ?? -1) + 1,
+        createdAt: now,
+      },
       update: data,
     });
 
