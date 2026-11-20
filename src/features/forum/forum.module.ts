@@ -9,6 +9,7 @@ import { ForumPostsService } from './forum-posts.service.js';
 import { ForumSidebarService } from './forum-sidebar.service.js';
 import { ForumSubjectsService } from './forum-subjects.service.js';
 import { ForumTopicsService } from './forum-topics.service.js';
+import { ForumTranslationsService } from './forum-translations.service.js';
 import { ForumAdminController, ForumController } from './forum.controller.js';
 
 /** Форум — ADR-064, `docs/12`. Уведомления пишутся той же транзакцией, что и сообщение. */
@@ -20,6 +21,7 @@ import { ForumAdminController, ForumController } from './forum.controller.js';
     ForumSubjectsService,
     ForumPostsService,
     ForumTopicsService,
+    ForumTranslationsService,
     ForumModerationService,
     ForumNewsService,
     ForumSidebarService,

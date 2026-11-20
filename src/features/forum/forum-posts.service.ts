@@ -1,6 +1,10 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import {
+  FEED_POSTS_SECTION,
+  FORUM_BRAND_NAME,
+  isKttfVoice,
   type CreateForumPostInput,
+  type ForumAuthoredAs,
   type CreateForumReportInput,
   type ForumImage,
   type ForumLikeView,
@@ -60,6 +64,8 @@ const topicStateFields = {
 export interface NewPost {
   readonly body: string;
   readonly images: readonly ForumImage[];
+  /** От чьего лица (ADR-098); без него — от себя. Право уже проверено. */
+  readonly authoredAs?: ForumAuthoredAs;
   readonly quote: {
     readonly postId: string;
     readonly text: string;
@@ -195,9 +201,11 @@ export class ForumPostsService {
         },
         ...(query.subjectType === undefined ? {} : { subjectType: query.subjectType }),
       },
+      // Сообщения от лица KTTF — слово портала, а не человека: в «На
+      // форуме» и фильтре по автору их нет (ADR-098).
       ...(query.authorPlayerId === undefined
         ? {}
-        : { author: { player: { id: query.authorPlayerId } } }),
+        : { authoredAs: 'SELF' as const, author: { player: { id: query.authorPlayerId } } }),
       ...(query.q === undefined
         ? {}
         : { body: { contains: query.q, mode: 'insensitive' as const } }),
@@ -273,9 +281,12 @@ export class ForumPostsService {
     const topic = await this.visibleTopic(topicId, writer);
 
     assertOpen(topic, writer);
+
+    const authoredAs = this.access.voice(writer, input.authoredAs);
+
     await this.access.assertLimit(writer, 'POSTS', now);
 
-    const post = await this.prepare(topicId, input);
+    const post = { ...(await this.prepare(topicId, input)), authoredAs };
     const id = await this.prisma.$transaction(async (tx) =>
       this.insert(tx, topic, writer, post, now),
     );
@@ -320,15 +331,23 @@ export class ForumPostsService {
   ): Promise<string> {
     // Обсуждаемая сторона узнаёт о новых сообщениях без подписки (ADR-067 §3).
     const side = await this.sideOf(topic);
+    const authoredAs = post.authoredAs ?? 'SELF';
     const { postsCount: number } = await tx.forumTopic.update({
       where: { id: topic.id },
-      data: { postsCount: { increment: 1 }, lastPostAt: now, lastPostAuthorId: writer.userId },
+      data: {
+        postsCount: { increment: 1 },
+        lastPostAt: now,
+        lastPostAuthorId: writer.userId,
+        lastPostAuthoredAs: authoredAs,
+      },
       select: { postsCount: true },
     });
+
     const created = await tx.forumPost.create({
       data: {
         topicId: topic.id,
         authorId: writer.userId,
+        authoredAs,
         number,
         body: post.body,
         images: post.images.map((image) => ({ ...image })),
@@ -349,7 +368,7 @@ export class ForumPostsService {
       topicTitle: topic.title,
       postId: created.id,
       number,
-      authorName: writer.name,
+      authorName: isKttfVoice(authoredAs) ? FORUM_BRAND_NAME : writer.name,
     };
     const quotedAuthor = post.quote?.authorId ?? null;
     const replyTo = quotedAuthor !== null && quotedAuthor !== writer.userId ? quotedAuthor : null;
@@ -388,7 +407,12 @@ export class ForumPostsService {
     return view;
   }
 
-  /** Автор правит текст и фото. Скрытое модератором и удалённое не правится. */
+  /**
+   * Автор правит текст, фото и режим «от чьего лица». Сообщение от лица
+   * KTTF правит любой модератор — оно принадлежит порталу (ADR-098), но
+   * сделать чужое сообщение личным «от себя» нельзя. Скрытое модератором и
+   * удалённое не правится.
+   */
   async update(
     postId: string,
     userId: string,
@@ -396,7 +420,32 @@ export class ForumPostsService {
     now = new Date(),
   ): Promise<ForumPostView> {
     const writer = await this.access.writer(userId, now);
-    const post = await this.own(postId, writer);
+    const post = await this.prisma.forumPost.findUnique({
+      where: { id: postId },
+      select: {
+        id: true,
+        number: true,
+        authorId: true,
+        authoredAs: true,
+        deletedAt: true,
+        hiddenAt: true,
+        topic: {
+          select: {
+            ...topicStateFields,
+            postsCount: true,
+            section: { select: { slug: true } },
+          },
+        },
+      },
+    });
+
+    if (post === null || !canSeeTopic(post.topic, writer)) throw postNotFound(postId);
+
+    const own = post.authorId === writer.userId;
+
+    if (!own && !(writer.isAdmin && isKttfVoice(post.authoredAs))) {
+      throw new AppError(ERROR_CODES.FORBIDDEN, 'Only the author can change a post', { postId });
+    }
 
     if (post.deletedAt !== null || post.hiddenAt !== null) {
       throw new AppError(ERROR_CODES.FORBIDDEN, 'Post cannot be edited', { postId });
@@ -404,15 +453,51 @@ export class ForumPostsService {
 
     assertOpen(post.topic, writer);
 
-    await this.prisma.forumPost.update({
-      where: { id: postId },
-      data: {
-        body: input.body,
-        ...(input.images === undefined
-          ? {}
-          : { images: input.images.map((image) => ({ ...image })) }),
-        editedAt: now,
-      },
+    const authoredAs =
+      input.authoredAs === undefined
+        ? post.authoredAs
+        : this.access.voice(writer, input.authoredAs);
+
+    if (!own && !isKttfVoice(authoredAs)) {
+      throw new AppError(ERROR_CODES.FORBIDDEN, 'Cannot make another author post personal', {
+        postId,
+        field: 'authoredAs',
+      });
+    }
+
+    // Запись игрока на его стене — личная (ADR-098 §2).
+    if (
+      post.number === 1 &&
+      isKttfVoice(authoredAs) &&
+      post.topic.section.slug === FEED_POSTS_SECTION
+    ) {
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Player posts are personal', {
+        field: 'authoredAs',
+      });
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.forumPost.update({
+        where: { id: postId },
+        data: {
+          body: input.body,
+          ...(input.images === undefined
+            ? {}
+            : { images: input.images.map((image) => ({ ...image })) }),
+          authoredAs,
+          editedAt: now,
+        },
+      });
+
+      if (authoredAs !== post.authoredAs) {
+        await tx.forumTopic.update({
+          where: { id: post.topic.id },
+          data: {
+            ...(post.number === 1 ? { authoredAs } : {}),
+            ...(post.number === post.topic.postsCount ? { lastPostAuthoredAs: authoredAs } : {}),
+          },
+        });
+      }
     });
 
     return this.one(postId, writer);

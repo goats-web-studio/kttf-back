@@ -1,13 +1,19 @@
 import {
+  FORUM_BRAND_NAME,
   forumImageSchema,
+  isKttfVoice,
   ONLINE_WINDOW_MS,
   type ForumAuthor,
+  type ForumAuthoredAs,
+  type ForumCoauthor,
   type ForumImage,
   type ForumPostItem,
   type ForumPostRole,
   type ForumPostView,
   type ForumSubject,
   type ForumTopicItem,
+  type ForumTranslation,
+  siteLocaleSchema,
 } from '@kttf/shared/types';
 import { z } from 'zod';
 
@@ -75,6 +81,51 @@ export function toAuthor(user: AuthorRecord | null, now = new Date()): ForumAuth
   };
 }
 
+// ---------------------------------------------------------------- от чьего лица (ADR-098)
+
+/** Голос сообщения глазами читателя: кто в шапке и кто соавтор. */
+export interface Voice {
+  readonly author: ForumAuthor | null;
+  readonly authoredAs: ForumAuthoredAs;
+  readonly coauthor: ForumCoauthor | null;
+}
+
+/**
+ * Сообщение от лица KTTF публично не называет человека: `author` — только
+ * администратору, соавтор — только в режиме `KTTF_WITH_COAUTHOR`.
+ */
+export function voiceOf(
+  authoredAs: ForumAuthoredAs,
+  user: AuthorRecord | null,
+  viewer: Viewer,
+  now = new Date(),
+): Voice {
+  if (!isKttfVoice(authoredAs)) {
+    return { author: toAuthor(user, now), authoredAs, coauthor: null };
+  }
+
+  return {
+    author: viewer.isAdmin ? toAuthor(user, now) : null,
+    authoredAs,
+    coauthor:
+      authoredAs === 'KTTF_WITH_COAUTHOR' && user !== null
+        ? {
+            playerId: user.player?.id ?? null,
+            name: authorName(user) ?? NO_PROFILE,
+            photoUrl: user.player?.photoUrl ?? null,
+          }
+        : null,
+  };
+}
+
+/** Имя в снимках и строках «последнее сообщение»: у голоса KTTF — «KTTF». */
+export function voiceName(
+  authoredAs: ForumAuthoredAs,
+  user: { player: { lastName: string; firstName: string } | null } | null,
+): string | null {
+  return isKttfVoice(authoredAs) ? FORUM_BRAND_NAME : authorName(user);
+}
+
 // ---------------------------------------------------------------- темы
 
 export const topicFields = {
@@ -91,6 +142,9 @@ export const topicFields = {
   lockedAt: true,
   hiddenAt: true,
   hiddenReason: true,
+  authoredAs: true,
+  lastPostAuthoredAs: true,
+  locale: true,
   section: { select: { id: true, slug: true, title: true } },
   author: { select: authorFields },
   lastPostAuthor: { select: nameFields },
@@ -110,6 +164,7 @@ export function toTopicItem(
   record: TopicRecord,
   subjects: ReadonlyMap<string, ForumSubject>,
   reads: ReadMarks | null = null,
+  viewer: Viewer = ANONYMOUS,
 ): ForumTopicItem {
   const subject =
     record.subjectType === null || record.subjectId === null
@@ -123,12 +178,12 @@ export function toTopicItem(
     id: record.id,
     section: record.section,
     title: record.title,
-    author: toAuthor(record.author),
+    ...voiceOf(record.authoredAs, record.author, viewer),
     subject,
     createdAt: record.createdAt.toISOString(),
     postsCount: record.postsCount,
     lastPostAt: record.lastPostAt.toISOString(),
-    lastAuthorName: authorName(record.lastPostAuthor),
+    lastAuthorName: voiceName(record.lastPostAuthoredAs, record.lastPostAuthor),
     pinned: record.pinnedAt !== null,
     locked: record.lockedAt !== null,
     hidden: record.hiddenAt !== null,
@@ -156,8 +211,9 @@ export const postFields = {
   deletedAt: true,
   hiddenAt: true,
   hiddenReason: true,
+  authoredAs: true,
   author: { select: authorFields },
-  quotePost: { select: { number: true, author: { select: nameFields } } },
+  quotePost: { select: { number: true, authoredAs: true, author: { select: nameFields } } },
 } satisfies Prisma.ForumPostSelect;
 
 export type PostRecord = Prisma.ForumPostGetPayload<{ select: typeof postFields }>;
@@ -191,18 +247,23 @@ export function toPostView(
   // Удалённое не видит никто; скрытое — автор и администратор.
   const showText = !deleted && (!hidden || mine || viewer.isAdmin);
 
+  const voice = voiceOf(record.authoredAs, record.author, viewer);
+
   return {
     id: record.id,
     topicId: record.topicId,
     number: record.number,
-    author: toAuthor(record.author),
+    ...voice,
     body: showText ? record.body : '',
     quote:
       showText && record.quoteText !== null
         ? {
             postId: record.quotePostId,
             number: record.quotePost?.number ?? null,
-            authorName: authorName(record.quotePost?.author ?? null),
+            authorName:
+              record.quotePost === null
+                ? null
+                : voiceName(record.quotePost.authoredAs, record.quotePost.author),
             text: record.quoteText,
           }
         : null,
@@ -215,7 +276,33 @@ export function toPostView(
     likes: record.likesCount,
     liked,
     mine,
-    role,
+    // Голос KTTF не говорит за обсуждаемую сторону (ADR-098).
+    role: isKttfVoice(record.authoredAs) ? null : role,
+  };
+}
+
+// ---------------------------------------------------------------- версии новости (ADR-098)
+
+/** Строка версии новости; язык вне контракта — версии нет, обложка вне контракта — без неё. */
+export function toTranslation(row: {
+  locale: string;
+  title: string;
+  body: string;
+  image: Prisma.JsonValue;
+  updatedAt: Date;
+}): ForumTranslation | null {
+  const locale = siteLocaleSchema.safeParse(row.locale);
+
+  if (!locale.success) return null;
+
+  const image = forumImageSchema.safeParse(row.image);
+
+  return {
+    locale: locale.data,
+    title: row.title,
+    body: row.body,
+    image: image.success ? image.data : null,
+    updatedAt: row.updatedAt.toISOString(),
   };
 }
 
@@ -238,6 +325,7 @@ export const postItemFields = {
   createdAt: true,
   likesCount: true,
   authorId: true,
+  authoredAs: true,
   topic: {
     select: {
       id: true,
@@ -268,8 +356,9 @@ export function toPostItem(
       subjectType === null || subjectId === null
         ? null
         : (subjects.get(subjectKey(subjectType, subjectId)) ?? null),
-    author: toAuthor(record.author),
-    role,
+    // Лента сообщений публичная: у голоса KTTF человека нет ни для кого.
+    ...voiceOf(record.authoredAs, record.author, ANONYMOUS),
+    role: isKttfVoice(record.authoredAs) ? null : role,
     excerpt: excerptOf(record.body),
     createdAt: record.createdAt.toISOString(),
     likes: record.likesCount,

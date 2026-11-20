@@ -3,6 +3,8 @@ import {
   FORUM_POSTS_PER_HOUR,
   FORUM_REPORTS_PER_DAY,
   FORUM_TOPICS_PER_DAY,
+  isKttfVoice,
+  type ForumAuthoredAs,
   type ForumMe,
 } from '@kttf/shared/types';
 import { Injectable } from '@nestjs/common';
@@ -73,6 +75,27 @@ export class ForumAccessService {
     }
 
     return { userId, isAdmin: user.isAdmin, name: authorName(user) ?? '' };
+  }
+
+  /**
+   * От чьего лица пишет (ADR-098). Голос KTTF — только модератору
+   * (администратору платформы); остальным — 403, даже если клиент прислал
+   * режим. Без режима — `fallback` у модератора и «от себя» у остальных.
+   */
+  voice(
+    writer: Writer,
+    requested: ForumAuthoredAs | undefined,
+    fallback: ForumAuthoredAs = 'SELF',
+  ): ForumAuthoredAs {
+    const voice = requested ?? (writer.isAdmin ? fallback : 'SELF');
+
+    if (isKttfVoice(voice) && !writer.isAdmin) {
+      throw new AppError(ERROR_CODES.FORBIDDEN, 'Only moderators can post on behalf of KTTF', {
+        field: 'authoredAs',
+      });
+    }
+
+    return voice;
   }
 
   /** Лимит на темы, сообщения или жалобы за окно. */

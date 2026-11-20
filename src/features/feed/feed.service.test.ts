@@ -72,6 +72,9 @@ function playerPost(id: string, at: string, views: number): FeedItem {
     excerpt: 'Текст',
     images: [],
     archived: false,
+    coauthor: null,
+    locale: null,
+    translations: [],
   };
 }
 
@@ -548,6 +551,7 @@ describe('темы форума в ленте — источник', () => {
           likesCount: 2,
           deletedAt: null,
           hiddenAt: null,
+          authoredAs: 'SELF',
         },
       ],
       author: {
@@ -648,7 +652,9 @@ describe('темы форума в ленте — источник', () => {
     const { read } = sourceService([
       forumRow('noprofile', { author: { player: null } }),
       forumRow('deleted', {
-        posts: [{ id: 'x', body: '', likesCount: 0, deletedAt: NOW, hiddenAt: null }],
+        posts: [
+          { id: 'x', body: '', likesCount: 0, deletedAt: NOW, hiddenAt: null, authoredAs: 'SELF' },
+        ],
       }),
     ]);
 
@@ -662,5 +668,156 @@ describe('темы форума в ленте — источник', () => {
       imageUrl: null,
       slug: null,
     });
+  });
+});
+
+describe('от лица KTTF и версии новости — ADR-098', () => {
+  const since = new Date(NOW.getTime() - FEED_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const player = {
+    id: 'player-1',
+    lastName: 'Аманбаев',
+    firstName: 'Арлан',
+    photoUrl: '/a.webp',
+    cityId: 'city-1',
+  };
+  const image = {
+    url: '/api/v1/files/forum/55555555-5555-4555-8555-555555555555.webp',
+    width: 1600,
+    height: 900,
+  };
+
+  function topicRow(id: string, authoredAs: string, overrides: object = {}) {
+    return {
+      id,
+      title: 'KTTF открыт',
+      createdAt: new Date('2026-10-24T10:00:00.000Z'),
+      lastPostAt: new Date('2026-10-24T10:00:00.000Z'),
+      archivedAt: null,
+      postsCount: 1,
+      viewsCount: 5,
+      locale: 'ru',
+      section: { slug: 'tennis', title: 'Настольный теннис' },
+      posts: [
+        {
+          id: `${id}-post`,
+          body: 'Платформа открыта',
+          images: [],
+          likesCount: 0,
+          deletedAt: null,
+          hiddenAt: null,
+          authoredAs,
+        },
+      ],
+      author: { player },
+      translations: [],
+      ...overrides,
+    };
+  }
+
+  function service(rows: object[]) {
+    const prisma = {
+      forumTopic: { findMany: vi.fn().mockResolvedValue(rows), count: vi.fn() },
+      forumPost: { groupBy: vi.fn().mockResolvedValue([]) },
+    };
+    const feed = new FeedService(
+      prisma as unknown as PrismaService,
+      {} as FollowsService,
+      {} as TournamentsService,
+    );
+
+    return { prisma, feed };
+  }
+
+  type TopicsSource = (section: string, since: Date | null) => Promise<Candidate[]>;
+  type ForumSource = (since: Date, now: Date) => Promise<Candidate[]>;
+  interface Candidate {
+    item: FeedItem;
+    players: readonly string[];
+  }
+
+  it('новость от KTTF: источник KTTF, человек — только соавтором, подписки на него не поднимают', async () => {
+    const { feed } = service([
+      topicRow('kttf', 'KTTF'),
+      topicRow('co', 'KTTF_WITH_COAUTHOR'),
+      topicRow('self', 'SELF'),
+    ]);
+    const read = (feed as unknown as { topics: TopicsSource }).topics.bind(feed);
+
+    const [kttf, co, self] = await read('kttf', since);
+
+    expect(kttf?.item).toMatchObject({ type: 'PORTAL', source: { kind: 'KTTF', name: 'KTTF' } });
+    expect(kttf?.item.type === 'PORTAL' && kttf.item.coauthor).toBeNull();
+    expect(kttf?.players).toEqual([]);
+    expect(co?.item).toMatchObject({
+      source: { kind: 'KTTF' },
+      coauthor: { playerId: 'player-1', name: 'Аманбаев Арлан', photoUrl: '/a.webp' },
+    });
+    // «От себя» в новостях — шапка того, кто написал.
+    expect(self?.item.source).toMatchObject({ kind: 'PLAYER', id: 'player-1' });
+  });
+
+  it('карточка новости несёт язык оригинала и версии: заголовок, начало текста, обложку', async () => {
+    const { feed } = service([
+      topicRow('kttf', 'KTTF', {
+        translations: [
+          { locale: 'kk', title: 'KTTF ашылды', body: 'Платформа **ашық**', image },
+          { locale: 'xx', title: 'нет', body: 'нет', image: null },
+          { locale: 'en', title: 'KTTF is open', body: 'Open', image: { url: 'bad' } },
+        ],
+      }),
+    ]);
+    const read = (feed as unknown as { topics: TopicsSource }).topics.bind(feed);
+
+    const [card] = await read('kttf', since);
+
+    expect(card?.item).toMatchObject({
+      locale: 'ru',
+      translations: [
+        { locale: 'kk', title: 'KTTF ашылды', excerpt: 'Платформа ашық', image },
+        { locale: 'en', title: 'KTTF is open', excerpt: 'Open', image: null },
+      ],
+    });
+  });
+
+  it('запись игрока — без версий и языка, даже если строки есть', async () => {
+    const { feed } = service([topicRow('p', 'SELF')]);
+    const read = (feed as unknown as { topics: TopicsSource }).topics.bind(feed);
+
+    const [card] = await read('posts', since);
+
+    expect(card?.item).toMatchObject({ type: 'PLAYER_POST', locale: null, translations: [] });
+  });
+
+  it('тема форума от KTTF — источник KTTF без игрока', async () => {
+    const { feed } = service([topicRow('f', 'KTTF')]);
+    const read = (feed as unknown as { forumTopics: ForumSource }).forumTopics.bind(feed);
+
+    const [card] = await read(since, NOW);
+
+    expect(card?.item.source).toEqual({
+      kind: 'KTTF',
+      id: null,
+      name: 'KTTF',
+      imageUrl: null,
+      slug: null,
+    });
+    expect(card?.players).toEqual([]);
+  });
+
+  it('стена игрока не берёт записи от лица KTTF', async () => {
+    const prisma = {
+      player: { findUnique: vi.fn().mockResolvedValue({ userId: 'user-1' }) },
+      forumTopic: { findMany: vi.fn().mockResolvedValue([]), count: vi.fn().mockResolvedValue(0) },
+    };
+    const feed = new FeedService(
+      prisma as unknown as PrismaService,
+      {} as FollowsService,
+      {} as TournamentsService,
+    );
+
+    await feed.wall('player-1', { page: 1, limit: 10 });
+
+    const args = prisma.forumTopic.findMany.mock.calls[0]?.[0] as { where: object };
+    expect(args.where).toMatchObject({ authorId: 'user-1', authoredAs: 'SELF' });
   });
 });

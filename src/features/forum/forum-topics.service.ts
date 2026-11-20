@@ -1,6 +1,11 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import {
+  DEFAULT_NEWS_LOCALE,
+  FEED_PORTAL_SECTION,
+  FEED_POSTS_SECTION,
   FORUM_SUBJECT_LAST_POSTS,
+  isKttfVoice,
+  siteLocaleSchema,
   type CreateForumPostInput,
   type CreateForumTopicInput,
   type ForumPostView,
@@ -28,10 +33,11 @@ import {
 } from './forum-posts.service.js';
 import { ForumSubjectsService } from './forum-subjects.service.js';
 import {
-  authorName,
   nameFields,
   toTopicItem,
+  toTranslation,
   topicFields,
+  voiceName,
   ANONYMOUS,
   type TopicRecord,
   type Viewer,
@@ -84,6 +90,7 @@ export class ForumTopicsService {
               id: true,
               title: true,
               lastPostAt: true,
+              lastPostAuthoredAs: true,
               lastPostAuthor: { select: nameFields },
             },
           }),
@@ -114,7 +121,7 @@ export class ForumTopicsService {
                 topicId: last.id,
                 topicTitle: last.title,
                 at: last.lastPostAt.toISOString(),
-                authorName: authorName(last.lastPostAuthor),
+                authorName: voiceName(last.lastPostAuthoredAs, last.lastPostAuthor),
               },
       };
     });
@@ -152,9 +159,10 @@ export class ForumTopicsService {
             ],
           }),
       ...(query.subjectType === undefined ? {} : { subjectType: query.subjectType }),
+      // Темы от лица KTTF — не темы человека (ADR-098).
       ...(query.authorPlayerId === undefined
         ? {}
-        : { author: { player: { id: query.authorPlayerId } } }),
+        : { authoredAs: 'SELF', author: { player: { id: query.authorPlayerId } } }),
     };
     // Закреплённые сверху — только в разделе: в поиске и у игрока они обычные.
     const orderBy: Prisma.ForumTopicOrderByWithRelationInput[] =
@@ -239,13 +247,30 @@ export class ForumTopicsService {
     const writer = await this.access.writer(userId, now);
     const section = await this.prisma.forumSection.findUnique({
       where: { id: input.sectionId },
-      select: { id: true, archivedAt: true, manualTopics: true },
+      select: { id: true, slug: true, archivedAt: true, manualTopics: true },
     });
 
     // В «Новостях клубов и тренеров» тема — сама новость: руками не заводится.
     if (section?.archivedAt !== null || (!section.manualTopics && !writer.isAdmin)) {
       throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Section is not available', {
         field: 'sectionId',
+      });
+    }
+
+    // Новость KTTF по умолчанию — от лица KTTF; запись игрока — только своя
+    // (ADR-098 §2, §3). Язык оригинала — только у новостей.
+    const news = section.slug === FEED_PORTAL_SECTION;
+    const authoredAs = this.access.voice(writer, input.authoredAs, news ? 'KTTF' : 'SELF');
+
+    if (isKttfVoice(authoredAs) && section.slug === FEED_POSTS_SECTION) {
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Player posts are personal', {
+        field: 'authoredAs',
+      });
+    }
+
+    if (!news && input.locale !== undefined) {
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Only KTTF news have a language', {
+        field: 'locale',
       });
     }
 
@@ -258,6 +283,8 @@ export class ForumTopicsService {
           sectionId: section.id,
           authorId: userId,
           title: input.title,
+          authoredAs,
+          locale: news ? (input.locale ?? DEFAULT_NEWS_LOCALE) : null,
           createdAt: now,
           lastPostAt: now,
         },
@@ -268,7 +295,7 @@ export class ForumTopicsService {
         tx,
         topic,
         writer,
-        { body: input.body, images: input.images ?? [], quote: null },
+        { body: input.body, images: input.images ?? [], quote: null, authoredAs },
         now,
       );
 
@@ -425,6 +452,8 @@ export class ForumTopicsService {
       });
     }
 
+    const authoredAs = this.access.voice(writer, input.authoredAs);
+
     await this.access.assertLimit(writer, 'POSTS', now);
 
     try {
@@ -436,6 +465,7 @@ export class ForumTopicsService {
             title: subject.name.slice(0, 150),
             subjectType: type,
             subjectId,
+            authoredAs,
             createdAt: now,
             lastPostAt: now,
           },
@@ -446,7 +476,7 @@ export class ForumTopicsService {
           tx,
           topic,
           writer,
-          { body: input.body, images: input.images ?? [], quote: null },
+          { body: input.body, images: input.images ?? [], quote: null, authoredAs },
           now,
         );
       });
@@ -482,11 +512,11 @@ export class ForumTopicsService {
     const marks =
       reads === null ? null : new Map(reads.map((read) => [read.topicId, read.lastNumber]));
 
-    return rows.map((row) => toTopicItem(row, subjects, marks));
+    return rows.map((row) => toTopicItem(row, subjects, marks, viewer));
   }
 
   private async view(row: TopicRecord, viewer: Viewer, now: Date): Promise<ForumTopicView> {
-    const [[item], subscription, me, firstPost] = await Promise.all([
+    const [[item], subscription, me, firstPost, translations] = await Promise.all([
       this.items([row], viewer),
       viewer.userId === undefined
         ? null
@@ -496,14 +526,25 @@ export class ForumTopicsService {
           }),
       viewer.userId === undefined ? null : this.access.me(viewer.userId, now),
       this.posts.first(row, viewer),
+      // Версии на языках — только у новостей KTTF: у них есть язык оригинала.
+      row.locale === null
+        ? []
+        : this.prisma.forumTopicTranslation.findMany({
+            where: { topicId: row.id },
+            orderBy: { createdAt: 'asc' },
+          }),
     ]);
 
     if (item === undefined) throw topicNotFound(row.id);
+
+    const locale = siteLocaleSchema.safeParse(row.locale);
 
     const open = viewer.isAdmin || (row.lockedAt === null && row.hiddenAt === null);
 
     return {
       ...item,
+      locale: locale.success ? locale.data : null,
+      translations: translations.flatMap((translation) => toTranslation(translation) ?? []),
       firstPost,
       subscribed: subscription !== null,
       canReply: me?.canPost === true && open,

@@ -3,8 +3,13 @@ import { describe, expect, it } from 'vitest';
 import {
   excerptOf,
   toAuthor,
+  toPostItem,
   toPostView,
   toTopicItem,
+  toTranslation,
+  voiceName,
+  voiceOf,
+  type PostItemRecord,
   type PostRecord,
   type TopicRecord,
 } from './forum-views.js';
@@ -52,6 +57,7 @@ function makePost(overrides: Partial<PostRecord> = {}): PostRecord {
     deletedAt: null,
     hiddenAt: null,
     hiddenReason: null,
+    authoredAs: 'SELF',
     author,
     quotePost: null,
     ...overrides,
@@ -106,6 +112,9 @@ describe('toTopicItem — «новые»', () => {
     lockedAt: null,
     hiddenAt: null,
     hiddenReason: null,
+    authoredAs: 'SELF',
+    lastPostAuthoredAs: 'SELF',
+    locale: null,
     section: { id: TOPIC, slug: 'tennis', title: 'Настольный теннис' },
     author,
     lastPostAuthor: null,
@@ -173,7 +182,11 @@ describe('toPostView', () => {
       makePost({
         quotePostId: OTHER,
         quoteText: 'фрагмент',
-        quotePost: { number: 1, author: { player: { lastName: 'Ким', firstName: 'Сергей' } } },
+        quotePost: {
+          number: 1,
+          authoredAs: 'SELF',
+          author: { player: { lastName: 'Ким', firstName: 'Сергей' } },
+        },
       }),
       stranger,
       false,
@@ -191,6 +204,165 @@ describe('toPostView', () => {
     expect(
       toPostView(makePost({ images: [{ url: 'https://evil' }] }), stranger, false).images,
     ).toEqual([]);
+  });
+});
+
+describe('от чьего лица — ADR-098', () => {
+  const stranger = { userId: OTHER, isAdmin: false };
+  const admin = { userId: OTHER, isAdmin: true };
+
+  it('от себя — автор как был, без соавтора', () => {
+    expect(voiceOf('SELF', author, stranger)).toMatchObject({
+      authoredAs: 'SELF',
+      author: { name: 'Иванов Иван' },
+      coauthor: null,
+    });
+  });
+
+  it('от KTTF — человек скрыт от всех, кроме администратора', () => {
+    expect(voiceOf('KTTF', author, stranger)).toEqual({
+      authoredAs: 'KTTF',
+      author: null,
+      coauthor: null,
+    });
+    expect(voiceOf('KTTF', author, admin).author?.name).toBe('Иванов Иван');
+  });
+
+  it('от KTTF с соавтором — соавтор ссылкой на профиль, автора нет', () => {
+    expect(voiceOf('KTTF_WITH_COAUTHOR', author, stranger)).toEqual({
+      authoredAs: 'KTTF_WITH_COAUTHOR',
+      author: null,
+      coauthor: {
+        playerId: '66666666-6666-4666-8666-666666666666',
+        name: 'Иванов Иван',
+        photoUrl: null,
+      },
+    });
+  });
+
+  it('имя в снимках и «последнем сообщении» — KTTF', () => {
+    const user = { player: { lastName: 'Ким', firstName: 'Сергей' } };
+
+    expect(voiceName('SELF', user)).toBe('Ким Сергей');
+    expect(voiceName('KTTF', user)).toBe('KTTF');
+    expect(voiceName('KTTF_WITH_COAUTHOR', user)).toBe('KTTF');
+  });
+
+  it('сообщение KTTF: без метки стороны, сам автор видит своё, но шапка — KTTF', () => {
+    const post = makePost({ authoredAs: 'KTTF' });
+
+    expect(toPostView(post, stranger, false, 'ORGANIZER')).toMatchObject({
+      author: null,
+      authoredAs: 'KTTF',
+      role: null,
+    });
+    expect(toPostView(post, { userId: USER, isAdmin: false }, false)).toMatchObject({
+      author: null,
+      mine: true,
+    });
+  });
+
+  it('цитата сообщения KTTF подписана «KTTF»', () => {
+    const view = toPostView(
+      makePost({
+        quotePostId: OTHER,
+        quoteText: 'фрагмент',
+        quotePost: {
+          number: 1,
+          authoredAs: 'KTTF',
+          author: { player: { lastName: 'Ким', firstName: 'Сергей' } },
+        },
+      }),
+      stranger,
+      false,
+    );
+
+    expect(view.quote?.authorName).toBe('KTTF');
+  });
+
+  it('тема KTTF в списке: шапка KTTF, последнее сообщение KTTF', () => {
+    const topic = {
+      id: TOPIC,
+      title: 'KTTF открыт',
+      authorId: USER,
+      subjectType: null,
+      subjectId: null,
+      createdAt: NOW,
+      postsCount: 1,
+      viewsCount: 0,
+      lastPostAt: NOW,
+      pinnedAt: null,
+      lockedAt: null,
+      hiddenAt: null,
+      hiddenReason: null,
+      authoredAs: 'KTTF_WITH_COAUTHOR',
+      lastPostAuthoredAs: 'KTTF_WITH_COAUTHOR',
+      locale: 'ru',
+      section: { id: TOPIC, slug: 'kttf', title: 'Новости KTTF' },
+      author,
+      lastPostAuthor: { player: { lastName: 'Иванов', firstName: 'Иван' } },
+    } as unknown as TopicRecord;
+
+    expect(toTopicItem(topic, new Map())).toMatchObject({
+      author: null,
+      authoredAs: 'KTTF_WITH_COAUTHOR',
+      coauthor: { name: 'Иванов Иван' },
+      lastAuthorName: 'KTTF',
+    });
+    expect(toTopicItem(topic, new Map(), null, admin).author?.name).toBe('Иванов Иван');
+  });
+
+  it('лента сообщений публичная: у KTTF человека нет и для администратора', () => {
+    const record = {
+      id: POST,
+      number: 1,
+      body: 'Текст',
+      createdAt: NOW,
+      likesCount: 0,
+      authorId: USER,
+      authoredAs: 'KTTF',
+      topic: {
+        id: TOPIC,
+        title: 'Тема',
+        subjectType: null,
+        subjectId: null,
+        section: { slug: 'kttf', title: 'Новости KTTF' },
+      },
+      author,
+    } as unknown as PostItemRecord;
+
+    expect(toPostItem(record, new Map(), 'CLUB')).toMatchObject({
+      author: null,
+      authoredAs: 'KTTF',
+      coauthor: null,
+      role: null,
+    });
+  });
+});
+
+describe('toTranslation — ADR-098', () => {
+  const row = {
+    locale: 'kk',
+    title: 'KTTF ашылды',
+    body: 'Мәтін',
+    image: IMAGE,
+    updatedAt: NOW,
+  };
+
+  it('версия с обложкой', () => {
+    expect(toTranslation(row)).toEqual({
+      locale: 'kk',
+      title: 'KTTF ашылды',
+      body: 'Мәтін',
+      image: IMAGE,
+      updatedAt: NOW.toISOString(),
+    });
+  });
+
+  it('обложка вне контракта — без неё; язык вне списка — версии нет', () => {
+    expect(toTranslation({ ...row, image: { url: 'https://evil' } })?.image).toBeNull();
+    expect(toTranslation({ ...row, image: null })?.image).toBeNull();
+    expect(toTranslation({ ...row, locale: 'de' })).toBeNull();
   });
 });
 

@@ -5,7 +5,11 @@ import {
   FEED_PORTAL_SECTION,
   FEED_POSTS_SECTION,
   FEED_WINDOW_DAYS,
+  FORUM_BRAND_NAME,
+  forumImageSchema,
+  isKttfVoice,
   markupToPlain,
+  siteLocaleSchema,
   type AdminFeedQuery,
   type FeedCurationInput,
   type FeedDiscussion,
@@ -14,6 +18,8 @@ import {
   type FeedPage,
   type FeedQuery,
   type FeedSource,
+  type FeedTranslation,
+  type ForumCoauthor,
   type PlayerPostsPage,
   type PlayerPostsQuery,
 } from '@kttf/shared/types';
@@ -342,8 +348,10 @@ export class FeedService {
     if (player.userId === null)
       return { items: [], total: 0, page: query.page, limit: query.limit };
 
+    // Запись от лица KTTF — не запись человека (ADR-098).
     const scope: Prisma.ForumTopicWhereInput = {
       authorId: player.userId,
+      authoredAs: 'SELF',
       archivedAt: archived ? { not: null } : null,
     };
     const [rows, total] = await Promise.all([
@@ -541,6 +549,7 @@ export class FeedService {
         archivedAt: true,
         postsCount: true,
         viewsCount: true,
+        locale: true,
         posts: {
           where: { number: 1 },
           select: {
@@ -550,6 +559,7 @@ export class FeedService {
             likesCount: true,
             deletedAt: true,
             hiddenAt: true,
+            authoredAs: true,
           },
         },
         author: {
@@ -565,6 +575,10 @@ export class FeedService {
             },
           },
         },
+        translations: {
+          orderBy: { createdAt: 'asc' },
+          select: { locale: true, title: true, body: true, image: true },
+        },
       },
     });
 
@@ -576,9 +590,11 @@ export class FeedService {
       if (first?.deletedAt !== null || first.hiddenAt !== null) return [];
       if (!portal && player === null) return [];
 
+      // Новость от лица KTTF — источник KTTF; «от себя» — написавший (ADR-098).
+      const kttf = isKttfVoice(first.authoredAs);
       const source: FeedSource =
-        portal || player === null
-          ? { kind: 'KTTF', id: null, name: 'KTTF', imageUrl: null, slug: null }
+        kttf || player === null
+          ? KTTF_SOURCE
           : {
               kind: 'PLAYER',
               id: player.id,
@@ -586,6 +602,7 @@ export class FeedService {
               imageUrl: player.photoUrl,
               slug: null,
             };
+      const locale = siteLocaleSchema.safeParse(row.locale);
 
       return [
         {
@@ -607,11 +624,14 @@ export class FeedService {
             excerpt: excerpt(first.body),
             images: parseImages(first.images),
             archived: row.archivedAt !== null,
+            coauthor: first.authoredAs === 'KTTF_WITH_COAUTHOR' ? coauthorOf(player) : null,
+            locale: portal && locale.success ? locale.data : null,
+            translations: portal ? feedTranslations(row.translations) : [],
           },
           cityId: portal ? null : (player?.cityId ?? null),
           clubs: [],
           coaches: [],
-          players: portal || player === null ? [] : [player.id],
+          players: portal || kttf || player === null ? [] : [player.id],
         },
       ];
     });
@@ -649,7 +669,14 @@ export class FeedService {
         section: { select: { slug: true, title: true } },
         posts: {
           where: { number: 1 },
-          select: { id: true, body: true, likesCount: true, deletedAt: true, hiddenAt: true },
+          select: {
+            id: true,
+            body: true,
+            likesCount: true,
+            deletedAt: true,
+            hiddenAt: true,
+            authoredAs: true,
+          },
         },
         author: {
           select: {
@@ -680,9 +707,11 @@ export class FeedService {
       // Первое сообщение стёрто или скрыто — показывать в карточке нечего.
       if (first?.deletedAt !== null || first.hiddenAt !== null) return [];
 
-      const player = row.author?.player ?? null;
-      const source: FeedSource =
-        player === null
+      // Тема от лица KTTF — шапка KTTF, человека в ней нет (ADR-098).
+      const player = isKttfVoice(first.authoredAs) ? null : (row.author?.player ?? null);
+      const source: FeedSource = isKttfVoice(first.authoredAs)
+        ? KTTF_SOURCE
+        : player === null
           ? {
               kind: 'KTTF',
               id: null,
@@ -1001,6 +1030,44 @@ export class FeedService {
       ),
     );
   }
+}
+
+const KTTF_SOURCE: FeedSource = {
+  kind: 'KTTF',
+  id: null,
+  name: FORUM_BRAND_NAME,
+  imageUrl: null,
+  slug: null,
+};
+
+/** Соавтор новости KTTF — из профиля написавшего. */
+function coauthorOf(
+  player: { id: string; lastName: string; firstName: string; photoUrl: string | null } | null,
+): ForumCoauthor | null {
+  return player === null
+    ? null
+    : { playerId: player.id, name: fullName(player), photoUrl: player.photoUrl };
+}
+
+/** Версии новости для карточки — заголовок, начало текста, обложка (ADR-098). */
+function feedTranslations(
+  rows: readonly { locale: string; title: string; body: string; image: Prisma.JsonValue }[],
+): FeedTranslation[] {
+  return rows.flatMap((row) => {
+    const locale = siteLocaleSchema.safeParse(row.locale);
+    const image = forumImageSchema.safeParse(row.image);
+
+    return locale.success
+      ? [
+          {
+            locale: locale.data,
+            title: row.title,
+            excerpt: excerpt(row.body),
+            image: image.success ? image.data : null,
+          },
+        ]
+      : [];
+  });
 }
 
 function clubSource(club: { id: string; name: string; logoUrl: string | null }): FeedSource {

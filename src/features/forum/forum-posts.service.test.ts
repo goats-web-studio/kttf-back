@@ -101,7 +101,12 @@ describe('ForumPostsService', () => {
 
       expect(prisma.forumTopic.update).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: { postsCount: { increment: 1 }, lastPostAt: NOW, lastPostAuthorId: WRITER },
+          data: {
+            postsCount: { increment: 1 },
+            lastPostAt: NOW,
+            lastPostAuthorId: WRITER,
+            lastPostAuthoredAs: 'SELF',
+          },
         }),
       );
       const [created] = prisma.forumPost.create.mock.calls[0] as [{ data: { number: number } }];
@@ -141,6 +146,48 @@ describe('ForumPostsService', () => {
           where: { topicId: TOPIC, userId: { notIn: [WRITER, QUOTED_AUTHOR] } },
         }),
       );
+    });
+  });
+
+  describe('от лица KTTF — ADR-098', () => {
+    it('сообщение KTTF: режим в записи и зеркале темы, подписчикам — от «KTTF»', async () => {
+      const writer = { userId: WRITER, isAdmin: true, name: 'Аманбаев Арлан' };
+
+      await service.insert(
+        prisma as never,
+        openTopic,
+        writer,
+        { body: 'Новость', images: [], quote: null, authoredAs: 'KTTF' },
+        NOW,
+      );
+
+      expect(prisma.forumPost.create.mock.calls[0]?.[0]).toMatchObject({
+        data: { authoredAs: 'KTTF' },
+      });
+      expect(prisma.forumTopic.update.mock.calls[0]?.[0]).toMatchObject({
+        data: { lastPostAuthoredAs: 'KTTF' },
+      });
+      expect(prisma.notification.createMany.mock.calls[0]?.[0]).toMatchObject({
+        data: [{ userId: SUBSCRIBER, data: { authorName: 'KTTF' } }],
+      });
+    });
+
+    it('модератор отвечает от себя по умолчанию', async () => {
+      prisma.user.findUnique.mockResolvedValue({ ...writerUser, isAdmin: true });
+      prisma.forumPost.findUnique.mockResolvedValue(null);
+
+      await service.reply(TOPIC, WRITER, { body: 'x' }, NOW).catch(() => undefined);
+
+      expect(prisma.forumPost.create.mock.calls[0]?.[0]).toMatchObject({
+        data: { authoredAs: 'SELF' },
+      });
+    });
+
+    it('не модератору голос KTTF — FORBIDDEN, сообщение не пишется', async () => {
+      await expect(
+        service.reply(TOPIC, WRITER, { body: 'x', authoredAs: 'KTTF' }, NOW),
+      ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      expect(prisma.forumPost.create).not.toHaveBeenCalled();
     });
   });
 

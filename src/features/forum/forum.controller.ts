@@ -50,6 +50,12 @@ import {
   type UpdateForumSectionInput,
   archiveTopicSchema,
   type ArchiveTopicInput,
+  forumTranslationInputSchema,
+  setForumTopicLocaleSchema,
+  siteLocaleSchema,
+  type ForumTranslationInput,
+  type SetForumTopicLocaleInput,
+  type SiteLocale,
 } from '@kttf/shared/types';
 import {
   Body,
@@ -79,9 +85,11 @@ import { ForumModerationService } from './forum-moderation.service.js';
 import { ForumPostsService } from './forum-posts.service.js';
 import { ForumSidebarService } from './forum-sidebar.service.js';
 import { ForumTopicsService } from './forum-topics.service.js';
+import { ForumTranslationsService } from './forum-translations.service.js';
 
 const uuidParam = new ZodValidationPipe(z.uuid());
 const subjectTypeParam = new ZodValidationPipe(forumSubjectTypeSchema);
+const localeParam = new ZodValidationPipe(siteLocaleSchema);
 
 /**
  * Форум — ADR-064, `docs/12`. Чтение открыто всем; ответ зависит от того,
@@ -95,6 +103,7 @@ export class ForumController {
     private readonly topics: ForumTopicsService,
     private readonly posts: ForumPostsService,
     private readonly sidebar: ForumSidebarService,
+    private readonly translations: ForumTranslationsService,
   ) {}
 
   @Get('sections')
@@ -177,6 +186,42 @@ export class ForumController {
     @CurrentUserId() userId: string,
   ): Promise<void> {
     await this.topics.archive(id, userId, body.archived);
+  }
+
+  // ---------------------------------------------------------------- версии новости (ADR-098)
+
+  /** Версия новости KTTF на языке сайта — создать или заменить. Только модератор. */
+  @Put('topics/:id/translations/:locale')
+  @UseGuards(JwtAuthGuard)
+  async putTranslation(
+    @Param('id', uuidParam) id: string,
+    @Param('locale', localeParam) locale: SiteLocale,
+    @Body(new ZodValidationPipe(forumTranslationInputSchema)) body: ForumTranslationInput,
+    @CurrentUserId() userId: string,
+  ): Promise<ForumTopicView> {
+    return this.translations.put(id, locale, userId, body);
+  }
+
+  @Delete('topics/:id/translations/:locale')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async removeTranslation(
+    @Param('id', uuidParam) id: string,
+    @Param('locale', localeParam) locale: SiteLocale,
+    @CurrentUserId() userId: string,
+  ): Promise<void> {
+    await this.translations.remove(id, locale, userId);
+  }
+
+  /** Язык оригинала новости. */
+  @Put('topics/:id/locale')
+  @UseGuards(JwtAuthGuard)
+  async setTopicLocale(
+    @Param('id', uuidParam) id: string,
+    @Body(new ZodValidationPipe(setForumTopicLocaleSchema)) body: SetForumTopicLocaleInput,
+    @CurrentUserId() userId: string,
+  ): Promise<ForumTopicView> {
+    return this.translations.setLocale(id, body.locale, userId);
   }
 
   @Get('topics/:id/posts')

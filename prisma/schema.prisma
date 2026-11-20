@@ -52,34 +52,35 @@ model User {
   cityId                String?
   city                  City?     @relation(fields: [cityId], references: [id])
 
-  player           Player?
-  clubRoles        ClubMember[]
-  clubPosts        ClubPost[]
-  clubMedia        ClubMedia[]
-  coachPosts       CoachPost[]
-  coachMedia       CoachMedia[]
-  sessions         Session[]
-  clubApplications ClubApplication[]
-  products         Product[]
-  coaches          Coach[]
-  trialRequests    TrialRequest[]      @relation("TrialRequester")
-  trialAnswers     TrialRequest[]      @relation("TrialAnswerer")
-  notifications    Notification[]
-  forumTopics      ForumTopic[]        @relation("ForumTopicAuthor")
-  forumLastPosts   ForumTopic[]        @relation("ForumTopicLastAuthor")
-  forumPosts       ForumPost[]
-  forumLikes       ForumLike[]
-  forumSubs        ForumSubscription[]
-  forumReports     ForumReport[]       @relation("ForumReporter")
-  forumResolved    ForumReport[]       @relation("ForumResolver")
-  forumMute        ForumMute?          @relation("ForumMuted")
-  forumMutesGiven  ForumMute[]         @relation("ForumMuter")
-  forumReads       ForumTopicRead[]
-  duelsResolved    Duel[]              @relation("DuelResolver")
-  duelsAnnulled    Duel[]              @relation("DuelAnnuller")
-  follows          Follow[]
-  accountRequests  AccountRequest[]    @relation("AccountRequester")
-  accountDecisions AccountRequest[]    @relation("AccountDecider")
+  player            Player?
+  clubRoles         ClubMember[]
+  clubPosts         ClubPost[]
+  clubMedia         ClubMedia[]
+  coachPosts        CoachPost[]
+  coachMedia        CoachMedia[]
+  sessions          Session[]
+  clubApplications  ClubApplication[]
+  products          Product[]
+  coaches           Coach[]
+  trialRequests     TrialRequest[]          @relation("TrialRequester")
+  trialAnswers      TrialRequest[]          @relation("TrialAnswerer")
+  notifications     Notification[]
+  forumTopics       ForumTopic[]            @relation("ForumTopicAuthor")
+  forumLastPosts    ForumTopic[]            @relation("ForumTopicLastAuthor")
+  forumPosts        ForumPost[]
+  forumLikes        ForumLike[]
+  forumSubs         ForumSubscription[]
+  forumReports      ForumReport[]           @relation("ForumReporter")
+  forumResolved     ForumReport[]           @relation("ForumResolver")
+  forumMute         ForumMute?              @relation("ForumMuted")
+  forumMutesGiven   ForumMute[]             @relation("ForumMuter")
+  forumReads        ForumTopicRead[]
+  forumTranslations ForumTopicTranslation[] @relation("ForumTranslationEditor")
+  duelsResolved     Duel[]                  @relation("DuelResolver")
+  duelsAnnulled     Duel[]                  @relation("DuelAnnuller")
+  follows           Follow[]
+  accountRequests   AccountRequest[]        @relation("AccountRequester")
+  accountDecisions  AccountRequest[]        @relation("AccountDecider")
 }
 
 enum Locale {
@@ -1593,35 +1594,50 @@ model ForumSection {
   topics       ForumTopic[]
 }
 
+// От чьего лица сообщение — ADR-098: от себя, от KTTF, от KTTF с соавтором.
+// Голос KTTF — только администратору; настоящий автор хранится всегда.
+enum ForumAuthoredAs {
+  SELF
+  KTTF
+  KTTF_WITH_COAUTHOR
+}
+
 model ForumTopic {
-  id               String              @id @default(uuid())
-  sectionId        String
-  authorId         String?
-  title            String
-  subjectType      ForumSubjectType?
-  subjectId        String?
+  id                 String                  @id @default(uuid())
+  sectionId          String
+  authorId           String?
+  title              String
+  subjectType        ForumSubjectType?
+  subjectId          String?
   // Сколько сообщений выдано: следующее получит номер postsCount + 1.
   // Увеличивается в транзакции ответа — строка темы блокируется, и два
   // ответа одновременно одного номера не получат.
-  postsCount       Int                 @default(0)
+  postsCount         Int                     @default(0)
   // Просмотры, как у RTTF: повтор того же человека за полчаса не считается (ADR-067)
-  viewsCount       Int                 @default(0)
-  lastPostAt       DateTime            @default(now())
-  lastPostAuthorId String?
-  pinnedAt         DateTime?
-  lockedAt         DateTime?
-  hiddenAt         DateTime?
-  hiddenReason     String?
+  viewsCount         Int                     @default(0)
+  lastPostAt         DateTime                @default(now())
+  lastPostAuthorId   String?
+  pinnedAt           DateTime?
+  lockedAt           DateTime?
+  hiddenAt           DateTime?
+  hiddenReason       String?
   // Автор убрал запись в архив — ADR-075: на стене, в ленте и в списках
   // форума её нет, по ссылке она открывается. Не модерация: вернуть может сам.
-  archivedAt       DateTime?
-  createdAt        DateTime            @default(now())
-  section          ForumSection        @relation(fields: [sectionId], references: [id])
-  author           User?               @relation("ForumTopicAuthor", fields: [authorId], references: [id], onDelete: SetNull)
-  lastPostAuthor   User?               @relation("ForumTopicLastAuthor", fields: [lastPostAuthorId], references: [id], onDelete: SetNull)
-  posts            ForumPost[]
-  subscriptions    ForumSubscription[]
-  reads            ForumTopicRead[]
+  archivedAt         DateTime?
+  // Зеркала режима первого и последнего сообщения (ADR-098): шапка темы в
+  // списках, фильтр «темы игрока» и «последнее сообщение» без лишних выборок.
+  authoredAs         ForumAuthoredAs         @default(SELF)
+  lastPostAuthoredAs ForumAuthoredAs         @default(SELF)
+  // Язык оригинала — только у новостей KTTF (ADR-098); версии — ForumTopicTranslation
+  locale             String?
+  createdAt          DateTime                @default(now())
+  section            ForumSection            @relation(fields: [sectionId], references: [id])
+  author             User?                   @relation("ForumTopicAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  lastPostAuthor     User?                   @relation("ForumTopicLastAuthor", fields: [lastPostAuthorId], references: [id], onDelete: SetNull)
+  posts              ForumPost[]
+  subscriptions      ForumSubscription[]
+  reads              ForumTopicRead[]
+  translations       ForumTopicTranslation[]
 
   @@unique([subjectType, subjectId])
   @@index([sectionId, lastPostAt(sort: Desc)])
@@ -1630,7 +1646,7 @@ model ForumTopic {
 }
 
 model ForumPost {
-  id           String        @id @default(uuid())
+  id           String          @id @default(uuid())
   topicId      String
   authorId     String?
   number       Int
@@ -1639,23 +1655,44 @@ model ForumPost {
   quotePostId  String?
   quoteText    String?
   // [{ url, width, height }] — фото форума, до FORUM_POST_IMAGES_MAX
-  images       Json          @default("[]")
-  likesCount   Int           @default(0)
-  createdAt    DateTime      @default(now())
+  images       Json            @default("[]")
+  likesCount   Int             @default(0)
+  createdAt    DateTime        @default(now())
   editedAt     DateTime?
   // Удалено автором: текст стирается, номер и место в теме остаются
   deletedAt    DateTime?
   hiddenAt     DateTime?
   hiddenReason String?
-  topic        ForumTopic    @relation(fields: [topicId], references: [id], onDelete: Cascade)
-  author       User?         @relation(fields: [authorId], references: [id], onDelete: SetNull)
-  quotePost    ForumPost?    @relation("ForumQuote", fields: [quotePostId], references: [id], onDelete: SetNull)
-  quotedBy     ForumPost[]   @relation("ForumQuote")
+  // От чьего лица (ADR-098). authorId — настоящий автор при любом режиме
+  authoredAs   ForumAuthoredAs @default(SELF)
+  topic        ForumTopic      @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  author       User?           @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  quotePost    ForumPost?      @relation("ForumQuote", fields: [quotePostId], references: [id], onDelete: SetNull)
+  quotedBy     ForumPost[]     @relation("ForumQuote")
   likes        ForumLike[]
   reports      ForumReport[]
 
   @@unique([topicId, number])
   @@index([authorId, createdAt(sort: Desc)])
+}
+
+// Версия новости KTTF на другом языке — ADR-098. Оригинал — сама тема и её
+// первое сообщение (язык — ForumTopic.locale).
+model ForumTopicTranslation {
+  topicId     String
+  // kk | en | ru | zh | ko | ja — SITE_LOCALES, сверяет контракт
+  locale      String
+  title       String
+  body        String
+  // { url, width, height } — обложка этого языка; null — фото оригинала
+  image       Json?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  updatedById String?
+  topic       ForumTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  updatedBy   User?      @relation("ForumTranslationEditor", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@id([topicId, locale])
 }
 
 model ForumLike {
