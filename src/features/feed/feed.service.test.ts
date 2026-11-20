@@ -65,6 +65,8 @@ function playerPost(id: string, at: string, views: number): FeedItem {
       comments: 0,
       likes: 0,
       views,
+      liked: false,
+      mine: false,
     },
     pinned: false,
     hidden: false,
@@ -819,5 +821,114 @@ describe('от лица KTTF и версии новости — ADR-098', () => 
 
     const args = prisma.forumTopic.findMany.mock.calls[0]?.[0] as { where: object };
     expect(args.where).toMatchObject({ authorId: 'user-1', authoredAs: 'SELF' });
+  });
+});
+
+describe('обсуждение глазами зрителя — liked и mine (ADR-098)', () => {
+  function discussed(id: string, postId: string): FeedItem {
+    const item = playerPost(id, '2026-10-24T10:00:00.000Z', 5);
+
+    return item.discussion === null
+      ? item
+      : { ...item, discussion: { ...item.discussion, postId } };
+  }
+
+  const cards = [
+    { item: discussed('topic:1', 'post-1'), cityId: null, clubs: [], coaches: [], players: [] },
+    { item: discussed('topic:2', 'post-2'), cityId: null, clubs: [], coaches: [], players: [] },
+    {
+      item: post('club-post:3', '2026-10-24T09:00:00.000Z'),
+      cityId: null,
+      clubs: [],
+      coaches: [],
+      players: [],
+    },
+  ];
+
+  function viewerService(posts: object[]) {
+    const prisma = {
+      player: { findUnique: vi.fn().mockResolvedValue(null) },
+      feedCuration: { findMany: vi.fn().mockResolvedValue([]) },
+      forumPost: { findMany: vi.fn().mockResolvedValue(posts) },
+    };
+    const service = new FeedService(
+      prisma as unknown as PrismaService,
+      { targetsOf: vi.fn().mockResolvedValue(NO_FOLLOWS) } as unknown as FollowsService,
+      {} as TournamentsService,
+    );
+    for (const name of [
+      'coachPosts',
+      'topics',
+      'announced',
+      'results',
+      'levelUps',
+      'forumTopics',
+    ]) {
+      vi.spyOn(
+        service as unknown as Record<string, () => Promise<object[]>>,
+        name,
+      ).mockResolvedValue([]);
+    }
+    vi.spyOn(
+      service as unknown as Record<string, () => Promise<object[]>>,
+      'clubPosts',
+    ).mockResolvedValue(cards);
+
+    return { prisma, service };
+  }
+
+  const query = { tab: 'ALL', filter: 'PLAYERS', page: 1, limit: 20 } as const;
+
+  it('одним запросом: свой «лайк» и своё сообщение', async () => {
+    const { prisma, service } = viewerService([
+      { id: 'post-1', authorId: 'user-2', likes: [{ userId: 'user-1' }] },
+      { id: 'post-2', authorId: 'user-1', likes: [] },
+    ]);
+
+    const page = await service.feed(query, 'user-1', NOW);
+
+    expect(prisma.forumPost.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.forumPost.findMany.mock.calls[0]?.[0]).toMatchObject({
+      where: { id: { in: ['post-1', 'post-2'] } },
+      select: { likes: { where: { userId: 'user-1' } } },
+    });
+    const byId = new Map(page.items.map((item) => [item.id, item.discussion]));
+    expect(byId.get('topic:1')).toMatchObject({ liked: true, mine: false });
+    expect(byId.get('topic:2')).toMatchObject({ liked: false, mine: true });
+  });
+
+  it('гость — без запроса, оба false', async () => {
+    const { prisma, service } = viewerService([]);
+
+    const page = await service.feed(query, undefined, NOW);
+
+    expect(prisma.forumPost.findMany).not.toHaveBeenCalled();
+    expect(page.items.map((item) => item.discussion?.liked)).toEqual([false, false]);
+    expect(page.items.map((item) => item.discussion?.mine)).toEqual([false, false]);
+  });
+
+  it('стена игрока — тоже глазами зрителя', async () => {
+    const prisma = {
+      player: { findUnique: vi.fn().mockResolvedValue({ userId: 'user-2' }) },
+      forumTopic: { findMany: vi.fn().mockResolvedValue([]), count: vi.fn().mockResolvedValue(1) },
+      forumPost: {
+        findMany: vi
+          .fn()
+          .mockResolvedValue([{ id: 'post-1', authorId: 'user-2', likes: [{ userId: 'user-1' }] }]),
+      },
+    };
+    const feed = new FeedService(
+      prisma as unknown as PrismaService,
+      {} as FollowsService,
+      {} as TournamentsService,
+    );
+    vi.spyOn(
+      feed as unknown as Record<string, () => Promise<object[]>>,
+      'topics',
+    ).mockResolvedValue(cards.slice(0, 1));
+
+    const page = await feed.wall('player-2', { page: 1, limit: 10 }, 'user-1');
+
+    expect(page.items[0]?.discussion).toMatchObject({ liked: true, mine: false });
   });
 });

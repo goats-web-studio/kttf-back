@@ -35,6 +35,7 @@ export const authorFields = {
       firstName: true,
       photoUrl: true,
       rating: true,
+      confirmedAt: true,
       club: { select: { id: true, name: true } },
       coachPage: { select: { slug: true, status: true, hiddenAt: true } },
     },
@@ -64,13 +65,15 @@ export function toAuthor(user: AuthorRecord | null, now = new Date()): ForumAuth
 
   const player = user.player;
   const coach = player?.coachPage ?? null;
+  // Неподтверждённая анкета (ADR-072) рейтинга не имеет — не показываем 250 по умолчанию.
+  const rated = player?.confirmedAt != null ? player : null;
 
   return {
     userId: user.id,
     playerId: player?.id ?? null,
     name: authorName(user) ?? NO_PROFILE,
     photoUrl: player?.photoUrl ?? null,
-    rating: player === null ? null : Number(player.rating),
+    rating: rated === null ? null : Number(rated.rating),
     club: player?.club ?? null,
     moderator: user.isAdmin,
     // Метка «Тренер» — только у опубликованной и не скрытой страницы (ADR-059).

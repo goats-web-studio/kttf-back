@@ -237,7 +237,7 @@ export class FeedService {
     return {
       tab: query.tab,
       filter: query.filter ?? null,
-      items: chosen.slice(start, start + query.limit),
+      items: await this.forViewer(chosen.slice(start, start + query.limit), userId),
       total: chosen.length,
       page: query.page,
       limit: query.limit,
@@ -365,13 +365,52 @@ export class FeedService {
     ]);
 
     return {
-      items: rows.flatMap((c) =>
-        c.item.type === 'PORTAL' || c.item.type === 'PLAYER_POST' ? [c.item] : [],
+      items: await this.forViewer(
+        rows.flatMap((c) =>
+          c.item.type === 'PORTAL' || c.item.type === 'PLAYER_POST' ? [c.item] : [],
+        ),
+        viewerId,
       ),
       total,
       page: query.page,
       limit: query.limit,
     };
+  }
+
+  /**
+   * Обсуждение глазами зрителя: «лайкнул» ли он первое сообщение и не его ли
+   * оно — одним запросом на страницу. У гостя оба `false`, как собрано.
+   */
+  private async forViewer<T extends FeedItem>(
+    items: readonly T[],
+    userId: string | undefined,
+  ): Promise<T[]> {
+    const postIds = items.flatMap((item) =>
+      item.discussion?.postId == null ? [] : [item.discussion.postId],
+    );
+
+    if (userId === undefined || postIds.length === 0) return [...items];
+
+    const posts = await this.prisma.forumPost.findMany({
+      where: { id: { in: postIds } },
+      select: { id: true, authorId: true, likes: { where: { userId }, select: { userId: true } } },
+    });
+    const byId = new Map(posts.map((post) => [post.id, post]));
+
+    return items.map((item) => {
+      const post = item.discussion?.postId == null ? undefined : byId.get(item.discussion.postId);
+
+      return post === undefined || item.discussion === null
+        ? item
+        : {
+            ...item,
+            discussion: {
+              ...item.discussion,
+              liked: post.likes.length > 0,
+              mine: post.authorId === userId,
+            },
+          };
+    });
   }
 
   /** Попадает ли карточка во вкладку. */
@@ -617,6 +656,8 @@ export class FeedService {
               comments: Math.max(0, row.postsCount - 1),
               likes: first.likesCount,
               views: row.viewsCount,
+              liked: false,
+              mine: false,
             },
             pinned: false,
             hidden: false,
@@ -734,6 +775,8 @@ export class FeedService {
               comments: Math.max(0, row.postsCount - 1),
               likes: first.likesCount,
               views: row.viewsCount,
+              liked: false,
+              mine: false,
             },
             pinned: false,
             hidden: false,
@@ -1024,6 +1067,8 @@ export class FeedService {
                   comments: Math.max(0, topic.postsCount - 1),
                   likes: topic.posts[0]?.likesCount ?? 0,
                   views: topic.viewsCount,
+                  liked: false,
+                  mine: false,
                 },
               ] as const,
             ],

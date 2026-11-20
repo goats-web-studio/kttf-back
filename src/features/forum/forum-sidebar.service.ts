@@ -43,10 +43,12 @@ export class ForumSidebarService {
         firstName: string;
         photoUrl: string | null;
         rating: string;
+        confirmed: boolean;
         birthDate: Date;
       }[]
     >`
-      SELECT p."id", p."lastName", p."firstName", p."photoUrl", p."rating"::text AS "rating", p."birthDate"
+      SELECT p."id", p."lastName", p."firstName", p."photoUrl", p."rating"::text AS "rating",
+        p."confirmedAt" IS NOT NULL AS "confirmed", p."birthDate"
       FROM "Player" p
       WHERE p."userId" IS NOT NULL
         AND p."birthDate" IS NOT NULL
@@ -61,7 +63,8 @@ export class ForumSidebarService {
       playerId: row.id,
       name: `${row.lastName} ${row.firstName}`,
       photoUrl: row.photoUrl,
-      rating: Number(row.rating),
+      // Неподтверждённая анкета (ADR-072) рейтинга ещё не имеет.
+      rating: row.confirmed ? Number(row.rating) : null,
       age: today.getUTCFullYear() - row.birthDate.getUTCFullYear(),
     }));
   }

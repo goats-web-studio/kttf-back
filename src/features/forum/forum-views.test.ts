@@ -36,6 +36,7 @@ const author = {
     firstName: 'Иван',
     photoUrl: null,
     rating: { toString: () => '512.50' },
+    confirmedAt: new Date('2026-10-01T00:00:00.000Z'),
     club: { id: '77777777-7777-4777-8777-777777777777', name: 'Спин' },
     coachPage: null,
   },
@@ -77,6 +78,15 @@ describe('toAuthor', () => {
 
   it('без аккаунта — null', () => {
     expect(toAuthor(null)).toBeNull();
+  });
+
+  it('неподтверждённая анкета — без рейтинга, а не 250 по умолчанию (ADR-072)', () => {
+    const unconfirmed = {
+      ...author,
+      player: { ...author.player, rating: { toString: () => '250' }, confirmedAt: null },
+    } as unknown as typeof author;
+    expect(toAuthor(unconfirmed)?.rating).toBeNull();
+    expect(toAuthor({ ...author, player: null })?.rating).toBeNull();
   });
 
   it('«в сети» — заходил последние пять минут', () => {
