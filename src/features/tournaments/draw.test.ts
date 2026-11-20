@@ -257,6 +257,19 @@ describe('групповой этап', () => {
 
     expect(plan.clubCollisions).toEqual([]);
   });
+
+  it('двое при «4 группах» играют между собой, а не сидят по одному без встреч (ADR-100)', () => {
+    // Пилот, 20.11.2026: две группы по одному, ноль встреч, консоли некого вызвать.
+    const plan = planDraw(
+      { ...GROUPS, groupCount: 4, advancePerGroup: 4 },
+      participants(2),
+      null,
+      makeIdFactory(),
+    );
+
+    expect(plan.stages[0]?.groups).toHaveLength(1);
+    expect(plan.stages[0]?.matches).toHaveLength(1);
+  });
 });
 
 describe('достройка этапа по итогам групп', () => {
