@@ -359,14 +359,25 @@ export class TournamentsService {
     tournament: TournamentRecord,
     input: UpdateTournamentInput,
   ): Promise<TournamentView> {
-    const { tableCount, description, formatConfig, ...rest } = input;
+    const { tableCount, description, formatConfig, seedingConfig, ...rest } = input;
     const locked = Object.keys(defined(rest));
     const current = formatConfigSchema.parse(tournament.formatConfig);
 
-    if (
-      locked.length > 0 ||
-      (formatConfig !== undefined && !sameExceptLengths(current, formatConfig))
-    ) {
+    // Схема или посев другие — пришло не столько, сколько ждали (ADR-101).
+    // Пока ни одна встреча не начата, жеребьёвка строится заново.
+    const reshaped =
+      (formatConfig !== undefined && !sameExceptLengths(current, formatConfig)) ||
+      seedingConfig !== undefined;
+
+    if (locked.length === 0 && reshaped) {
+      return this.redrawRunning(tournament, {
+        formatConfig: formatConfig ?? current,
+        ...(seedingConfig === undefined ? {} : { seedingConfig }),
+        ...defined({ tableCount, description }),
+      });
+    }
+
+    if (locked.length > 0 || reshaped) {
       throw new AppError(ERROR_CODES.FORBIDDEN, 'Only tables, description and lengths change', {
         id: tournament.id,
         fields: formatConfig === undefined ? locked : [...locked, 'formatConfig'],
@@ -408,6 +419,97 @@ export class TournamentsService {
 
     // Экран зала рисует столы по их числу: правка обязана доехать до зала.
     this.screen.changed(tournament.id);
+
+    return toTournamentView(updated);
+  }
+
+  /**
+   * Другая схема у идущего турнира — ADR-101.
+   *
+   * Записалось 32, пришли 4: схема на группы не подходит, а старт уже нажат.
+   * Пока ни одна встреча не вызвана к столу и не сыграна, отменять старт
+   * незачем — жеребьёвка строится заново по новой схеме из тех, кто играет.
+   * Посев — по рейтингу на старте: снимок уже сделан (ТС 5.4), и новый
+   * расклад обязан опираться на те же числа, что и рейтинг турнира.
+   */
+  private async redrawRunning(
+    tournament: TournamentRecord,
+    change: {
+      readonly formatConfig: FormatConfig;
+      readonly seedingConfig?: SeedingConfig | null;
+      readonly tableCount?: number;
+      readonly description?: string | null;
+    },
+  ): Promise<TournamentView> {
+    const id = tournament.id;
+    const seeding =
+      change.seedingConfig !== undefined
+        ? change.seedingConfig
+        : tournament.seedingConfig === null
+          ? null
+          : seedingConfigSchema.parse(tournament.seedingConfig);
+
+    const registrations = await this.prisma.registration.findMany({
+      where: { tournamentId: id, status: { in: OCCUPYING_STATUSES } },
+      select: {
+        seed: true,
+        ratingAtStart: true,
+        player: { select: { id: true, rating: true, clubId: true } },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const participants: DrawParticipant[] = registrations.map((registration) => ({
+      playerId: registration.player.id,
+      rating: Number(registration.ratingAtStart ?? registration.player.rating),
+      clubId: registration.player.clubId,
+      seed: registration.seed,
+    }));
+    const ordered = seeding?.method === 'RANDOM' ? shuffle(participants) : participants;
+    const plan = planDraw(change.formatConfig, ordered, seeding, () => randomUUID());
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      // Проверка внутри транзакции: судья мог вызвать пару, пока организатор
+      // выбирал схему. Начатая или сыгранная встреча — уже история турнира.
+      const started = await tx.match.findFirst({
+        where: {
+          tournamentId: id,
+          OR: [{ status: { in: ['PLAYING', 'FINISHED'] } }, { setsA: { not: null } }],
+        },
+        select: { id: true },
+      });
+
+      if (started !== null) {
+        throw new AppError(
+          ERROR_CODES.VALIDATION_FAILED,
+          'The format changes only before the first match',
+          { id, matchId: started.id, reason: 'MATCH_STARTED' },
+        );
+      }
+
+      await tx.stage.deleteMany({ where: { tournamentId: id } });
+
+      for (const stage of plan.stages) {
+        await writeStage(tx, id, stage);
+      }
+
+      return tx.tournament.update({
+        where: { id },
+        data: {
+          formatConfig: change.formatConfig,
+          ...(change.seedingConfig === undefined
+            ? {}
+            : { seedingConfig: change.seedingConfig ?? Prisma.DbNull }),
+          ...defined({ tableCount: change.tableCount, description: change.description }),
+          version: { increment: 1 },
+        },
+        select: tournamentFields,
+      });
+    });
+
+    // Экран зала и консоль показывают группы и очередь — новый расклад
+    // обязан доехать до зала сразу.
+    this.screen.changed(id);
 
     return toTournamentView(updated);
   }

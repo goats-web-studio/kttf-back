@@ -909,12 +909,65 @@ describe('правка по ходу турнира — ADR-061', () => {
     expect(result.status).toBe(200);
   });
 
-  it('схему после старта не сменить: только длины', async () => {
+  function playing(id: string, rating: number) {
+    return { seed: null, ratingAtStart: rating, player: { id, rating: 999, clubId: null } };
+  }
+
+  it('схема после старта меняется, пока ни одна встреча не начата: жеребьёвка заново (ADR-101)', async () => {
+    // Записалось 32, пришли четверо: «группы» → круговая прямо из консоли.
     prisma.tournament.findUnique.mockResolvedValue(runningKnockout());
+    prisma.registration.findMany.mockResolvedValue([
+      playing('p1', 900),
+      playing('p2', 700),
+      playing('p3', 500),
+      playing('p4', 300),
+    ]);
+
+    const result = await call('PATCH', `/tournaments/${TOURNAMENT_ID}`, {
+      auth: true,
+      body: { formatConfig: { type: 'ROUND_ROBIN', rounds: 1, setsToWin: 3 } },
+    });
+
+    expect(result.status).toBe(200);
+    expect(prisma.stage.deleteMany).toHaveBeenCalledWith({
+      where: { tournamentId: TOURNAMENT_ID },
+    });
+    expect(prisma.stage.create).toHaveBeenCalledOnce();
+    expect(prisma.tournament.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          formatConfig: { type: 'ROUND_ROBIN', rounds: 1, setsToWin: 3 },
+          version: { increment: 1 },
+        }) as unknown,
+      }),
+    );
+  });
+
+  it('встреча уже начата — схема не меняется: сыгранное не стирается', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(runningKnockout());
+    prisma.registration.findMany.mockResolvedValue([playing('p1', 900), playing('p2', 700)]);
+    prisma.match.findFirst.mockResolvedValue({ id: 'semi' });
 
     const result = await call('PATCH', `/tournaments/${TOURNAMENT_ID}`, {
       auth: true,
       body: { formatConfig: { ...KNOCKOUT_FORMAT, thirdPlace: true } },
+    });
+
+    expect(result.status).toBe(400);
+    expect(result.body?.error).toMatchObject({
+      code: 'VALIDATION_FAILED',
+      details: { reason: 'MATCH_STARTED', matchId: 'semi' },
+    });
+    expect(prisma.stage.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.tournament.update).not.toHaveBeenCalled();
+  });
+
+  it('прочие поля после старта по-прежнему не правятся', async () => {
+    prisma.tournament.findUnique.mockResolvedValue(runningKnockout());
+
+    const result = await call('PATCH', `/tournaments/${TOURNAMENT_ID}`, {
+      auth: true,
+      body: { name: 'Другое', formatConfig: { type: 'ROUND_ROBIN', rounds: 1, setsToWin: 3 } },
     });
 
     expect(result.status).toBe(403);
