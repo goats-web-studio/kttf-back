@@ -1,6 +1,8 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import { START_RATING } from '@kttf/shared/rating';
 import {
+  PLAYER_IDENTITY_FIELDS,
+  type PlayerIdentityField,
   ONLINE_WINDOW_MS,
   type CityRef,
   type CoachStatus,
@@ -475,6 +477,10 @@ export class PlayersService {
       }
 
       if (allowDuplicate !== true) await this.assertNoNamesake(profile);
+    } else if (allowDuplicate !== true) {
+      // Своя анкета, а организатор уже завёл такого человека на турнире
+      // (ADR-102): «Это вы?» — привязаться, а не заводить вторую анкету.
+      await this.assertNoNamesake(profile, { confirmedOnly: true, unclaimedOnly: true });
     }
 
     // Тренер из анкеты открывает период истории — той же транзакцией (ADR-059).
@@ -623,8 +629,19 @@ export class PlayersService {
     return this.profileView(claimed);
   }
 
-  async update(id: string, input: UpdatePlayerInput): Promise<PlayerProfileView> {
+  /**
+   * Правка профиля. `editor` — кто правит (`assertCanEdit`): сам человек
+   * не меняет имя, год рождения и пол игрового профиля (ADR-102).
+   */
+  async update(
+    id: string,
+    input: UpdatePlayerInput,
+    editor: PlayerEditor = 'staff',
+  ): Promise<PlayerProfileView> {
     const current = await this.findById(id);
+
+    if (editor === 'self' && current.confirmed) assertIdentityKept(current, input);
+
     await this.places.assertCityAvailable(input.cityId, current.city.id);
     await this.assertClubExists(input.clubId ?? undefined);
     await this.assertCoachExists(input.coachPlayerId ?? undefined, id);
@@ -672,7 +689,7 @@ export class PlayersService {
    * записан у игрока, а не от параметра маршрута. Guard'у пришлось бы читать
    * ту же строку из базы, и проверка раздвоилась бы.
    */
-  async assertCanEdit(playerId: string, userId: string): Promise<void> {
+  async assertCanEdit(playerId: string, userId: string): Promise<PlayerEditor> {
     const player = await this.prisma.player.findUnique({
       where: { id: playerId },
       select: { userId: true, clubId: true },
@@ -682,9 +699,19 @@ export class PlayersService {
       throw new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { id: playerId });
     }
 
-    if (player.userId === userId) return;
+    // Свой профиль — «сам», даже у организатора: своё имя он тоже не
+    // переписывает в одиночку (ADR-102).
+    if (player.userId === userId) return 'self';
 
-    if (player.clubId !== null && (await this.isClubStaff(player.clubId, userId))) return;
+    if (player.clubId !== null && (await this.isClubStaff(player.clubId, userId))) return 'staff';
+
+    // Администратор исправляет имя по просьбе человека (ADR-102).
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { isAdmin: true },
+    });
+
+    if (user?.isAdmin === true) return 'staff';
 
     throw new AppError(ERROR_CODES.FORBIDDEN, 'Not allowed to edit this player', { id: playerId });
   }
@@ -707,7 +734,11 @@ export class PlayersService {
    */
   private async assertNoNamesake(
     profile: { readonly lastName: string; readonly firstName: string; readonly birthYear: number },
-    options: { readonly exceptId?: string; readonly confirmedOnly?: boolean } = {},
+    options: {
+      readonly exceptId?: string;
+      readonly confirmedOnly?: boolean;
+      readonly unclaimedOnly?: boolean;
+    } = {},
   ): Promise<void> {
     const namesakes = await this.prisma.player.findMany({
       where: {
@@ -717,6 +748,7 @@ export class PlayersService {
         birthYear: profile.birthYear,
         ...(options.exceptId === undefined ? {} : { id: { not: options.exceptId } }),
         ...(options.confirmedOnly === true ? { confirmedAt: { not: null } } : {}),
+        ...(options.unclaimedOnly === true ? { userId: null } : {}),
       },
       select: {
         id: true,
@@ -887,6 +919,46 @@ export const mergeFields = {
 } as const satisfies Prisma.PlayerSelect & Record<(typeof MERGED_FIELDS)[number], true>;
 
 export type MergeRecord = Prisma.PlayerGetPayload<{ select: typeof mergeFields }>;
+
+/** Кто правит профиль: сам человек или организатор его клуба / администратор. */
+export type PlayerEditor = 'self' | 'staff';
+
+/**
+ * Имя игрового профиля человек сам не меняет — ADR-102.
+ *
+ * Форма присылает профиль целиком, поэтому отказ — только на поля, значение
+ * которых действительно меняется. Дату рождения уточнить можно, но не
+ * сдвинув год.
+ */
+export function assertIdentityKept(
+  current: Pick<PlayerProfileView, PlayerIdentityField>,
+  input: UpdatePlayerInput,
+): void {
+  const changed: string[] = PLAYER_IDENTITY_FIELDS.filter((field) => {
+    if (!(field in input)) return false;
+
+    const next = input[field];
+    const before = current[field];
+
+    const trimmed = (value: unknown): unknown => (typeof value === 'string' ? value.trim() : value);
+
+    return (trimmed(next) ?? null) !== (trimmed(before) ?? null);
+  });
+
+  if (
+    !changed.includes('birthYear') &&
+    typeof input.birthDate === 'string' &&
+    Number(input.birthDate.slice(0, 4)) !== current.birthYear
+  ) {
+    changed.push('birthYear');
+  }
+
+  if (changed.length > 0) {
+    throw new AppError(ERROR_CODES.PLAYER_IDENTITY_LOCKED, 'Player identity is locked', {
+      fields: changed,
+    });
+  }
+}
 
 function claimInvalid(
   reason: 'TAKEN' | 'OWN_CONFIRMED' | 'NOT_CONFIRMED' | 'COACH_PAGE',

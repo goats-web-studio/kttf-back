@@ -173,8 +173,8 @@ export class PlayersController {
     @Body(new ZodValidationPipe(updatePlayerSchema)) body: UpdatePlayerInput,
     @CurrentUserId() userId: string,
   ): Promise<PlayerProfileView> {
-    await this.players.assertCanEdit(id, userId);
+    const editor = await this.players.assertCanEdit(id, userId);
 
-    return this.players.update(id, body);
+    return this.players.update(id, body, editor);
   }
 }

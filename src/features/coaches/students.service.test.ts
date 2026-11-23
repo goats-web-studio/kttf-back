@@ -93,11 +93,7 @@ describe('ученики на странице тренера', () => {
   });
 
   it('спрятавший тренера (ADR-066) — только числом, не среди младших', async () => {
-    prisma.player.findMany.mockResolvedValue([
-      adult,
-      { ...teen, coachVisibility: 'NONE' },
-      child,
-    ]);
+    prisma.player.findMany.mockResolvedValue([adult, { ...teen, coachVisibility: 'NONE' }, child]);
 
     const view = await service.view(COACH_ID, undefined, NOW);
 

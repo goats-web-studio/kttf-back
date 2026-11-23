@@ -64,7 +64,10 @@ function makePrisma() {
       delete: vi.fn(),
     },
     coachTenure: { create: vi.fn(), updateMany: vi.fn() },
-    user: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    user: {
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      findUnique: vi.fn().mockResolvedValue(null),
+    },
     coach: { updateMany: vi.fn() },
     duel: { updateMany: vi.fn() },
     duelResponse: { updateMany: vi.fn() },
@@ -479,12 +482,15 @@ describe('дубль чужого профиля — ADR-100', () => {
     );
   });
 
-  it('своя анкета тёзок не проверяет: человек заводит себя', async () => {
+  it('своя анкета ищет только игровые профили без кабинета (ADR-102)', async () => {
     prisma.player.findUnique.mockResolvedValue(null);
-    prisma.player.findMany.mockResolvedValue([namesake]);
+    prisma.player.findMany.mockResolvedValue([]);
 
     await service.create(newcomer, 'user-1');
 
+    expect(prisma.player.findMany.mock.calls[0]?.[0]).toMatchObject({
+      where: { userId: null, confirmedAt: { not: null } },
+    });
     expect(prisma.player.create).toHaveBeenCalledOnce();
   });
 });
@@ -493,14 +499,14 @@ describe('право править профиль', () => {
   it('свой профиль — можно', async () => {
     prisma.player.findUnique.mockResolvedValue({ userId: 'user-1', clubId: null });
 
-    await expect(service.assertCanEdit('player-1', 'user-1')).resolves.toBeUndefined();
+    await expect(service.assertCanEdit('player-1', 'user-1')).resolves.toBe('self');
   });
 
   it('организатор клуба игрока — можно', async () => {
     prisma.player.findUnique.mockResolvedValue({ userId: null, clubId: 'club-1' });
     prisma.clubMember.findUnique.mockResolvedValue({ role: 'ORGANIZER' });
 
-    await expect(service.assertCanEdit('player-1', 'user-2')).resolves.toBeUndefined();
+    await expect(service.assertCanEdit('player-1', 'user-2')).resolves.toBe('staff');
   });
 
   it('судья того же клуба — нельзя', async () => {
@@ -618,6 +624,7 @@ describe('анкета игрока', () => {
     // Тренер есть, своего профиля у вошедшего ещё нет.
     prisma.player.findUnique.mockResolvedValueOnce(player).mockResolvedValueOnce(null);
     prisma.player.create.mockResolvedValueOnce({ id: 'player-2', coachPlayerId: 'coach-a' });
+    prisma.player.findMany.mockResolvedValueOnce([]);
 
     await service.create({ ...newcomer, coachPlayerId: 'coach-a' }, 'user-1');
 
@@ -1275,5 +1282,82 @@ describe('привязка к игровому профилю — ADR-072', () =
     await expect(service.claim('player-1', 'user-1')).rejects.toMatchObject({
       details: { reason: 'TAKEN' },
     });
+  });
+});
+
+describe('имя игрового профиля — ADR-102', () => {
+  it('администратор правит чужой профиль', async () => {
+    prisma.player.findUnique.mockResolvedValue({ userId: 'user-9', clubId: null });
+    prisma.user.findUnique.mockResolvedValue({ isAdmin: true });
+
+    await expect(service.assertCanEdit('player-1', 'user-2')).resolves.toBe('staff');
+  });
+
+  it('сам человек не меняет фамилию подтверждённого профиля', async () => {
+    await expect(service.update('player-1', { lastName: 'Кимов' }, 'self')).rejects.toMatchObject({
+      code: 'PLAYER_IDENTITY_LOCKED',
+      details: { fields: ['lastName'] },
+    });
+    expect(prisma.player.update).not.toHaveBeenCalled();
+  });
+
+  it('форма целиком с тем же именем проходит', async () => {
+    await service.update(
+      'player-1',
+      {
+        lastName: 'Ким ',
+        firstName: 'Сергей',
+        middleName: null,
+        birthYear: 1998,
+        gender: 'MALE',
+        bio: 'Защитник',
+      },
+      'self',
+    );
+
+    expect(prisma.player.update).toHaveBeenCalled();
+  });
+
+  it('дату рождения уточнить можно, год сдвинуть нельзя', async () => {
+    await service.update('player-1', { birthDate: '1998-05-01' }, 'self');
+    await expect(
+      service.update('player-1', { birthDate: '1999-05-01', birthYear: 1999 }, 'self'),
+    ).rejects.toMatchObject({ code: 'PLAYER_IDENTITY_LOCKED' });
+  });
+
+  it('анкету без рейтинга человек правит свободно', async () => {
+    prisma.player.findUnique.mockResolvedValue({ ...player, confirmedAt: null });
+
+    await service.update('player-1', { lastName: 'Кимов' }, 'self');
+
+    expect(prisma.player.update).toHaveBeenCalled();
+  });
+
+  it('организатор клуба меняет имя', async () => {
+    await service.update('player-1', { lastName: 'Кимов' }, 'staff');
+
+    expect(prisma.player.update).toHaveBeenCalled();
+  });
+
+  it('своя анкета: такой человек уже заведён организатором — «Это вы?»', async () => {
+    prisma.player.findUnique.mockResolvedValue(null);
+    prisma.player.findMany.mockResolvedValue([{ ...player, rating: '900.00' }]);
+
+    await expect(service.create(newcomer, 'user-1')).rejects.toMatchObject({
+      code: 'PLAYER_DUPLICATE',
+      details: { players: [{ id: 'player-1', confirmed: true }] },
+    });
+    expect(prisma.player.findMany.mock.calls[0]?.[0]).toMatchObject({
+      where: { userId: null, confirmedAt: { not: null } },
+    });
+  });
+
+  it('своя анкета: «Нет, это не я» заводит анкету', async () => {
+    prisma.player.findUnique.mockResolvedValue(null);
+
+    await service.create({ ...newcomer, allowDuplicate: true }, 'user-1');
+
+    expect(prisma.player.findMany).not.toHaveBeenCalled();
+    expect(prisma.player.create).toHaveBeenCalled();
   });
 });

@@ -1,12 +1,15 @@
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import type {
+  AccountRequestKind,
   AccountRequestView,
+  Gender,
   AccountStatusView,
   AdminAccountRequestView,
   ListAccountRequestsQuery,
   RejectAccountRequestInput,
   RequestAccountDeletionInput,
   RequestAccountRestoreInput,
+  RequestPlayerRenameInput,
 } from '@kttf/shared/types';
 import { Inject, Injectable } from '@nestjs/common';
 
@@ -37,13 +40,18 @@ const adminFields = {
   reason: true,
   claimedLastName: true,
   claimedFirstName: true,
+  claimedMiddleName: true,
+  claimedBirthYear: true,
+  claimedGender: true,
   user: { select: { id: true, login: true, phone: true } },
   player: {
     select: {
       id: true,
       lastName: true,
       firstName: true,
+      middleName: true,
       birthYear: true,
+      gender: true,
       rating: true,
       archive: { select: { snapshot: true } },
       _count: { select: { registrations: true } },
@@ -134,15 +142,17 @@ export class AccountRequestsService {
   }
 
   async status(userId: string): Promise<AccountStatusView> {
-    const [deletion, restore, archive] = await Promise.all([
+    const [deletion, restore, rename, archive] = await Promise.all([
       this.latest(userId, 'DELETE'),
       this.latest(userId, 'RESTORE'),
+      this.latest(userId, 'RENAME'),
       this.archiveOf(userId),
     ]);
 
     return {
       deletion: deletion === null ? null : ownView(deletion),
       restore: restore === null ? null : ownView(restore),
+      rename: rename === null ? null : ownView(rename),
       restorable: archive !== null,
       restorableWithData: archive !== null && archive.snapshot !== null,
     };
@@ -180,6 +190,45 @@ export class AccountRequestsService {
     return ownView(created);
   }
 
+  /**
+   * Просьба исправить имя — ADR-102. Только у игрового профиля: анкету без
+   * рейтинга человек правит сам.
+   */
+  async requestRename(
+    userId: string,
+    input: RequestPlayerRenameInput,
+  ): Promise<AccountRequestView> {
+    const own = await this.prisma.player.findUnique({
+      where: { userId },
+      select: { id: true, confirmedAt: true },
+    });
+
+    if (own === null) throw new AppError(ERROR_CODES.NOT_FOUND, 'Player not found');
+
+    if (own.confirmedAt === null) {
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Unconfirmed profile is edited directly');
+    }
+
+    await this.assertNoPending(userId, 'RENAME');
+
+    const created = await this.prisma.accountRequest.create({
+      data: {
+        kind: 'RENAME',
+        userId,
+        playerId: own.id,
+        claimedLastName: input.lastName,
+        claimedFirstName: input.firstName,
+        claimedMiddleName: input.middleName ?? null,
+        claimedBirthYear: input.birthYear,
+        claimedGender: input.gender,
+        reason: emptyToNull(input.comment),
+      },
+      select: ownFields,
+    });
+
+    return ownView(created);
+  }
+
   async list(query: ListAccountRequestsQuery): Promise<AdminAccountRequestView[]> {
     const rows = await this.prisma.accountRequest.findMany({
       where: query.status === undefined ? {} : { status: query.status },
@@ -203,6 +252,8 @@ export class AccountRequestsService {
 
     if (request.kind === 'DELETE') {
       await this.deletion.approve(id, adminId);
+    } else if (request.kind === 'RENAME') {
+      await this.approveRename(id, adminId);
     } else {
       await this.restore.approve(id, adminId);
     }
@@ -231,6 +282,64 @@ export class AccountRequestsService {
     return this.adminViewById(id);
   }
 
+  /**
+   * Исправление имени — ADR-102. Профиль получает имя, год и пол из заявки;
+   * дата рождения другого года стирается: год и дата обязаны совпадать.
+   */
+  private async approveRename(id: string, adminId: string): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const request = await lockPendingRequest(tx, id, 'RENAME');
+      const claimed = await tx.accountRequest.findUniqueOrThrow({
+        where: { id },
+        select: {
+          claimedLastName: true,
+          claimedFirstName: true,
+          claimedMiddleName: true,
+          claimedBirthYear: true,
+          claimedGender: true,
+        },
+      });
+      const player =
+        request.playerId === null
+          ? null
+          : await tx.player.findUnique({
+              where: { id: request.playerId },
+              select: { id: true, birthDate: true, deletedAt: true },
+            });
+
+      const gender = claimed.claimedGender;
+
+      if (
+        player?.deletedAt !== null ||
+        claimed.claimedLastName === null ||
+        claimed.claimedFirstName === null ||
+        claimed.claimedBirthYear === null ||
+        !isGender(gender)
+      ) {
+        throw new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { id });
+      }
+
+      const yearMoved =
+        player.birthDate !== null && player.birthDate.getUTCFullYear() !== claimed.claimedBirthYear;
+
+      await tx.player.update({
+        where: { id: player.id },
+        data: {
+          lastName: claimed.claimedLastName,
+          firstName: claimed.claimedFirstName,
+          middleName: claimed.claimedMiddleName,
+          birthYear: claimed.claimedBirthYear,
+          gender,
+          ...(yearMoved ? { birthDate: null } : {}),
+        },
+      });
+      await tx.accountRequest.update({
+        where: { id },
+        data: { status: 'APPROVED', decidedAt: new Date(), decidedById: adminId },
+      });
+    });
+  }
+
   private async adminViewById(id: string): Promise<AdminAccountRequestView> {
     const row = await this.prisma.accountRequest.findUniqueOrThrow({
       where: { id },
@@ -240,7 +349,7 @@ export class AccountRequestsService {
     return adminView(row);
   }
 
-  private async assertNoPending(userId: string, kind: 'DELETE' | 'RESTORE'): Promise<void> {
+  private async assertNoPending(userId: string, kind: AccountRequestKind): Promise<void> {
     const pending = await this.prisma.accountRequest.count({
       where: { userId, kind, status: 'PENDING' },
     });
@@ -250,7 +359,7 @@ export class AccountRequestsService {
     }
   }
 
-  private latest(userId: string, kind: 'DELETE' | 'RESTORE'): Promise<OwnRow | null> {
+  private latest(userId: string, kind: AccountRequestKind): Promise<OwnRow | null> {
     return this.prisma.accountRequest.findFirst({
       where: { userId, kind },
       orderBy: { createdAt: 'desc' },
@@ -313,15 +422,25 @@ function adminView(row: AdminRow): AdminAccountRequestView {
             id: player.id,
             lastName: snapshot?.lastName ?? player.lastName,
             firstName: snapshot?.firstName ?? player.firstName,
+            middleName: snapshot === null ? player.middleName : null,
             birthYear: player.birthYear,
+            gender: player.gender,
             rating: player.rating.toString(),
             tournaments: player._count.registrations,
           },
     claimedName:
       row.claimedLastName === null
         ? null
-        : [row.claimedLastName, row.claimedFirstName ?? ''].join(' ').trim(),
+        : [row.claimedLastName, row.claimedFirstName ?? '', row.claimedMiddleName ?? '']
+            .join(' ')
+            .trim(),
+    claimedBirthYear: row.claimedBirthYear,
+    claimedGender: isGender(row.claimedGender) ? row.claimedGender : null,
   };
+}
+
+function isGender(value: string | null): value is Gender {
+  return value === 'MALE' || value === 'FEMALE';
 }
 
 function emptyToNull(value: string | undefined): string | null {

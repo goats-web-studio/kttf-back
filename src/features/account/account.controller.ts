@@ -16,6 +16,7 @@ import {
   rejectAccountRequestSchema,
   requestAccountDeletionSchema,
   requestAccountRestoreSchema,
+  requestPlayerRenameSchema,
   type AccountRequestView,
   type AccountStatusView,
   type AdminAccountRequestView,
@@ -23,6 +24,7 @@ import {
   type RejectAccountRequestInput,
   type RequestAccountDeletionInput,
   type RequestAccountRestoreInput,
+  type RequestPlayerRenameInput,
 } from '@kttf/shared/types';
 import type { Request } from 'express';
 import { z } from 'zod';
@@ -63,6 +65,15 @@ export class AccountController {
   @Get('requests')
   async status(@CurrentUserId() userId: string): Promise<AccountStatusView> {
     return this.requests.status(userId);
+  }
+
+  /** Исправить имя подтверждённого профиля — ADR-102. */
+  @Post('rename-request')
+  async requestRename(
+    @Body(new ZodValidationPipe(requestPlayerRenameSchema)) body: RequestPlayerRenameInput,
+    @CurrentUserId() userId: string,
+  ): Promise<AccountRequestView> {
+    return this.requests.requestRename(userId, body);
   }
 
   @Post('restore-request')

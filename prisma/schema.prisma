@@ -2003,27 +2003,31 @@ model FeedCuration {
 // Сам человек аккаунт не удаляет: он просит, решает администратор. Тем же
 // путём вернувшийся человек просит вернуть ему архивный профиль.
 model AccountRequest {
-  id               String               @id @default(uuid())
-  kind             AccountRequestKind
-  status           AccountRequestStatus @default(PENDING)
+  id                String               @id @default(uuid())
+  kind              AccountRequestKind
+  status            AccountRequestStatus @default(PENDING)
   // Аккаунт пропадает при одобрении удаления (строка `User` удаляется
   // целиком, ADR-092), а заявка остаётся как след решения.
-  userId           String?
-  user             User?                @relation("AccountRequester", fields: [userId], references: [id], onDelete: SetNull)
+  userId            String?
+  user              User?                @relation("AccountRequester", fields: [userId], references: [id], onDelete: SetNull)
   // У удаления — свой профиль просящего, у восстановления — архивный.
-  playerId         String?
-  player           Player?              @relation(fields: [playerId], references: [id], onDelete: SetNull)
-  reason           String?
+  playerId          String?
+  player            Player?              @relation(fields: [playerId], references: [id], onDelete: SetNull)
+  reason            String?
   // Имя, которое назвал просящий восстановление: им называется профиль,
   // если личные данные архива уже стёрты.
-  claimedLastName  String?
-  claimedFirstName String?
+  claimedLastName   String?
+  claimedFirstName  String?
+  // Исправление имени (ADR-102): остальное, каким профиль должен стать.
+  claimedMiddleName String?
+  claimedBirthYear  Int?
+  claimedGender     String?
   // Ответ администратора при отказе.
-  answer           String?
-  createdAt        DateTime             @default(now())
-  decidedAt        DateTime?
-  decidedById      String?
-  decidedBy        User?                @relation("AccountDecider", fields: [decidedById], references: [id], onDelete: SetNull)
+  answer            String?
+  createdAt         DateTime             @default(now())
+  decidedAt         DateTime?
+  decidedById       String?
+  decidedBy         User?                @relation("AccountDecider", fields: [decidedById], references: [id], onDelete: SetNull)
 
   @@index([status, createdAt(sort: Desc)])
   @@index([userId, kind, createdAt(sort: Desc)])
@@ -2033,6 +2037,8 @@ model AccountRequest {
 enum AccountRequestKind {
   DELETE
   RESTORE
+  // Исправить имя подтверждённого профиля — ADR-102.
+  RENAME
 }
 
 enum AccountRequestStatus {

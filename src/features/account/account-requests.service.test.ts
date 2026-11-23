@@ -30,7 +30,10 @@ function makePrisma() {
       count: vi.fn().mockResolvedValue(1),
     },
     clubMember: { findMany: vi.fn().mockResolvedValue([]) },
-    player: { findUnique: vi.fn().mockResolvedValue({ id: 'player-1', confirmedAt: null }) },
+    player: {
+      findUnique: vi.fn().mockResolvedValue({ id: 'player-1', confirmedAt: null }),
+      update: vi.fn().mockResolvedValue({}),
+    },
     playerArchive: { findFirst: vi.fn().mockResolvedValue(null) },
     accountRequest: {
       count: vi.fn().mockResolvedValue(0),
@@ -171,6 +174,7 @@ describe('восстановление: заявка и признак', () => {
     expect(status).toEqual({
       deletion: null,
       restore: null,
+      rename: null,
       restorable: true,
       restorableWithData: true,
     });
@@ -296,6 +300,78 @@ describe('решение администратора', () => {
         answer: 'Не подтвердилось',
         decidedById: 'admin-1',
       }) as unknown,
+    });
+  });
+});
+
+describe('исправление имени — ADR-102', () => {
+  const renamed = {
+    lastName: 'Халилов',
+    firstName: 'Родион',
+    birthYear: 2002,
+    gender: 'MALE' as const,
+  };
+
+  it('анкету без рейтинга человек правит сам — заявка не нужна', async () => {
+    const prisma = makePrisma();
+    const { service } = makeService(prisma);
+
+    await expect(service.requestRename(USER, renamed)).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+    });
+  });
+
+  it('игровой профиль — заявка с именем, каким оно должно стать', async () => {
+    const prisma = makePrisma();
+    prisma.player.findUnique.mockResolvedValue({ id: 'player-1', confirmedAt: CREATED });
+    const { service } = makeService(prisma);
+
+    await service.requestRename(USER, renamed);
+
+    expect(prisma.accountRequest.create.mock.calls[0]?.[0]).toMatchObject({
+      data: {
+        kind: 'RENAME',
+        playerId: 'player-1',
+        claimedLastName: 'Халилов',
+        claimedBirthYear: 2002,
+        claimedGender: 'MALE',
+      },
+    });
+  });
+
+  it('одобрение переписывает профиль; дата другого года стирается', async () => {
+    const prisma = makePrisma();
+    prisma.accountRequest.findUnique
+      .mockResolvedValueOnce({ kind: 'RENAME' })
+      .mockResolvedValueOnce({
+        id: 'request-1',
+        kind: 'RENAME',
+        status: 'PENDING',
+        userId: USER,
+        playerId: 'player-1',
+      });
+    prisma.accountRequest.findUniqueOrThrow.mockResolvedValueOnce({
+      claimedLastName: 'Халилов',
+      claimedFirstName: 'Родион',
+      claimedMiddleName: null,
+      claimedBirthYear: 2002,
+      claimedGender: 'MALE',
+    });
+    prisma.player.findUnique.mockResolvedValue({
+      id: 'player-1',
+      birthDate: new Date('2001-03-03T00:00:00Z'),
+      deletedAt: null,
+    });
+    const { service } = makeService(prisma);
+
+    await service.approve('request-1', 'admin-1').catch(() => undefined);
+
+    expect(prisma.player.update.mock.calls[0]?.[0]).toMatchObject({
+      where: { id: 'player-1' },
+      data: { lastName: 'Халилов', birthYear: 2002, gender: 'MALE', birthDate: null },
+    });
+    expect(prisma.accountRequest.update.mock.calls[0]?.[0]).toMatchObject({
+      data: { status: 'APPROVED', decidedById: 'admin-1' },
     });
   });
 });
