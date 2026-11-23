@@ -436,7 +436,11 @@ describe('роли в клубах', () => {
   });
 
   it('владельца при втором владельце убрать можно', async () => {
-    prisma.clubMember.findUnique.mockResolvedValue({ id: 'member-1', role: 'OWNER' });
+    prisma.clubMember.findUnique.mockResolvedValue({
+      id: 'member-1',
+      role: 'OWNER',
+      club: { name: 'KTTF Тест' },
+    });
     const { service } = makeService(prisma);
 
     await service.removeClubRole(USER, 'club-1', ADMIN);
@@ -444,7 +448,7 @@ describe('роли в клубах', () => {
     expect(prisma.clubMember.delete).toHaveBeenCalledWith({ where: { id: 'member-1' } });
     expect(auditCall(prisma).data).toMatchObject({
       action: 'club.role.remove',
-      before: { clubId: 'club-1', userId: USER, role: 'OWNER' },
+      before: { clubId: 'club-1', club: 'KTTF Тест', userId: USER, role: 'OWNER' },
     });
   });
 });
