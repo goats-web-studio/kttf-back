@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 
 import { AccountModule } from './features/account/account.module.js';
+import { AdminModule } from './features/admin/admin.module.js';
 import { AuthModule } from './features/auth/auth.module.js';
 import { CatalogModule } from './features/catalog/catalog.module.js';
 import { ClubApplicationsModule } from './features/club-applications/club-applications.module.js';
@@ -39,6 +40,7 @@ import { PrismaModule } from './infra/prisma/prisma.module.js';
     PrismaModule,
     AuthModule,
     AccountModule,
+    AdminModule,
     ClubsModule,
     ClubApplicationsModule,
     ClubContentModule,
