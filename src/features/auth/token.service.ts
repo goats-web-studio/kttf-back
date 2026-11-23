@@ -53,6 +53,15 @@ export class TokenService {
     this.revoked.set(userId, now + ACCESS_TOKEN_TTL_SECONDS * 1000);
   }
 
+  /**
+   * Снимает отзыв — ADR-103: аккаунт разблокировали раньше, чем истекли
+   * токены. Иначе человек входит заново, а новый токен ещё 15 минут
+   * отвергается как отозванный.
+   */
+  restoreUser(userId: string): void {
+    this.revoked.delete(userId);
+  }
+
   verifyAccessToken(token: string, now = Date.now()): string | null {
     try {
       const payload = this.jwt.verify<AccessTokenPayload>(token);

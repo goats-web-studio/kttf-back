@@ -51,6 +51,13 @@ model User {
   // посмотреть турниры другого города не значит туда переехать.
   cityId                String?
   city                  City?     @relation(fields: [cityId], references: [id])
+  // Блокировка администратором — ADR-103. Вход и обновление токена
+  // отказывают с причиной, которую человек видит. Кто заблокировал — простая
+  // колонка без связи: администратора могут и удалить, а след в журнале
+  // (AuditLog) остаётся всё равно.
+  blockedAt             DateTime?
+  blockedReason         String?
+  blockedById           String?
 
   player            Player?
   clubRoles         ClubMember[]

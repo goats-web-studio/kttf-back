@@ -125,6 +125,13 @@ const STATUS_BY_CODE: Readonly<Record<ErrorCode, number>> = {
   // восстановление, которому мешает то, что уже есть, — конфликт с данными.
   ACCOUNT_REQUEST_PENDING: HttpStatus.CONFLICT,
   ACCOUNT_RESTORE_INVALID: HttpStatus.CONFLICT,
+
+  // Управление аккаунтами — ADR-103. Заблокированный — запрет, а не 401: на
+  // 401 клиенты обновляют токен и повторяют запрос по кругу. Недопустимое
+  // действие администратора — конфликт с данными: последний администратор,
+  // занятый логин, профиль уже с аккаунтом.
+  ACCOUNT_BLOCKED: HttpStatus.FORBIDDEN,
+  ADMIN_ACTION_INVALID: HttpStatus.CONFLICT,
 };
 
 const CODE_BY_STATUS: Readonly<Record<number, ErrorCode>> = {

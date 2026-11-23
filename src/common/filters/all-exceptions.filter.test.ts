@@ -119,6 +119,8 @@ describe('AllExceptionsFilter', () => {
       ACCOUNT_DELETE_BLOCKED: 409,
       ACCOUNT_REQUEST_PENDING: 409,
       ACCOUNT_RESTORE_INVALID: 409,
+      ACCOUNT_BLOCKED: 403,
+      ADMIN_ACTION_INVALID: 409,
     };
 
     for (const code of Object.values(ERROR_CODES)) {

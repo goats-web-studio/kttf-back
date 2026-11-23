@@ -589,3 +589,58 @@ describe('перебор пароля — ADR-056', () => {
     expect(prisma.user.findUnique).not.toHaveBeenCalled();
   }, 60_000);
 });
+
+/**
+ * Блокировка администратором — ADR-103: вход, продление и `me` отказывают
+ * с причиной. Причина видна только тому, кто знает пароль.
+ */
+describe('заблокированный аккаунт — ADR-103', () => {
+  const blocked = { ...account, blockedAt: new Date(), blockedReason: 'Спам на форуме' };
+  let prisma: ReturnType<typeof makePrisma>;
+
+  beforeEach(() => {
+    prisma = makePrisma();
+  });
+
+  it('верный пароль — отказ ACCOUNT_BLOCKED с причиной, сессии нет', async () => {
+    prisma.user.findUnique.mockResolvedValue(blocked);
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.login({ identifier: 'aslan', password: PASSWORD }, IP),
+    ).rejects.toMatchObject({ code: 'ACCOUNT_BLOCKED', details: { reason: 'Спам на форуме' } });
+    expect(prisma.session.create).not.toHaveBeenCalled();
+  });
+
+  it('неверный пароль блокировку не выдаёт', async () => {
+    prisma.user.findUnique.mockResolvedValue(blocked);
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.login({ identifier: 'aslan', password: 'ne-parol' }, IP),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+  });
+
+  it('refresh отказывает и сессию не продлевает', async () => {
+    prisma.session.findUnique.mockResolvedValue({
+      id: 'session-1',
+      userId: 'user-1',
+      expiresAt: new Date(Date.now() + 1000),
+    });
+    prisma.user.findUnique.mockResolvedValue(blocked);
+    const { service } = makeService(prisma);
+
+    await expect(service.refresh('что-то')).rejects.toMatchObject({ code: 'ACCOUNT_BLOCKED' });
+    expect(prisma.session.update).not.toHaveBeenCalled();
+  });
+
+  it('me отказывает с живым access-токеном', async () => {
+    prisma.user.findUnique.mockResolvedValue(blocked);
+    const { service } = makeService(prisma);
+
+    await expect(service.findUser('user-1')).rejects.toMatchObject({
+      code: 'ACCOUNT_BLOCKED',
+      details: { reason: 'Спам на форуме' },
+    });
+  });
+});

@@ -57,12 +57,26 @@ export class ClubRoleGuard implements CanActivate {
     });
 
     if (membership === null || !allowed.includes(membership.role)) {
+      // Администратор платформы — супервизор, он управляет любым клубом
+      // (ADR-103): разбирает просьбы владельцев, когда те сами не могут.
+      // Читается после роли: обычному участнику лишний запрос не нужен.
+      if (await this.isAdmin(userId)) return true;
+
       // Один и тот же ответ и для чужого клуба, и для несуществующего: иначе
       // перебором идентификаторов узнаётся, какие клубы вообще есть.
       throw new AppError(ERROR_CODES.FORBIDDEN, 'Insufficient club role', { clubId });
     }
 
     return true;
+  }
+
+  private async isAdmin(userId: string): Promise<boolean> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { isAdmin: true },
+    });
+
+    return user?.isAdmin === true;
   }
 }
 

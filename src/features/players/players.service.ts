@@ -554,30 +554,7 @@ export class PlayersService {
     }
 
     const confirmed = await this.prisma.$transaction(async (tx) => {
-      // Условие на пустоту: второе подтверждение переписало бы рейтинг мимо
-      // журнала, а два организатора в зале нажимают одновременно.
-      const changed = await tx.player.updateMany({
-        where: { id, confirmedAt: null },
-        data: { confirmedAt: new Date(), rating: input.startRating },
-      });
-
-      if (changed.count === 0) {
-        const exists = await tx.player.findUnique({ where: { id }, select: { id: true } });
-
-        throw exists === null
-          ? new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { id })
-          : new AppError(ERROR_CODES.VALIDATION_FAILED, 'Player is already confirmed', { id });
-      }
-
-      await tx.ratingEvent.create({
-        data: {
-          playerId: id,
-          type: 'INITIAL',
-          ratingBefore: START_RATING,
-          delta: startingDelta(input.startRating),
-          ratingAfter: input.startRating,
-        },
-      });
+      await confirmSheet(tx, id, input.startRating);
 
       return tx.player.findUniqueOrThrow({ where: { id }, select: profileFields });
     });
@@ -958,6 +935,43 @@ export function assertIdentityKept(
       fields: changed,
     });
   }
+}
+
+/**
+ * Анкета становится игровым профилем — ADR-072: рейтинг по уровню игры
+ * событием INITIAL, как при заведении (ADR-062). Общее для организатора
+ * (`PlayersService.confirm`) и администратора (ADR-103).
+ *
+ * Условие на пустоту: второе подтверждение переписало бы рейтинг мимо
+ * журнала, а два организатора в зале нажимают одновременно.
+ */
+export async function confirmSheet(
+  tx: Prisma.TransactionClient,
+  id: string,
+  startRating: number,
+): Promise<void> {
+  const changed = await tx.player.updateMany({
+    where: { id, confirmedAt: null },
+    data: { confirmedAt: new Date(), rating: startRating },
+  });
+
+  if (changed.count === 0) {
+    const exists = await tx.player.findUnique({ where: { id }, select: { id: true } });
+
+    throw exists === null
+      ? new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { id })
+      : new AppError(ERROR_CODES.VALIDATION_FAILED, 'Player is already confirmed', { id });
+  }
+
+  await tx.ratingEvent.create({
+    data: {
+      playerId: id,
+      type: 'INITIAL',
+      ratingBefore: START_RATING,
+      delta: startingDelta(startRating),
+      ratingAfter: startRating,
+    },
+  });
 }
 
 function claimInvalid(

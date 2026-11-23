@@ -73,6 +73,10 @@ export class AuthService {
 
     this.throttle.recordSuccess(identifier);
 
+    // Блокировка — после сверки пароля (ADR-103): иначе отказ с причиной
+    // выдал бы перебирающему, что такой аккаунт есть, без знания пароля.
+    assertNotBlocked(account);
+
     return this.startSession(account, userAgent);
   }
 
@@ -227,6 +231,15 @@ export class AuthService {
       throw new AppError(ERROR_CODES.UNAUTHORIZED, 'Session not found or expired');
     }
 
+    // Блокировка закрывает сессии сразу (ADR-103), но проверка здесь тоже
+    // нужна: сессия, открытая между чтением и блокировкой, не продлится.
+    assertNotBlocked(
+      await this.prisma.user.findUnique({
+        where: { id: session.userId },
+        select: { blockedAt: true, blockedReason: true },
+      }),
+    );
+
     const next = this.tokens.generateRefreshToken();
 
     await this.prisma.session.update({
@@ -260,6 +273,10 @@ export class AuthService {
       // был действителен.
       throw new AppError(ERROR_CODES.UNAUTHORIZED, 'User no longer exists');
     }
+
+    // Кабинет с ещё живым access-токеном узнаёт о блокировке сразу, а не
+    // через 15 минут, когда токен истечёт (ADR-103).
+    assertNotBlocked(user);
 
     return toView(user);
   }
@@ -387,6 +404,21 @@ export class AuthService {
     if (city === null) {
       throw new AppError(ERROR_CODES.CITY_UNAVAILABLE, 'City is unknown or hidden', { cityId });
     }
+  }
+}
+
+/**
+ * Заблокированный аккаунт — ADR-103. Причину человек видит: без неё он не
+ * поймёт, к кому идти. Нет полей — не заблокирован: у выборок, которые их
+ * не просили, блокировки быть не может.
+ */
+function assertNotBlocked(
+  user: { blockedAt?: Date | null; blockedReason?: string | null } | null,
+): void {
+  if (user?.blockedAt instanceof Date) {
+    throw new AppError(ERROR_CODES.ACCOUNT_BLOCKED, 'Account is blocked', {
+      reason: user.blockedReason ?? null,
+    });
   }
 }
 
