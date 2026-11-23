@@ -440,7 +440,7 @@ export class AdminUsersService {
 
     const club = await this.prisma.club.findUnique({
       where: { id: input.clubId },
-      select: { id: true },
+      select: { id: true, name: true },
     });
 
     if (club === null) {
@@ -469,8 +469,8 @@ export class AdminUsersService {
         entityId: member.id,
         ...(current === null
           ? {}
-          : { before: { clubId: input.clubId, userId: id, role: current.role } }),
-        after: { clubId: input.clubId, userId: id, role: input.role },
+          : { before: { clubId: input.clubId, club: club.name, userId: id, role: current.role } }),
+        after: { clubId: input.clubId, club: club.name, userId: id, role: input.role },
       });
     });
 
@@ -481,7 +481,7 @@ export class AdminUsersService {
     await this.prisma.$transaction(async (tx) => {
       const current = await tx.clubMember.findUnique({
         where: { clubId_userId: { clubId, userId: id } },
-        select: { id: true, role: true },
+        select: { id: true, role: true, club: { select: { name: true } } },
       });
 
       if (current === null) {
@@ -496,7 +496,7 @@ export class AdminUsersService {
         action: 'club.role.remove',
         entityType: 'ClubMember',
         entityId: current.id,
-        before: { clubId, userId: id, role: current.role },
+        before: { clubId, club: current.club.name, userId: id, role: current.role },
       });
     });
 
