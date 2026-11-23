@@ -78,6 +78,7 @@ function makePrisma() {
     city: { findFirst: vi.fn().mockResolvedValue({ id: 'city-1' }) },
     ratingEvent: { groupBy: vi.fn().mockResolvedValue([]), create: vi.fn() },
     product: { findMany: vi.fn().mockResolvedValue([]) },
+    auditLog: { create: vi.fn() },
     $queryRaw: vi.fn().mockResolvedValue([]),
   };
 
@@ -1359,5 +1360,27 @@ describe('имя игрового профиля — ADR-102', () => {
 
     expect(prisma.player.findMany).not.toHaveBeenCalled();
     expect(prisma.player.create).toHaveBeenCalled();
+  });
+});
+
+describe('правка чужого профиля в журнал — ADR-103', () => {
+  it('организатор или администратор — запись было/стало', async () => {
+    await service.update('player-1', { lastName: 'Кимов' }, 'staff', 'admin-1');
+
+    expect(prisma.auditLog.create.mock.calls[0]?.[0]).toMatchObject({
+      data: {
+        actorId: 'admin-1',
+        action: 'player.update',
+        entityId: 'player-1',
+        before: { lastName: 'Ким' },
+        after: { lastName: 'Кимов' },
+      },
+    });
+  });
+
+  it('сам человек — без журнала', async () => {
+    await service.update('player-1', { bio: 'Защитник' }, 'self', 'user-1');
+
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 });

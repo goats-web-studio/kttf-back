@@ -175,6 +175,6 @@ export class PlayersController {
   ): Promise<PlayerProfileView> {
     const editor = await this.players.assertCanEdit(id, userId);
 
-    return this.players.update(id, body, editor);
+    return this.players.update(id, body, editor, userId);
   }
 }

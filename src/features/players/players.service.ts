@@ -614,6 +614,7 @@ export class PlayersService {
     id: string,
     input: UpdatePlayerInput,
     editor: PlayerEditor = 'staff',
+    actorId?: string,
   ): Promise<PlayerProfileView> {
     const current = await this.findById(id);
 
@@ -637,6 +638,26 @@ export class PlayersService {
     // Смена тренера пишет историю и правит записи на турниры до старта той
     // же транзакцией (ADR-059, T3).
     const updated = await this.prisma.$transaction(async (tx) => {
+      // Чужой профиль правит организатор или администратор — в журнал
+      // (ADR-103): было — стало по присланным полям.
+      if (editor === 'staff' && actorId !== undefined) {
+        const changed = Object.keys(input) as (keyof UpdatePlayerInput)[];
+        const before = Object.fromEntries(
+          changed.map((field) => [field, (current as Record<string, unknown>)[field] ?? null]),
+        );
+
+        await tx.auditLog.create({
+          data: {
+            actorId,
+            action: 'player.update',
+            entityType: 'Player',
+            entityId: id,
+            before: before,
+            after: input,
+          },
+        });
+      }
+
       const before = await tx.player.findUniqueOrThrow({
         where: { id },
         select: { coachPlayerId: true, coachName: true },
