@@ -72,7 +72,21 @@ export const tournamentFields = {
   // Число участников считает база: тянуть весь состав ради длины списка
   // означало бы выгружать сотню записей на каждую карточку календаря.
   // Фильтр остаётся изменяемым массивом — Prisma не принимает readonly.
-  _count: { select: { registrations: { where: { status: { in: OCCUPYING_STATUSES } } } } },
+  // Снявшийся после старта сыграл и занял место (ADR-061): в числе
+  // участников он остаётся. Снимок рейтинга на старте есть только у тех,
+  // кто стартовал, — до старта снятый места не занимает.
+  _count: {
+    select: {
+      registrations: {
+        where: {
+          OR: [
+            { status: { in: OCCUPYING_STATUSES } },
+            { status: 'WITHDRAWN' as const, ratingAtStart: { not: null } },
+          ],
+        },
+      },
+    },
+  },
 };
 
 export const registrationFields = {
