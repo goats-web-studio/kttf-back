@@ -183,6 +183,27 @@ describe('олимпийская сетка', () => {
     expect(withThird.stages[0]?.matches).toHaveLength(4);
   });
 
+  it('на все места — ветка за третье и блоки мест с диапазонами — ADR-104', () => {
+    // Восемь: 7 встреч основной сетки и 7 за места (3..8, 7..8, 3..6, 5..6, 3..4).
+    const plan = planDraw({ ...KNOCKOUT, allPlaces: true }, participants(8), null, makeIdFactory());
+    const [stage] = plan.stages;
+    const placement = stage?.matches.filter((match) => match.placeFrom !== undefined) ?? [];
+
+    expect(stage?.matches).toHaveLength(14);
+    expect(placement).toHaveLength(7);
+    expect(stage?.config).toMatchObject({ allPlaces: true, thirdPlace: false, bracketSize: 8 });
+    // Встреча за 5-е место решает места обоих и берёт проигравших ветки.
+    const fifth = placement.find((match) => match.placeFrom === 5);
+    expect(fifth).toMatchObject({ placeTo: 6, winnerPlace: 5, loserPlace: 6 });
+    expect(fifth?.sourceA).toMatchObject({ kind: 'LOSER' });
+    // Каждое место с 1 по 8 разыгрывается ровно один раз.
+    const places = (stage?.matches ?? [])
+      .flatMap((match) => [match.winnerPlace, match.loserPlace])
+      .filter((place) => place !== undefined)
+      .sort((a, b) => a - b);
+    expect(places).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+  });
+
   it('утешительная сетка честно отвергается', () => {
     // Движок её не строит, а собирать сетку в приложении запрещено:
     // офлайн-консоль обязана получить ту же сетку тем же кодом.
@@ -384,6 +405,22 @@ describe('достройка этапа по итогам групп', () => {
     // Длина — общая плей-офф: длины по кругам относятся к основной сетке.
     expect(exit?.config).toMatchObject({ setsToWin: 4, bracketSize: 4 });
     expect(exit?.config).not.toHaveProperty('playoffSetsToWin');
+  });
+
+  it('на все места — и плей-офф, и сетка за места разыгрывают каждое место — ADR-104', () => {
+    const [playoff, exit] = planNextStage(
+      { ...GROUPS_KNOCKOUT, exitBracket: true, allPlaces: true },
+      SELECTION,
+      makeIdFactory(),
+    );
+
+    // Четверо: полуфиналы, финал и «3..4» из проигравших полуфиналов.
+    expect(playoff?.matches).toHaveLength(4);
+    expect(playoff?.config).toMatchObject({ allPlaces: true, thirdPlace: false });
+    expect(exit?.matches.find((match) => match.placeFrom === 3)).toMatchObject({
+      winnerPlace: 3,
+      loserPlace: 4,
+    });
   });
 
   it('одному не вышедшему сетка за места не строится', () => {

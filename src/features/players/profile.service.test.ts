@@ -304,6 +304,7 @@ describe('результаты по турнирам', () => {
     id: string,
     round: number,
     source: unknown = { kind: 'WINNER', matchId: 'x' },
+    placeFrom: number | null = null,
   ) => ({
     id,
     tournamentId: T1,
@@ -316,6 +317,8 @@ describe('результаты по турнирам', () => {
     startedAt: new Date('2026-09-01T11:35:30.000Z'),
     finishedAt: new Date('2026-09-01T12:00:00.000Z'),
     bracketRound: round,
+    placeFrom,
+    placeTo: placeFrom === null ? null : placeFrom + 1,
     sourceA: source,
     sourceB: source,
     stage: { name: 'Плей-офф', type: 'KNOCKOUT' },
@@ -360,6 +363,20 @@ describe('результаты по турнирам', () => {
     const page = await service.tournamentsOf(ME, { page: 1, limit: 10 });
 
     expect(page.items[0]).toMatchObject({ delta: null, ratingAfter: null });
+  });
+
+  it('встреча сетки на все места — за места, даже без проигравших в источниках (ADR-104)', async () => {
+    // «5..6» из победителей «5..8»: источники — победители, но это встреча за места.
+    prisma.match.findMany.mockResolvedValue([bracketMatch('fifth', 6, undefined, 5)]);
+
+    const [item] = (await service.tournamentsOf(ME, { page: 1, limit: 10 })).items;
+
+    expect(item?.matches[0]).toMatchObject({
+      roundFromFinal: null,
+      placement: true,
+      placeFrom: 5,
+      placeTo: 6,
+    });
   });
 
   it('круг сетки — от финала, встреча за места — отдельно', async () => {

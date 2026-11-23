@@ -115,6 +115,10 @@ export const matchFields = {
   resultType: true,
   bracketRound: true,
   bracketSlot: true,
+  placeFrom: true,
+  placeTo: true,
+  winnerPlace: true,
+  loserPlace: true,
   startedAt: true,
   finishedAt: true,
 } as const;

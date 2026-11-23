@@ -1371,6 +1371,15 @@ model Match {
   bracketRound Int?
   bracketSlot  Int?
 
+  // Сетка «на все места» — ADR-104. placeFrom/placeTo — диапазон мест,
+  // который разыгрывает круг («3..24», «5..6»); у встреч основной сетки
+  // пусто. winnerPlace/loserPlace — итоговое место исхода, если встреча для
+  // него последняя. Это свойства сетки, их пишет жеребьёвка.
+  placeFrom   Int?
+  placeTo     Int?
+  winnerPlace Int?
+  loserPlace  Int?
+
   startedAt  DateTime?
   finishedAt DateTime?
 

@@ -121,6 +121,9 @@ function tablesOf(stage: StageRecord, standings: TournamentStandingsView): Group
  * не сохраняется. Узнаётся она по источникам — это единственная встреча
  * сетки, в которую едут проигравшие, а не победители.
  *
+ * Сетка на все места (ADR-104) помечена: диапазон мест у встречи и места
+ * исходов записаны жеребьёвкой, и места берутся из них, а не из кругов.
+ *
  * Техническая победа и снятие здесь считаются исходом наравне с обычной
  * победой: в отличие от рейтинга, по сетке победитель едет дальше в любом
  * случае, и место он занял.
@@ -137,9 +140,11 @@ function toBracketResult(match: MatchRecord): BracketResult {
 
   return {
     round: match.bracketRound ?? 1,
-    kind: takesLosers(match) ? 'THIRD_PLACE' : 'MAIN',
+    kind: match.placeFrom !== null ? 'PLACEMENT' : takesLosers(match) ? 'THIRD_PLACE' : 'MAIN',
     winner: decided ? (winnerIsA ? match.playerAId : match.playerBId) : null,
     loser: decided ? (winnerIsA ? match.playerBId : match.playerAId) : null,
+    ...(match.winnerPlace === null ? {} : { winnerPlace: match.winnerPlace }),
+    ...(match.loserPlace === null ? {} : { loserPlace: match.loserPlace }),
   };
 }
 

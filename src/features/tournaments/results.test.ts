@@ -28,6 +28,11 @@ interface MatchSeed {
   readonly round?: number;
   readonly slot?: number;
   readonly takesLosers?: boolean;
+  /** Сетка на все места — ADR-104. */
+  readonly placeFrom?: number;
+  readonly placeTo?: number;
+  readonly winnerPlace?: number;
+  readonly loserPlace?: number;
 }
 
 function makeMatch(stageId: string, groupId: string | null, seed: MatchSeed, index: number) {
@@ -49,6 +54,10 @@ function makeMatch(stageId: string, groupId: string | null, seed: MatchSeed, ind
     resultType: seed.setsA === undefined ? null : 'NORMAL',
     bracketRound: seed.round ?? 1,
     bracketSlot: seed.slot ?? null,
+    placeFrom: seed.placeFrom ?? null,
+    placeTo: seed.placeTo ?? null,
+    winnerPlace: seed.winnerPlace ?? null,
+    loserPlace: seed.loserPlace ?? null,
   };
 }
 
@@ -365,6 +374,46 @@ describe('группы плюс сетка', () => {
     const results = build(stages, registrations, 'GROUPS_KNOCKOUT');
 
     expect(results.shared).toEqual([{ participants: ['c', 'd'], places: [3, 4] }]);
+  });
+
+  it('сетка на все места: место приходит из последней встречи, а не из круга — ADR-104', () => {
+    // «3..4» берёт проигравших полуфиналов и сама решает 3-е и 4-е место.
+    const stages = [
+      groups,
+      knockoutStage([
+        { id: 'sf1', a: 'a', b: 'c', setsA: 2, setsB: 0, round: 1 },
+        { id: 'sf2', a: 'b', b: 'd', setsA: 2, setsB: 0, round: 1 },
+        {
+          id: 'final',
+          a: 'a',
+          b: 'b',
+          setsA: 2,
+          setsB: 0,
+          round: 2,
+          winnerPlace: 1,
+          loserPlace: 2,
+        },
+        {
+          id: 'p3',
+          a: 'd',
+          b: 'c',
+          setsA: 2,
+          setsB: 1,
+          round: 3,
+          takesLosers: true,
+          placeFrom: 3,
+          placeTo: 4,
+          winnerPlace: 3,
+          loserPlace: 4,
+        },
+      ]),
+    ];
+
+    const results = build(stages, registrations, 'GROUPS_KNOCKOUT');
+    const byId = Object.fromEntries(results.participants.map((row) => [row.player.id, row.place]));
+
+    expect(byId).toEqual({ a: 1, b: 2, d: 3, c: 4 });
+    expect(results.shared).toEqual([]);
   });
 
   it('техническая победа определяет место, хотя рейтинг не двигает', () => {

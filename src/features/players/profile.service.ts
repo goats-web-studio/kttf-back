@@ -237,6 +237,8 @@ export class PlayerProfileService {
           startedAt: true,
           finishedAt: true,
           bracketRound: true,
+          placeFrom: true,
+          placeTo: true,
           sourceA: true,
           sourceB: true,
           stage: { select: { name: true, type: true } },
@@ -259,6 +261,9 @@ export class PlayerProfileService {
         where: {
           tournamentId: { in: pageIds },
           bracketRound: { not: null },
+          // Встречи за места сетки на все места (ADR-104) идут столбцами
+          // после финала — круг финала считается по основной сетке.
+          placeFrom: null,
           stage: { type: { in: [...BRACKETS] } },
         },
         _max: { bracketRound: true },
@@ -317,7 +322,11 @@ export class PlayerProfileService {
             const setsAgainst = (isA ? match.setsB : match.setsA) ?? 0;
             const opponentId = isA ? match.playerBId : match.playerAId;
             const bracket = (BRACKETS as readonly string[]).includes(match.stage.type);
-            const placement = bracket && (takesLosers(match.sourceA) || takesLosers(match.sourceB));
+            const placement =
+              bracket &&
+              (match.placeFrom !== null ||
+                takesLosers(match.sourceA) ||
+                takesLosers(match.sourceB));
             const event = match.ratingEvents[0];
             const opponentRating =
               event?.opponentRating ??
@@ -333,6 +342,8 @@ export class PlayerProfileService {
                   ? null
                   : Math.max(0, (finalOf.get(match.stageId) ?? 1) - match.bracketRound),
               placement,
+              ...(match.placeFrom === null ? {} : { placeFrom: match.placeFrom }),
+              ...(match.placeTo === null ? {} : { placeTo: match.placeTo }),
               startedAt: match.startedAt?.toISOString() ?? null,
               playedAt: match.finishedAt?.toISOString() ?? null,
               opponent: opponentId === null ? null : (opponents.get(opponentId) ?? null),

@@ -175,6 +175,9 @@ export function toMatchView(match: MatchRecord): MatchView {
     resultType: match.resultType,
     bracketRound: match.bracketRound,
     bracketSlot: match.bracketSlot,
+    // Только у встреч сетки на все места — ADR-104.
+    ...(match.placeFrom === null ? {} : { placeFrom: match.placeFrom }),
+    ...(match.placeTo === null ? {} : { placeTo: match.placeTo }),
     startedAt: match.startedAt?.toISOString() ?? null,
     finishedAt: match.finishedAt?.toISOString() ?? null,
   };

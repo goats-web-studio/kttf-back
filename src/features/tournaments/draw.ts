@@ -1,4 +1,5 @@
 import {
+  buildAllPlacesBracket,
   buildKnockout,
   scheduleRoundRobin,
   splitIntoGroups,
@@ -47,6 +48,11 @@ export interface PlannedMatch {
   /** Тур круговой схемы либо круг сетки. */
   readonly bracketRound: number | null;
   readonly bracketSlot: number | null;
+  /** Сетка на все места — ADR-104. У прочих встреч не задано. */
+  readonly placeFrom?: number;
+  readonly placeTo?: number;
+  readonly winnerPlace?: number;
+  readonly loserPlace?: number;
 }
 
 export interface PlannedGroup {
@@ -194,7 +200,7 @@ function planKnockout(
     stages: [
       planKnockoutStage(
         seeded.map((participant) => participant.playerId),
-        { thirdPlace: config.thirdPlace },
+        { thirdPlace: config.thirdPlace, allPlaces: config.allPlaces === true },
         {
           order: 0,
           name: 'Олимпийская сетка',
@@ -216,7 +222,10 @@ function planKnockout(
  */
 function planKnockoutStage(
   participants: readonly ParticipantId[],
-  options: KnockoutOptions,
+  options: KnockoutOptions & {
+    /** Сетка «на все места» — ADR-104: встреча за третье место в ней своя. */
+    readonly allPlaces?: boolean;
+  },
   stage: {
     order: number;
     name: string;
@@ -228,7 +237,10 @@ function planKnockoutStage(
   },
   makeId: () => string,
 ): PlannedStage {
-  const bracket = buildKnockout(participants, options);
+  const allPlaces = options.allPlaces === true;
+  const bracket = allPlaces
+    ? buildAllPlacesBracket(participants)
+    : buildKnockout(participants, options);
 
   // Движок ссылается на встречи своими идентификаторами вида «R2M0».
   // База ссылается на них же по первичному ключу, поэтому ключи выдаются
@@ -242,7 +254,8 @@ function planKnockoutStage(
     config: {
       setsToWin: stage.setsToWin,
       ...(stage.playoffSetsToWin === undefined ? {} : { playoffSetsToWin: stage.playoffSetsToWin }),
-      thirdPlace: options.thirdPlace ?? false,
+      thirdPlace: allPlaces ? false : (options.thirdPlace ?? false),
+      ...(allPlaces ? { allPlaces: true } : {}),
       bracketSize: bracket.bracketSize,
       byes: bracket.byes,
     },
@@ -256,6 +269,11 @@ function planKnockoutStage(
       sourceB: sourceOf(match.b, ids),
       bracketRound: match.round,
       bracketSlot: match.slot,
+      ...(match.places === undefined
+        ? {}
+        : { placeFrom: match.places.from, placeTo: match.places.to }),
+      ...(match.winnerPlace === undefined ? {} : { winnerPlace: match.winnerPlace }),
+      ...(match.loserPlace === undefined ? {} : { loserPlace: match.loserPlace }),
     })),
   };
 }
@@ -395,7 +413,7 @@ export function planNextStage(
   if (config.type === 'GROUPS_KNOCKOUT') {
     const playoff = planKnockoutStage(
       selection.seeded,
-      { thirdPlace: config.thirdPlace },
+      { thirdPlace: config.thirdPlace, allPlaces: config.allPlaces === true },
       {
         order: 1,
         name: 'Плей-офф',
@@ -412,7 +430,7 @@ export function planNextStage(
       playoff,
       planKnockoutStage(
         selection.exits,
-        { thirdPlace: config.thirdPlace },
+        { thirdPlace: config.thirdPlace, allPlaces: config.allPlaces === true },
         {
           order: 2,
           name: 'Сетка за места',

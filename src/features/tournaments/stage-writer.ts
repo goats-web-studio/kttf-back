@@ -49,6 +49,10 @@ export async function writeStage(
       sourceB: match.sourceB ?? Prisma.DbNull,
       bracketRound: match.bracketRound,
       bracketSlot: match.bracketSlot,
+      placeFrom: match.placeFrom ?? null,
+      placeTo: match.placeTo ?? null,
+      winnerPlace: match.winnerPlace ?? null,
+      loserPlace: match.loserPlace ?? null,
     })),
   });
 
