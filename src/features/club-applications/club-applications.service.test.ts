@@ -74,7 +74,7 @@ describe('приём заявки', () => {
   });
 
   it('город строкой без ссылки — cityId пустой, справочник не трогается', async () => {
-    await service.create(INPUT, undefined, '10.0.0.1');
+    await service.create(INPUT, 'user-1', '10.0.0.1');
 
     expect(prisma.clubApplication.create.mock.calls[0]?.[0]).toMatchObject({
       data: { city: 'Караганда', cityId: null },
@@ -83,7 +83,7 @@ describe('приём заявки', () => {
   });
 
   it('город из справочника — сохраняется и ссылкой (ADR-096)', async () => {
-    await service.create({ ...INPUT, cityId: CITY_ID }, undefined, '10.0.0.1');
+    await service.create({ ...INPUT, cityId: CITY_ID }, 'user-1', '10.0.0.1');
 
     expect(prisma.city.findFirst.mock.calls[0]?.[0]).toMatchObject({
       where: { id: CITY_ID, isActive: true, country: { isActive: true } },
@@ -97,13 +97,13 @@ describe('приём заявки', () => {
     prisma.city.findFirst.mockResolvedValue(null);
 
     await expect(
-      service.create({ ...INPUT, cityId: CITY_ID }, undefined, '10.0.0.1'),
+      service.create({ ...INPUT, cityId: CITY_ID }, 'user-1', '10.0.0.1'),
     ).rejects.toMatchObject({ code: 'CITY_UNAVAILABLE' });
     expect(prisma.clubApplication.create).not.toHaveBeenCalled();
   });
 
   it('адрес не хранится — только ключевой хэш', async () => {
-    await service.create(INPUT, undefined, '10.0.0.1');
+    await service.create(INPUT, 'user-1', '10.0.0.1');
 
     const data = dataOf(prisma.clubApplication.create, 0);
 
@@ -112,9 +112,9 @@ describe('приём заявки', () => {
   });
 
   it('один адрес — один хэш, другой адрес — другой', async () => {
-    await service.create(INPUT, undefined, '10.0.0.1');
-    await service.create(INPUT, undefined, '10.0.0.1');
-    await service.create(INPUT, undefined, '10.0.0.2');
+    await service.create(INPUT, 'user-1', '10.0.0.1');
+    await service.create(INPUT, 'user-1', '10.0.0.1');
+    await service.create(INPUT, 'user-1', '10.0.0.2');
 
     const hashes = [0, 1, 2].map((index) => dataOf(prisma.clubApplication.create, index).ipHash);
 
@@ -124,7 +124,7 @@ describe('приём заявки', () => {
 
   it('заполненная ловушка — молча не сохраняется', async () => {
     await expect(
-      service.create({ ...INPUT, website: 'spam.example' }, undefined, '10.0.0.1'),
+      service.create({ ...INPUT, website: 'spam.example' }, 'user-1', '10.0.0.1'),
     ).resolves.toBeUndefined();
 
     expect(prisma.clubApplication.create).not.toHaveBeenCalled();
@@ -133,7 +133,7 @@ describe('приём заявки', () => {
   it(`больше ${String(APPLICATIONS_PER_HOUR)} за час с адреса — RATE_LIMITED`, async () => {
     prisma.clubApplication.count.mockResolvedValue(APPLICATIONS_PER_HOUR);
 
-    await expect(service.create(INPUT, undefined, '10.0.0.1')).rejects.toMatchObject({
+    await expect(service.create(INPUT, 'user-1', '10.0.0.1')).rejects.toMatchObject({
       code: 'RATE_LIMITED',
     });
     expect(prisma.clubApplication.create).not.toHaveBeenCalled();

@@ -110,9 +110,26 @@ async function call(method: string, path: string, options: { body?: unknown; aut
   return { status: response.status, body: text === '' ? undefined : (JSON.parse(text) as unknown) };
 }
 
+describe('заявка только от вошедшего — ADR-104', () => {
+  it('без токена — 401, заявка не пишется', async () => {
+    expect(await call('POST', '/club-applications', { body })).toMatchObject({ status: 401 });
+    expect(prisma.clubApplication.create).not.toHaveBeenCalled();
+  });
+
+  it('с токеном — заявка привязана к аккаунту', async () => {
+    expect((await call('POST', '/club-applications', { body, auth: true })).status).toBe(204);
+    expect(prisma.clubApplication.create.mock.calls[0]?.[0]).toMatchObject({
+      data: { userId: USER_ID },
+    });
+  });
+});
+
 describe('город заявки из справочника — ADR-096', () => {
   it('выбранный город сохраняется и строкой, и ссылкой', async () => {
-    const result = await call('POST', '/club-applications', { body: { ...body, cityId: CITY_ID } });
+    const result = await call('POST', '/club-applications', {
+      body: { ...body, cityId: CITY_ID },
+      auth: true,
+    });
 
     expect(result.status).toBe(204);
     expect(prisma.city.findFirst.mock.calls[0]?.[0]).toMatchObject({
@@ -124,7 +141,7 @@ describe('город заявки из справочника — ADR-096', () =
   });
 
   it('вписанный руками — без ссылки', async () => {
-    expect((await call('POST', '/club-applications', { body })).status).toBe(204);
+    expect((await call('POST', '/club-applications', { body, auth: true })).status).toBe(204);
     expect(prisma.city.findFirst).not.toHaveBeenCalled();
     expect(prisma.clubApplication.create.mock.calls[0]?.[0]).toMatchObject({
       data: { city: 'Темиртау', cityId: null },
@@ -135,14 +152,17 @@ describe('город заявки из справочника — ADR-096', () =
     prisma.city.findFirst.mockResolvedValue(null);
 
     expect(
-      await call('POST', '/club-applications', { body: { ...body, cityId: CITY_ID } }),
+      await call('POST', '/club-applications', { body: { ...body, cityId: CITY_ID }, auth: true }),
     ).toMatchObject({ status: 400, body: { error: { code: 'CITY_UNAVAILABLE' } } });
     expect(prisma.clubApplication.create).not.toHaveBeenCalled();
   });
 
   it('ссылка не идентификатор — 400 по схеме', async () => {
     expect(
-      await call('POST', '/club-applications', { body: { ...body, cityId: 'темиртау' } }),
+      await call('POST', '/club-applications', {
+        body: { ...body, cityId: 'темиртау' },
+        auth: true,
+      }),
     ).toMatchObject({ status: 400, body: { error: { code: 'VALIDATION_FAILED' } } });
     expect(prisma.city.findFirst).not.toHaveBeenCalled();
   });

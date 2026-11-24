@@ -26,13 +26,14 @@ import { z } from 'zod';
 
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { RequireAdmin } from '../auth/admin.guard.js';
-import { OptionalJwtGuard, OptionalUserId } from '../auth/optional-jwt.guard.js';
+import { CurrentUserId, JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { ClubApplicationsService } from './club-applications.service.js';
 import { clientIp } from '../../common/client-ip.js';
 
 /**
- * Заявка клуба с сайта — ADR-047. Открыта всем: представитель зала ещё
- * не пользователь. Вошедший привязывается к заявке.
+ * Заявка клуба с сайта — ADR-047, ADR-104. Только от вошедшего: клуб из
+ * заявки достаётся тому, кто её подал (ADR-100), и без аккаунта отдать его
+ * было бы некому — владельцем становился администратор.
  *
  * Ответ пустой: отправителю нечего показывать, кроме «заявка отправлена».
  */
@@ -41,11 +42,11 @@ export class ClubApplicationsController {
   constructor(private readonly applications: ClubApplicationsService) {}
 
   @Post()
-  @UseGuards(OptionalJwtGuard)
+  @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.NO_CONTENT)
   async create(
     @Body(new ZodValidationPipe(createClubApplicationSchema)) body: CreateClubApplicationInput,
-    @OptionalUserId() userId: string | undefined,
+    @CurrentUserId() userId: string,
     @Req() request: Request,
   ): Promise<void> {
     await this.applications.create(body, userId, clientIp(request));

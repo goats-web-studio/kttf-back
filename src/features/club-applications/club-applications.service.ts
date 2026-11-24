@@ -58,11 +58,7 @@ export class ClubApplicationsService {
     @Inject(ENV) private readonly env: Env,
   ) {}
 
-  async create(
-    input: CreateClubApplicationInput,
-    userId: string | undefined,
-    ip: string,
-  ): Promise<void> {
+  async create(input: CreateClubApplicationInput, userId: string, ip: string): Promise<void> {
     // Бот заполнил скрытое поле. Отвечаем как обычно: отказ подсказал бы
     // ему, какое поле не трогать.
     if (input.website !== undefined && input.website.trim() !== '') {
@@ -94,7 +90,7 @@ export class ClubApplicationsService {
         tableCount: input.tableCount ?? null,
         tournaments: input.tournaments ?? null,
         message: input.message ?? null,
-        userId: userId ?? null,
+        userId,
         ipHash,
       },
     });
