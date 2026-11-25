@@ -325,7 +325,7 @@ describe('группы плюс сетка', () => {
     registration('d', 'Жумабаев'),
   ];
 
-  it('не вышедшие из группы получают причину GROUP_EXIT, а не место', () => {
+  it('не вышедшие из группы делят места по месту в группе — ADR-125', () => {
     const stages = [groups, knockoutStage([{ a: 'a', b: 'b', setsA: 2, setsB: 0, round: 1 }])];
     const results = build(stages, registrations, 'GROUPS_KNOCKOUT');
 
@@ -336,9 +336,10 @@ describe('группы плюс сетка', () => {
     expect(byId).toEqual({
       a: [1, 'BRACKET'],
       b: [2, 'BRACKET'],
-      c: [null, 'GROUP_EXIT'],
-      d: [null, 'GROUP_EXIT'],
+      c: [null, 'SHARED'],
+      d: [null, 'SHARED'],
     });
+    expect(results.shared).toEqual([{ participants: ['c', 'd'], places: [3, 4] }]);
   });
 
   it('встреча за третье место узнаётся по источникам, а не по позиции', () => {
