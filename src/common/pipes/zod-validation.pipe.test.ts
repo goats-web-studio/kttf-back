@@ -46,4 +46,26 @@ describe('ZodValidationPipe', () => {
       expect(fields?.every((field) => field.message.length > 0)).toBe(true);
     }
   });
+
+  it('убирает невидимые символы из строк на любой глубине, эмодзи не ломает (DEV-77)', () => {
+    const pipe = new ZodValidationPipe(
+      z.object({
+        address: z.string().trim(),
+        contacts: z.array(z.object({ name: z.string() })),
+        text: z.string(),
+      }),
+    );
+
+    expect(
+      pipe.transform({
+        address: '\u200BПроспект Богенбай батыра, 2, \u200B3 этаж\uFEFF',
+        contacts: [{ name: 'Win\u2060ners' }],
+        text: 'Семья 👨\u200D👩\u200D👧',
+      }),
+    ).toEqual({
+      address: 'Проспект Богенбай батыра, 2, 3 этаж',
+      contacts: [{ name: 'Winners' }],
+      text: 'Семья 👨\u200D👩\u200D👧',
+    });
+  });
 });
