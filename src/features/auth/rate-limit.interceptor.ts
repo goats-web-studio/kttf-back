@@ -18,8 +18,12 @@ import { WindowCounter } from '../../common/rate-limit/window-counter.js';
 import { ENV, type Env } from '../../infra/config/env.js';
 import { TokenService } from './token.service.js';
 
-/** ТС 8.3: сто запросов в минуту на пользователя. */
-export const REQUESTS_PER_USER = 100;
+/**
+ * ТС 8.3, ADR-110: шестьсот запросов в минуту на пользователя — как на адрес.
+ * Сто кончались за четыре перезагрузки главной: она одна шлёт два десятка
+ * запросов (DEV-66).
+ */
+export const REQUESTS_PER_USER = 600;
 
 /**
  * Без входа предел — на адрес, и он шире: в зале весь турнир сидит за одним
