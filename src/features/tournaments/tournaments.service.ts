@@ -2,7 +2,7 @@ import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 
 import { checkEligibility } from '@kttf/shared/eligibility';
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
-import { findClubCollisions } from '@kttf/shared/brackets';
+import { findClubCollisions, scheduleRoundRobin } from '@kttf/shared/brackets';
 import { calculateTournamentRating, type RatingEventDraft } from '@kttf/shared/rating';
 import {
   formatConfigSchema,
@@ -10,6 +10,8 @@ import {
   type ClubCollisionView,
   type FormatConfig,
   type DrawResult,
+  type DrawMoveInput,
+  type DrawNewGroupInput,
   type DrawSwapInput,
   type SeedingConfig,
   type TieDecisionInput,
@@ -43,6 +45,13 @@ import { ScreenEventsService } from '../screen/screen-events.service.js';
 import { advanceAfterGroups } from './advance.js';
 import { type DrawParticipant, planDraw } from './draw.js';
 import { planDrawSwap } from './draw-swap.js';
+import {
+  type EditableGroup,
+  type GroupEdit,
+  planDisband,
+  planMove,
+  planNewGroup,
+} from './draw-edit.js';
 import {
   buildRatingRun,
   playersWithoutSnapshot,
@@ -313,15 +322,30 @@ export class TournamentsService {
       birthYearTo: orStored(rest.birthYearTo, tournament.birthYearTo),
     });
 
-    // Жеребьёвка разложена по прежней схеме: после её смены сетка и группы
-    // перестали бы соответствовать настройкам турнира. До старта результатов
-    // нет, и проще всего жеребить заново — ровно так ТЗ 5.3 и велит при
-    // любом изменении состава.
-    const resetsDraw = rest.formatConfig !== undefined || seedingConfig !== undefined;
+    // Жеребьёвка разложена по прежней схеме: после смены групп или сетки она
+    // перестала бы соответствовать настройкам турнира, и до старта проще всего
+    // жеребить заново (ТЗ 5.3). Длины встреч и распределение по финалам
+    // (ADR-124) группы не трогают: расстановка, поправленная руками, остаётся.
+    const format =
+      rest.formatConfig === undefined
+        ? 'NONE'
+        : formatChangeOf(formatConfigSchema.parse(tournament.formatConfig), rest.formatConfig);
+    const seedingChanged =
+      seedingConfig !== undefined &&
+      JSON.stringify(canonical(seedingConfig)) !==
+        JSON.stringify(canonical(tournament.seedingConfig));
+    const resetsDraw = format === 'STRUCTURE' || seedingChanged;
+
+    if (format === 'NEXT_STAGE' && rest.formatConfig !== undefined) {
+      assertAdvancing(await this.loadStages(id), rest.formatConfig);
+    }
 
     const updated = await this.prisma.$transaction(async (tx) => {
       if (resetsDraw) {
         await tx.stage.deleteMany({ where: { tournamentId: id } });
+      } else if (rest.formatConfig !== undefined && format !== 'NONE') {
+        await this.applyLengths(tx, id, rest.formatConfig);
+        await syncAdvance(tx, id, rest.formatConfig);
       }
 
       // Лимит подняли или сняли — ждали восемь, пришли шестнадцать: лист
@@ -375,6 +399,19 @@ export class TournamentsService {
 
     // Схема или посев другие — пришло не столько, сколько ждали (ADR-101).
     // Пока ни одна встреча не начата, жеребьёвка строится заново.
+    // Распределение по финалам — сколько выходит из группы, сетка за места,
+    // за третье, на все места — меняется, пока следующий этап не начат
+    // (ADR-124, у RTTF «Изменить распределение игроков по финалам»). Группы
+    // при этом не трогаются, даже если в них уже играют.
+    if (
+      locked.length === 0 &&
+      seedingConfig === undefined &&
+      formatConfig !== undefined &&
+      formatChangeOf(current, formatConfig) === 'NEXT_STAGE'
+    ) {
+      return this.changeNextStage(tournament, formatConfig, defined({ tableCount, description }));
+    }
+
     const reshaped =
       (formatConfig !== undefined && !sameExceptLengths(current, formatConfig)) ||
       seedingConfig !== undefined;
@@ -429,6 +466,50 @@ export class TournamentsService {
 
     // Экран зала рисует столы по их числу: правка обязана доехать до зала.
     this.screen.changed(tournament.id);
+
+    return toTournamentView(updated);
+  }
+
+  /**
+   * Распределение по финалам у идущего турнира — ADR-124.
+   *
+   * Следующий этап ещё не начат: он сносится и, если группы уже доиграны,
+   * строится заново по новому распределению. Начат — отказ: у вышедших уже
+   * есть результаты, и переложить их некуда.
+   */
+  private async changeNextStage(
+    tournament: TournamentRecord,
+    formatConfig: FormatConfig,
+    extra: { readonly tableCount?: number; readonly description?: string | null },
+  ): Promise<TournamentView> {
+    const id = tournament.id;
+    const stages = await this.loadStages(id);
+    const later = stages.filter((stage) => stage.order > 0);
+
+    assertAdvancing(stages, formatConfig);
+    for (const stage of later) assertStageNotStarted(stage);
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await assertStagesStillOpen(
+        tx,
+        later.map((stage) => stage.id),
+      );
+
+      if (later.length > 0) {
+        await tx.stage.deleteMany({ where: { id: { in: later.map((stage) => stage.id) } } });
+      }
+
+      await tx.tournament.update({ where: { id }, data: { formatConfig, ...extra } });
+      await this.applyLengths(tx, id, formatConfig);
+      await syncAdvance(tx, id, formatConfig);
+      await advanceAfterGroups(tx, id);
+      await settleWithdrawals(tx, id);
+      await bumpVersion(tx, id);
+
+      return tx.tournament.findUniqueOrThrow({ where: { id }, select: tournamentFields });
+    });
+
+    this.screen.changed(id);
 
     return toTournamentView(updated);
   }
@@ -851,27 +932,29 @@ export class TournamentsService {
   ): Promise<RegistrationView> {
     const started = tournament.startedAt !== null;
 
-    const created = await this.prisma.$transaction(async (tx) => {
-      await lockRegistrations(tx, tournament.id);
-      await placeLateEntry(tx, tournament.id, playerId, groupId);
+    const created = await this.prisma
+      .$transaction(async (tx) => {
+        await lockRegistrations(tx, tournament.id);
+        await placeLateEntry(tx, tournament.id, playerId, groupId);
 
-      const registration = await tx.registration.create({
-        data: {
-          tournamentId: tournament.id,
-          playerId,
-          status: started ? 'PLAYING' : 'CONFIRMED',
-          ...(started ? snapshotFields(player) : {}),
-        },
-        select: registrationFields,
+        const registration = await tx.registration.create({
+          data: {
+            tournamentId: tournament.id,
+            playerId,
+            status: started ? 'PLAYING' : 'CONFIRMED',
+            ...(started ? snapshotFields(player) : {}),
+          },
+          select: registrationFields,
+        });
+
+        await bumpVersion(tx, tournament.id);
+
+        return registration;
+      })
+      .catch((error: unknown) => {
+        if (isUniqueViolation(error)) throw alreadyRegistered(playerId);
+        throw error;
       });
-
-      await bumpVersion(tx, tournament.id);
-
-      return registration;
-    }).catch((error: unknown) => {
-      if (isUniqueViolation(error)) throw alreadyRegistered(playerId);
-      throw error;
-    });
 
     this.screen.changed(tournament.id);
 
@@ -1298,23 +1381,38 @@ export class TournamentsService {
 
     await this.assertClubStaff(tournament.clubId, userId);
 
-    // Правится расстановка, а не идущий турнир: после старта переставлять
-    // игрока значило бы менять уже сыгранное.
-    if (tournament.status !== 'REG_CLOSED') {
-      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Adjust the draw before the start', {
+    assertDrawEditable(tournament);
+
+    // «Поменять местами» у RTTF — до первой вызванной встречи этапа (ADR-124).
+    // У каждого игрока берётся последний этап, где он стоит: после групп это
+    // сетка. Меняться можно внутри этапа и между этапами одной ступени —
+    // основной сеткой и сеткой за места, как «между финалами» у RTTF.
+    const stages = await this.loadStages(id);
+    const stageA = lastStageOf(stages, input.playerAId);
+    const stageB = lastStageOf(stages, input.playerBId);
+    const involved = [...new Set([stageA, stageB])];
+
+    if (stageA !== stageB && (stageA.order === 0 || stageB.order === 0)) {
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Players are in different stages', {
         id,
-        status: tournament.status,
+        reason: 'DIFFERENT_STAGES',
       });
     }
 
-    const stages = await this.loadStages(id);
+    for (const stage of involved) assertStageNotStarted(stage);
+
     const updates = planDrawSwap(
-      stages.flatMap((stage) => stage.matches),
+      involved.flatMap((stage) => stage.matches),
       input.playerAId,
       input.playerBId,
     );
 
     await this.prisma.$transaction(async (tx) => {
+      await assertStagesStillOpen(
+        tx,
+        involved.map((stage) => stage.id),
+      );
+
       for (const update of updates) {
         await tx.match.update({
           where: { id: update.id },
@@ -1336,6 +1434,140 @@ export class TournamentsService {
       stages: changed.map(toStageView),
       clubCollisions: await this.collisionsOf(id, changed),
     };
+  }
+
+  /** Перенести игрока в другую группу — ADR-124. */
+  async moveInDraw(id: string, userId: string, input: DrawMoveInput): Promise<DrawResult> {
+    return this.editGroups(
+      id,
+      userId,
+      (stage) => stageHolds(stage, input.playerId),
+      (groups) => planMove(groups, input.playerId, input.groupId),
+    );
+  }
+
+  /** Новая группа из выбранных игроков — ADR-124. */
+  async newGroupInDraw(id: string, userId: string, input: DrawNewGroupInput): Promise<DrawResult> {
+    return this.editGroups(
+      id,
+      userId,
+      (stage) => input.playerIds.every((player) => stageHolds(stage, player)),
+      (groups) => planNewGroup(groups, input.playerIds),
+    );
+  }
+
+  /** Расформировать группу — ADR-124. */
+  async disbandGroup(id: string, userId: string, groupId: string): Promise<DrawResult> {
+    return this.editGroups(
+      id,
+      userId,
+      (stage) => stage.groups.some((group) => group.id === groupId),
+      (groups) => planDisband(groups, groupId),
+    );
+  }
+
+  /**
+   * Общий ход ручной правки групп — ADR-124.
+   *
+   * Правится групповой этап, пока в нём не начата ни одна встреча: до старта
+   * или после, как у RTTF. Встречи затронутых групп строятся заново круговой
+   * схемой этапа, игроки в группе — по рейтингу, первым сильнейший (номер
+   * строки у RTTF). Новую группу и расформирование правят только первый
+   * групповой этап: финальные группы собираются по местам, и номер группы у
+   * них — диапазон мест.
+   */
+  private async editGroups(
+    id: string,
+    userId: string,
+    holds: (stage: StageRecord) => boolean,
+    plan: (groups: EditableGroup[]) => GroupEdit,
+  ): Promise<DrawResult> {
+    const tournament = await this.load(id);
+
+    await this.assertClubStaff(tournament.clubId, userId);
+    assertDrawEditable(tournament);
+
+    const stages = await this.loadStages(id);
+    const stage = [...stages].reverse().find((item) => item.type === 'GROUPS' && holds(item));
+
+    if (stage === undefined) {
+      throw new AppError(ERROR_CODES.DRAW_POSITION_NOT_FOUND, 'No group stage holds the players', {
+        id,
+      });
+    }
+
+    assertStageNotStarted(stage);
+
+    const groups: EditableGroup[] = stage.groups.map((group) => ({
+      id: group.id,
+      order: group.order,
+      label: group.label,
+      participants: membersOf(stage, group.id),
+    }));
+    const edit = plan(groups);
+
+    if ((edit.created !== undefined || edit.removed !== undefined) && stage.order !== 0) {
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Final groups are formed by places', {
+        id,
+        reason: 'FINAL_GROUPS',
+      });
+    }
+
+    const ratings = await this.drawRatings(id);
+    const byRating = (members: readonly string[]): string[] =>
+      [...members].sort(
+        (left, right) =>
+          (ratings.get(right) ?? 0) - (ratings.get(left) ?? 0) || left.localeCompare(right),
+      );
+    const rounds = asRecord(stage.config).rounds === 2 ? 2 : 1;
+
+    await this.prisma.$transaction(async (tx) => {
+      await assertStagesStillOpen(tx, [stage.id]);
+
+      for (const [groupId, members] of edit.changed) {
+        await rewriteGroup(tx, id, stage.id, groupId, byRating(members), rounds);
+      }
+
+      if (edit.created !== undefined) {
+        const order = groups.reduce((max, group) => Math.max(max, group.order), -1) + 1;
+        const created = await tx.group.create({
+          data: { stageId: stage.id, order, label: `гр. ${String(order + 1)}` },
+          select: { id: true },
+        });
+
+        await rewriteGroup(tx, id, stage.id, created.id, byRating(edit.created), rounds);
+      }
+
+      if (edit.removed !== undefined) {
+        await tx.match.deleteMany({ where: { groupId: edit.removed } });
+        await tx.group.delete({ where: { id: edit.removed } });
+        await renumberGroups(tx, stage.id);
+      }
+
+      await bumpVersion(tx, id);
+    });
+
+    this.screen.changed(id);
+
+    const changed = await this.loadStages(id);
+
+    return {
+      tournamentId: id,
+      stages: changed.map(toStageView),
+      clubCollisions: await this.collisionsOf(id, changed),
+    };
+  }
+
+  /** Рейтинг для порядка в группе: снимок на старте, до старта — текущий. */
+  private async drawRatings(id: string): Promise<Map<string, number>> {
+    const rows = await this.prisma.registration.findMany({
+      where: { tournamentId: id },
+      select: { playerId: true, ratingAtStart: true, player: { select: { rating: true } } },
+    });
+
+    return new Map(
+      rows.map((row) => [row.playerId, Number(row.ratingAtStart ?? row.player.rating)]),
+    );
   }
 
   /**
@@ -2029,9 +2261,13 @@ export class TournamentsService {
 
       if (own === null) {
         // Профиль заполняется отдельным шагом — ТЗ 2.2, ADR-013.
-        throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Player profile is required to register', {
-          reason: 'PROFILE_REQUIRED',
-        });
+        throw new AppError(
+          ERROR_CODES.VALIDATION_FAILED,
+          'Player profile is required to register',
+          {
+            reason: 'PROFILE_REQUIRED',
+          },
+        );
       }
 
       return own.id;
@@ -2142,6 +2378,84 @@ function sameExceptLengths(left: FormatConfig, right: FormatConfig): boolean {
   );
 }
 
+/**
+ * Что меняет правка схемы — ADR-124.
+ *
+ * `LENGTHS` — только длины встреч; `NEXT_STAGE` — только то, как выходят из
+ * групп дальше (у RTTF «распределение по финалам»); `STRUCTURE` — сами группы
+ * или сетка, тогда жеребьёвка строится заново.
+ */
+function formatChangeOf(
+  current: FormatConfig,
+  next: FormatConfig,
+): 'NONE' | 'LENGTHS' | 'NEXT_STAGE' | 'STRUCTURE' {
+  const same = (left: unknown, right: unknown): boolean =>
+    JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
+
+  if (same(current, next)) return 'NONE';
+  if (sameExceptLengths(current, next)) return 'LENGTHS';
+
+  const grouped =
+    current.type === next.type &&
+    (current.type === 'GROUPS_KNOCKOUT' || current.type === 'GROUPS_FINAL_GROUPS');
+  const groupsPart = (format: FormatConfig): Record<string, unknown> =>
+    Object.fromEntries(
+      Object.entries(withoutLengths(format)).filter(([key]) => !NEXT_STAGE_FIELDS.has(key)),
+    );
+
+  return grouped && same(groupsPart(current), groupsPart(next)) ? 'NEXT_STAGE' : 'STRUCTURE';
+}
+
+const NEXT_STAGE_FIELDS = new Set([
+  'advancePerGroup',
+  'thirdPlace',
+  'exitBracket',
+  'allPlaces',
+  'finalGroupCount',
+]);
+
+/** Из групп выходит хотя бы двое — иначе сетку не построить (как при жеребьёвке). */
+function assertAdvancing(stages: readonly StageRecord[], format: FormatConfig): void {
+  const first = stages.find((stage) => stage.order === 0 && stage.type === 'GROUPS');
+
+  if (first === undefined || !('advancePerGroup' in format)) return;
+
+  const advancing = first.groups.reduce(
+    (total, group) => total + Math.min(membersOf(first, group.id).length, format.advancePerGroup),
+    0,
+  );
+
+  if (advancing < 2) {
+    throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Too few participants advance from groups', {
+      advancing,
+      advancePerGroup: format.advancePerGroup,
+      groups: first.groups.length,
+      reason: 'TOO_FEW_ADVANCE',
+    });
+  }
+}
+
+/** Зона выхода в конфиге группового этапа — её показывают таблицы. */
+async function syncAdvance(
+  tx: Prisma.TransactionClient,
+  tournamentId: string,
+  format: FormatConfig,
+): Promise<void> {
+  if (!('advancePerGroup' in format)) return;
+
+  const first = await tx.stage.findFirst({
+    where: { tournamentId, order: 0, type: 'GROUPS' },
+    select: { id: true, config: true },
+  });
+
+  if (first === null) return;
+
+  await tx.stage.update({
+    where: { id: first.id },
+    data: { config: { ...asRecord(first.config), advancePerGroup: format.advancePerGroup } },
+  });
+}
+
 const LENGTH_FIELDS = new Set(['setsToWin', 'groupSetsToWin', 'koSetsToWin', 'playoffSetsToWin']);
 
 function withoutLengths(format: FormatConfig): Record<string, unknown> {
@@ -2208,6 +2522,135 @@ async function promoteFromWaitlist(
   await tx.registration.update({ where: { id: next.id }, data: { status: 'CONFIRMED' } });
 }
 
+/** Расстановку правят до старта (запись закрыта) и по ходу турнира. */
+function assertDrawEditable(tournament: { readonly id: string; readonly status: string }): void {
+  if (tournament.status !== 'REG_CLOSED' && tournament.status !== 'RUNNING') {
+    throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'The draw cannot be adjusted now', {
+      id: tournament.id,
+      status: tournament.status,
+      reason: 'DRAW_LOCKED',
+    });
+  }
+}
+
+/** Этап начат: встреча вызвана к столу, сыграна или со счётом. */
+function stageStarted(stage: StageRecord): boolean {
+  return stage.matches.some(
+    (match) => match.status === 'PLAYING' || match.status === 'FINISHED' || match.setsA !== null,
+  );
+}
+
+function assertStageNotStarted(stage: StageRecord): void {
+  if (stageStarted(stage)) {
+    throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'The stage has already started', {
+      stageId: stage.id,
+      reason: 'STAGE_STARTED',
+    });
+  }
+}
+
+/** Та же проверка внутри транзакции: судья мог вызвать пару, пока правили. */
+async function assertStagesStillOpen(
+  tx: Prisma.TransactionClient,
+  stageIds: readonly string[],
+): Promise<void> {
+  const started = await tx.match.findFirst({
+    where: {
+      stageId: { in: [...stageIds] },
+      OR: [{ status: { in: ['PLAYING', 'FINISHED'] } }, { setsA: { not: null } }],
+    },
+    select: { stageId: true },
+  });
+
+  if (started !== null) {
+    throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'The stage has already started', {
+      stageId: started.stageId,
+      reason: 'STAGE_STARTED',
+    });
+  }
+}
+
+function stageHolds(stage: StageRecord, playerId: string): boolean {
+  return stage.matches.some(
+    (match) => match.playerAId === playerId || match.playerBId === playerId,
+  );
+}
+
+/** Последний этап, где стоит игрок; нет нигде — его нет в расстановке. */
+function lastStageOf(stages: readonly StageRecord[], playerId: string): StageRecord {
+  const found = [...stages].reverse().find((stage) => stageHolds(stage, playerId));
+
+  if (found === undefined) {
+    throw new AppError(ERROR_CODES.DRAW_POSITION_NOT_FOUND, 'Player is not in the draw', {
+      playerId,
+    });
+  }
+
+  return found;
+}
+
+/** Состав группы — из её встреч, в порядке появления. */
+function membersOf(stage: StageRecord, groupId: string): string[] {
+  return [
+    ...new Set(
+      stage.matches
+        .filter((match) => match.groupId === groupId)
+        .flatMap((match) => [match.playerAId, match.playerBId])
+        .filter((player): player is string => player !== null),
+    ),
+  ];
+}
+
+/** Встречи группы заново: каждый с каждым, кругов — как у этапа. */
+async function rewriteGroup(
+  tx: Prisma.TransactionClient,
+  tournamentId: string,
+  stageId: string,
+  groupId: string,
+  members: readonly string[],
+  rounds: 1 | 2,
+): Promise<void> {
+  await tx.match.deleteMany({ where: { groupId } });
+  await tx.tieDecision.deleteMany({ where: { groupId } });
+  await tx.match.createMany({
+    data: scheduleRoundRobin(members, rounds).map((match) => ({
+      id: randomUUID(),
+      tournamentId,
+      stageId,
+      groupId,
+      playerAId: match.a,
+      playerBId: match.b,
+      bracketRound: match.round,
+    })),
+  });
+}
+
+/**
+ * Номера групп подряд после расформирования: «гр. 1, гр. 3» читалось бы как
+ * потерянная группа. Порядок уникален в этапе — сначала уводится в минус.
+ */
+async function renumberGroups(tx: Prisma.TransactionClient, stageId: string): Promise<void> {
+  const groups = await tx.group.findMany({
+    where: { stageId },
+    orderBy: { order: 'asc' },
+    select: { id: true, label: true },
+  });
+
+  for (const [index, group] of groups.entries()) {
+    await tx.group.update({ where: { id: group.id }, data: { order: -1 - index } });
+  }
+
+  for (const [index, group] of groups.entries()) {
+    await tx.group.update({
+      where: { id: group.id },
+      data: {
+        order: index,
+        ...(/^гр\. \d+$/.test(group.label) ? { label: `гр. ${String(index + 1)}` } : {}),
+      },
+    });
+  }
+}
+
 /**
  * Поднять из листа ожидания всех, кому хватает места, — после подъёма или
  * снятия лимита. Возвращает, скольких подняли.
@@ -2256,7 +2699,10 @@ async function resetDraw(tx: Prisma.TransactionClient, tournamentId: string): Pr
 }
 
 /** Записи одного турнира идут по одной — до конца транзакции. */
-async function lockRegistrations(tx: Prisma.TransactionClient, tournamentId: string): Promise<void> {
+async function lockRegistrations(
+  tx: Prisma.TransactionClient,
+  tournamentId: string,
+): Promise<void> {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'registrations:' + tournamentId}))`;
 }
 

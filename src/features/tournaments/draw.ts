@@ -301,6 +301,8 @@ function planGroupStage(
       ...(config.groupCount === undefined ? {} : { groupCount: config.groupCount }),
       ...(config.groupSize === undefined ? {} : { groupSize: config.groupSize }),
       separateByClub: seeding?.separateByClub ?? true,
+      // Посев в группы как у RTTF (ADR-124): змейкой, равномерно, по рейтингу.
+      ...(config.groupSeeding === undefined ? {} : { fill: config.groupSeeding }),
     },
   );
 

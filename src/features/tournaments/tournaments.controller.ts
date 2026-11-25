@@ -1,5 +1,7 @@
 import {
   createTournamentSchema,
+  drawMoveSchema,
+  drawNewGroupSchema,
   drawSwapSchema,
   duplicateTournamentSchema,
   listTournamentsSchema,
@@ -22,6 +24,8 @@ import {
   type TournamentListItemView,
   type TournamentView,
   type DrawResult,
+  type DrawMoveInput,
+  type DrawNewGroupInput,
   type DrawSwapInput,
   type TournamentResultsView,
   type TournamentStandingsView,
@@ -173,6 +177,39 @@ export class TournamentsController {
     @CurrentUserId() userId: string,
   ): Promise<DrawResult> {
     return this.tournaments.swapDraw(id, userId, input);
+  }
+
+  /** Перенести игрока в другую группу — ADR-124. */
+  @Post(':id/draw/move')
+  @UseGuards(JwtAuthGuard)
+  async moveInDraw(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @Body(new ZodValidationPipe(drawMoveSchema)) input: DrawMoveInput,
+    @CurrentUserId() userId: string,
+  ): Promise<DrawResult> {
+    return this.tournaments.moveInDraw(id, userId, input);
+  }
+
+  /** Новая группа из выбранных игроков — ADR-124. */
+  @Post(':id/draw/groups')
+  @UseGuards(JwtAuthGuard)
+  async newGroupInDraw(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @Body(new ZodValidationPipe(drawNewGroupSchema)) input: DrawNewGroupInput,
+    @CurrentUserId() userId: string,
+  ): Promise<DrawResult> {
+    return this.tournaments.newGroupInDraw(id, userId, input);
+  }
+
+  /** Расформировать группу: игроки уходят в самые малые из оставшихся — ADR-124. */
+  @Delete(':id/draw/groups/:groupId')
+  @UseGuards(JwtAuthGuard)
+  async disbandGroup(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @Param('groupId', new ZodValidationPipe(uuidParam)) groupId: string,
+    @CurrentUserId() userId: string,
+  ): Promise<DrawResult> {
+    return this.tournaments.disbandGroup(id, userId, groupId);
   }
 
   /** Старт: здесь фиксируются рейтинги участников — ТС 5.4. */
