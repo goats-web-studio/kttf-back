@@ -22,7 +22,9 @@ import { TokenService } from './token.service.js';
 
 /** Пользователь с тем, что нужно для ответа. Форма выборки в одном месте. */
 const userView = {
-  player: { select: { id: true } },
+  // Имя и фото — для шапки сразу после входа (ADR-105). Рейтинга нет: он
+  // меняется без сессии и берётся из профиля.
+  player: { select: { id: true, lastName: true, firstName: true, photoUrl: true } },
   city: { select: cityRefFields },
   clubRoles: { select: { clubId: true, role: true } },
   // Своя страница тренера — ADR-059. Одна на профиль игрока, а профиль один
@@ -107,11 +109,20 @@ export class AuthService {
     // Город не выбран гостем — берётся из профиля, к которому привязываются
     // (ADR-093): человек из него и играет.
     let cityId = input.cityId;
+    let claimed: AuthUserView['player'] = null;
 
     if (input.playerId !== undefined) {
       const player = await this.prisma.player.findUnique({
         where: { id: input.playerId },
-        select: { userId: true, confirmedAt: true, deletedAt: true, cityId: true },
+        select: {
+          userId: true,
+          confirmedAt: true,
+          deletedAt: true,
+          cityId: true,
+          lastName: true,
+          firstName: true,
+          photoUrl: true,
+        },
       });
 
       // Удалённый игрок (ADR-092) — чужая спортивная история без хозяина:
@@ -136,6 +147,11 @@ export class AuthService {
       }
 
       cityId ??= player.cityId;
+      claimed = {
+        lastName: player.lastName,
+        firstName: player.firstName,
+        photoUrl: player.photoUrl,
+      };
     }
 
     const refreshToken = this.tokens.generateRefreshToken();
@@ -188,7 +204,7 @@ export class AuthService {
       refreshToken,
       // Профиль игрока привязан в той же транзакции, а `account` прочитан до
       // неё: перечитывать целиком незачем, известно ровно чего не хватает.
-      user: { ...toView(account), playerId: input.playerId ?? null },
+      user: { ...toView(account), playerId: input.playerId ?? null, player: claimed },
     };
   }
 
@@ -434,7 +450,7 @@ interface UserRecord {
   createdAt: Date;
   privacyConsentAt: Date | null;
   privacyConsentVersion: string | null;
-  player: { id: string } | null;
+  player: { id: string; lastName: string; firstName: string; photoUrl: string | null } | null;
   city: { id: string; name: string; nameKk: string | null } | null;
   clubRoles: { clubId: string; role: string }[];
   coaches: CoachRef[];
@@ -450,6 +466,14 @@ function toView(user: UserRecord): AuthUserView {
     telegramId: user.telegramId,
     createdAt: user.createdAt.toISOString(),
     playerId: user.player?.id ?? null,
+    player:
+      user.player === null
+        ? null
+        : {
+            lastName: user.player.lastName,
+            firstName: user.player.firstName,
+            photoUrl: user.player.photoUrl,
+          },
     clubRoles: user.clubRoles.map((member) => ({ clubId: member.clubId, role: member.role })),
     isAdmin: user.isAdmin,
     coach: user.coaches[0] ?? null,
