@@ -21,7 +21,9 @@ export interface PlayerRatingBand {
  */
 export function playerCountsSql(ids: readonly string[] | null, band: PlayerRatingBand): Prisma.Sql {
   const bounds = ratingBounds(band.playerRatingFrom, band.playerRatingTo);
-  const conditions = [Prisma.sql`slot.pid IS NOT NULL`];
+  // Удалённых (ADR-092) нет в списке «Кто играет» — нет их и в счёте,
+  // иначе «Играют: N» обещает игроков, которых список не покажет.
+  const conditions = [Prisma.sql`slot.pid IS NOT NULL`, Prisma.sql`p."deletedAt" IS NULL`];
 
   if (bounds.gte !== undefined) conditions.push(Prisma.sql`p."rating" >= ${bounds.gte}`);
   if (bounds.lt !== undefined) conditions.push(Prisma.sql`p."rating" < ${bounds.lt}`);
