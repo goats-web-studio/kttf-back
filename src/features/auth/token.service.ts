@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 import { Inject, Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -33,7 +33,7 @@ export class TokenService {
   private readonly revoked = new Map<string, number>();
 
   constructor(
-    @Inject(ENV) private readonly env: Env,
+    @Inject(ENV) _env: Env,
     private readonly jwt: JwtService,
   ) {}
 
@@ -85,21 +85,6 @@ export class TokenService {
    */
   generateRefreshToken(): string {
     return randomBytes(32).toString('hex');
-  }
-
-  /**
-   * Refresh-токен, которым заменяется данный, — ADR-109.
-   *
-   * Не случайный, а выводится из прежнего с ключом сервера: повторное
-   * обновление тем же токеном отдаёт тот же новый. Так ответ, потерянный при
-   * перезагрузке вкладки, не выкидывает человека из сессии, а два запроса
-   * подряд не разводят её на два токена, из которых жив только один. Без
-   * ключа сервера следующий токен из прежнего не получить.
-   */
-  successorRefreshToken(token: string): string {
-    return createHmac('sha256', this.env.JWT_SECRET)
-      .update(`refresh-successor:${token}`)
-      .digest('hex');
   }
 
   /**

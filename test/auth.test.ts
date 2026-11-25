@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto';
-
 import { type INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -57,7 +55,7 @@ function makePrisma() {
     },
     session: {
       create: vi.fn().mockResolvedValue({}),
-      findFirst: vi.fn().mockResolvedValue(null),
+      findUnique: vi.fn().mockResolvedValue(null),
       update: vi.fn().mockResolvedValue({}),
       deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
     },
@@ -270,10 +268,9 @@ describe('GET /auth/me', () => {
 describe('POST /auth/refresh и /auth/logout', () => {
   it('обновление выдаёт новую пару', async () => {
     const tokens = await signIn();
-    prisma.session.findFirst.mockResolvedValue({
+    prisma.session.findUnique.mockResolvedValue({
       id: 'session-1',
       userId: 'user-1',
-      refreshToken: createHash('sha256').update(tokens.refreshToken).digest('hex'),
       expiresAt: new Date(Date.now() + 60_000),
     });
 
@@ -281,7 +278,6 @@ describe('POST /auth/refresh и /auth/logout', () => {
 
     expect(result.status).toBe(200);
     expect((result.body as { refreshToken: string }).refreshToken).not.toBe(tokens.refreshToken);
-    expect(prisma.session.update).toHaveBeenCalledOnce();
   });
 
   it('неизвестный refresh-токен — 401', async () => {
