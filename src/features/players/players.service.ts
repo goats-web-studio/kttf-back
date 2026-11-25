@@ -475,16 +475,26 @@ export class PlayersService {
           field: 'startRating',
         });
       }
-
-      if (allowDuplicate !== true) await this.assertNoNamesake(profile);
-    } else if (allowDuplicate !== true) {
-      // Своя анкета, а организатор уже завёл такого человека на турнире
-      // (ADR-102): «Это вы?» — привязаться, а не заводить вторую анкету.
-      await this.assertNoNamesake(profile, { confirmedOnly: true, unclaimedOnly: true });
     }
 
     // Тренер из анкеты открывает период истории — той же транзакцией (ADR-059).
     const created = await this.prisma.$transaction(async (tx) => {
+      // Проверка тёзок и заведение — под одним замком на имя и год. Иначе
+      // двойное нажатие «Новый игрок» проходит проверку дважды, пока первый
+      // профиль ещё не записан: так на пилоте появились четыре одинаковых
+      // профиля (ADR-100).
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${namesakeKey(profile)}))`;
+
+      if (allowDuplicate !== true) {
+        await this.assertNoNamesake(
+          profile,
+          // Своя анкета, а организатор уже завёл такого человека на турнире
+          // (ADR-102): «Это вы?» — привязаться, а не заводить вторую анкету.
+          forSomeoneElse ? {} : { confirmedOnly: true, unclaimedOnly: true },
+          tx,
+        );
+      }
+
       const player = await tx.player.create({
         data: {
           ...defined(profile),
@@ -522,6 +532,20 @@ export class PlayersService {
       }
 
       return tx.player.findUniqueOrThrow({ where: { id: player.id }, select: profileFields });
+    }).catch(async (error: unknown) => {
+      // Двойное нажатие «Сохранить» своей анкеты: первый запрос её завёл,
+      // второй упёрся в «один профиль на аккаунт». Повтор отдаёт ту же
+      // анкету, а не ошибку сервера.
+      if (!forSomeoneElse && isUniqueViolation(error)) {
+        const mine = await this.prisma.player.findUnique({
+          where: { userId: actorId },
+          select: profileFields,
+        });
+
+        if (mine !== null) return mine;
+      }
+
+      throw error;
     });
 
     return this.profileView(created);
@@ -737,8 +761,9 @@ export class PlayersService {
       readonly confirmedOnly?: boolean;
       readonly unclaimedOnly?: boolean;
     } = {},
+    client: Prisma.TransactionClient = this.prisma,
   ): Promise<void> {
-    const namesakes = await this.prisma.player.findMany({
+    const namesakes = await client.player.findMany({
       where: {
         ...LIVE_PLAYER,
         lastName: { equals: profile.lastName.trim(), mode: 'insensitive' },
@@ -1300,4 +1325,17 @@ export function toPlayerView(player: PlayerRecord): PlayerView {
     createdAt: player.createdAt.toISOString(),
     deleted: isDeletedPlayer(player),
   };
+}
+
+/** Ключ замка для проверки тёзок: фамилия, имя и год — как в самой проверке. */
+function namesakeKey(profile: {
+  readonly lastName: string;
+  readonly firstName: string;
+  readonly birthYear: number;
+}): string {
+  return `player:${profile.lastName.trim().toLowerCase()}:${profile.firstName.trim().toLowerCase()}:${String(profile.birthYear)}`;
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
 }

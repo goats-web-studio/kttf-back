@@ -160,6 +160,7 @@ function makePrisma() {
       findMany: vi.fn().mockResolvedValue([{ clubId: CLUB_ID }]),
     },
     $transaction: vi.fn(),
+    $executeRaw: vi.fn().mockResolvedValue(0),
   };
 
   // Обе формы транзакции: функцией (рейтинг) и списком запросов (места).

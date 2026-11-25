@@ -80,6 +80,7 @@ function makePrisma() {
     product: { findMany: vi.fn().mockResolvedValue([]) },
     auditLog: { create: vi.fn() },
     $queryRaw: vi.fn().mockResolvedValue([]),
+    $executeRaw: vi.fn().mockResolvedValue(0),
   };
 
   prisma.$transaction.mockImplementation((run: (tx: typeof prisma) => unknown) => run(prisma));
@@ -1360,6 +1361,54 @@ describe('имя игрового профиля — ADR-102', () => {
 
     expect(prisma.player.findMany).not.toHaveBeenCalled();
     expect(prisma.player.create).toHaveBeenCalled();
+  });
+});
+
+describe('двойное нажатие при заведении профиля', () => {
+  it('проверка тёзок идёт под замком на имя и год, в той же транзакции', async () => {
+    prisma.player.findUnique.mockResolvedValueOnce(null);
+    prisma.player.findMany.mockResolvedValue([]);
+
+    await service.create(newcomer, 'user-1');
+
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    const lockOrder = prisma.$executeRaw.mock.invocationCallOrder[0] ?? 0;
+    const checkOrder = prisma.player.findMany.mock.invocationCallOrder[0] ?? 0;
+    const createOrder = prisma.player.create.mock.invocationCallOrder[0] ?? 0;
+    expect(lockOrder).toBeLessThan(checkOrder);
+    expect(checkOrder).toBeLessThan(createOrder);
+  });
+
+  it('повтор своей анкеты отдаёт уже заведённую, а не ошибку', async () => {
+    const { Prisma } = await import('../../generated/prisma/client.js');
+    prisma.player.findUnique.mockResolvedValueOnce(null).mockResolvedValue(player);
+    prisma.player.findMany.mockResolvedValue([]);
+    prisma.player.create.mockRejectedValueOnce(
+      new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+        code: 'P2002',
+        clientVersion: 'test',
+      }),
+    );
+
+    const view = await service.create(newcomer, 'user-1');
+
+    expect(view.id).toBe(player.id);
+  });
+
+  it('чужой профиль при нарушении уникальности не прячет ошибку', async () => {
+    const { Prisma } = await import('../../generated/prisma/client.js');
+    prisma.clubMember.findUnique.mockResolvedValue({ role: 'OWNER' });
+    prisma.player.findMany.mockResolvedValue([]);
+    prisma.player.create.mockRejectedValueOnce(
+      new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+        code: 'P2002',
+        clientVersion: 'test',
+      }),
+    );
+
+    await expect(
+      service.create({ ...newcomer, clubId: 'club-1', startRating: 200 }, 'user-1'),
+    ).rejects.toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
   });
 });
 

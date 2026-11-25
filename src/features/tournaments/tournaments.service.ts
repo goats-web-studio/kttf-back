@@ -324,6 +324,16 @@ export class TournamentsService {
         await tx.stage.deleteMany({ where: { tournamentId: id } });
       }
 
+      // Лимит подняли или сняли — ждали восемь, пришли шестнадцать: лист
+      // ожидания поднимается сам, по времени записи, а не по одному руками.
+      if (rest.maxParticipants !== undefined) {
+        await lockRegistrations(tx, id);
+
+        const lifted = await promoteAllFromWaitlist(tx, id, rest.maxParticipants);
+
+        if (lifted > 0) await resetDraw(tx, id);
+      }
+
       return tx.tournament.update({
         where: { id },
         data: {
@@ -703,12 +713,14 @@ export class TournamentsService {
         throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Registration is not open', {
           id,
           status: tournament.status,
+          reason: 'REGISTRATION_CLOSED',
         });
       }
 
       throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Registration deadline has passed', {
         id,
         deadline: deadline?.toISOString() ?? null,
+        reason: 'DEADLINE_PASSED',
       });
     }
 
@@ -767,34 +779,52 @@ export class TournamentsService {
       select: { id: true },
     });
 
-    if (existing !== null) {
-      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Player is already registered', {
-        playerId,
-      });
-    }
+    if (existing !== null) throw alreadyRegistered(playerId);
 
     if (late) return this.registerLate(tournament, playerId, player, input.groupId);
 
-    const created = await this.prisma.$transaction(async (tx) => {
-      const taken = await tx.registration.count({
-        where: { tournamentId: id, status: { in: OCCUPYING_STATUSES } },
+    const { created, reset } = await this.prisma
+      .$transaction(async (tx) => {
+        // Запись по одной на турнир: две одновременные иначе обе видят
+        // свободное последнее место, и в составе оказывается больше лимита.
+        await lockRegistrations(tx, id);
+
+        const taken = await tx.registration.count({
+          where: { tournamentId: id, status: { in: OCCUPYING_STATUSES } },
+        });
+
+        // Лимит достигнут — в лист ожидания (ТЗ 4.3), а не отказ: место
+        // освободится при первой же отмене.
+        const full = tournament.maxParticipants !== null && taken >= tournament.maxParticipants;
+        const status = pending ? 'PENDING' : full ? 'WAITLIST' : 'CONFIRMED';
+
+        const registration = await tx.registration.create({
+          data: {
+            tournamentId: id,
+            playerId,
+            status,
+            // Тренера в записи нет, пока его не укажут (ADR-089): он решает,
+            // кому засчитаются медали, и молча брать его из анкеты нельзя.
+          },
+          select: registrationFields,
+        });
+
+        // Запись открыли заново после жеребьёвки: новый участник в ней не
+        // стоит, и расстановка больше не про этот состав (ТЗ 5.3).
+        return {
+          created: registration,
+          reset: isOccupying(status) && (await resetDraw(tx, id)),
+        };
+      })
+      .catch((error: unknown) => {
+        // Двойное нажатие «Записаться»: второй запрос проходит проверку выше
+        // раньше, чем первый успел записать, и упирается в уникальный ключ.
+        // Человеку это то же «уже записан», а не ошибка сервера.
+        if (isUniqueViolation(error)) throw alreadyRegistered(playerId);
+        throw error;
       });
 
-      // Лимит достигнут — в лист ожидания (ТЗ 4.3), а не отказ: место
-      // освободится при первой же отмене.
-      const full = tournament.maxParticipants !== null && taken >= tournament.maxParticipants;
-
-      return tx.registration.create({
-        data: {
-          tournamentId: id,
-          playerId,
-          status: pending ? 'PENDING' : full ? 'WAITLIST' : 'CONFIRMED',
-          // Тренера в записи нет, пока его не укажут (ADR-089): он решает,
-          // кому засчитаются медали, и молча брать его из анкеты нельзя.
-        },
-        select: registrationFields,
-      });
-    });
+    if (reset) this.screen.changed(id);
 
     return toRegistrationView(created);
   }
@@ -822,6 +852,7 @@ export class TournamentsService {
     const started = tournament.startedAt !== null;
 
     const created = await this.prisma.$transaction(async (tx) => {
+      await lockRegistrations(tx, tournament.id);
       await placeLateEntry(tx, tournament.id, playerId, groupId);
 
       const registration = await tx.registration.create({
@@ -837,6 +868,9 @@ export class TournamentsService {
       await bumpVersion(tx, tournament.id);
 
       return registration;
+    }).catch((error: unknown) => {
+      if (isUniqueViolation(error)) throw alreadyRegistered(playerId);
+      throw error;
     });
 
     this.screen.changed(tournament.id);
@@ -900,9 +934,7 @@ export class TournamentsService {
     // Из листа ожидания замена берёт его же запись; записанный иначе уже
     // стоит в составе, и место в расстановке ему не нужно.
     if (existing !== null && existing.status !== 'WAITLIST') {
-      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Player is already registered', {
-        playerId: input.playerId,
-      });
+      throw alreadyRegistered(input.playerId);
     }
 
     const started = tournament.startedAt !== null;
@@ -1060,6 +1092,16 @@ export class TournamentsService {
         await promoteFromWaitlist(tx, id, tournament.maxParticipants);
       }
 
+      // До старта состав изменился — снят, неявка, принят из листа ожидания
+      // или по заявке. Жеребьёвка разложена по прежнему составу: снятый
+      // остался бы в группе, поднятый из очереди не попал бы никуда и после
+      // старта «играл» бы без единой встречи. ТЗ 5.3 велит жеребить заново.
+      const recomposed =
+        !started &&
+        status !== undefined &&
+        isOccupying(registration.status) !== isOccupying(status) &&
+        (await resetDraw(tx, id));
+
       // По ходу турнира снятие решает встречи: в группе — расчётом таблицы
       // (ADR-009), в сетке — технической победой соперника (ADR-061). Если
       // группам больше нечего доигрывать, плей-офф достраивается здесь же,
@@ -1072,12 +1114,12 @@ export class TournamentsService {
       // Снятие участника меняет таблицы, и снимок консоли обязан это увидеть.
       await bumpVersion(tx, id);
 
-      return result;
+      return { result, recomposed };
     });
 
-    if (started) this.screen.changed(id);
+    if (started || updated.recomposed) this.screen.changed(id);
 
-    return toRegistrationView(updated, { payment: true });
+    return toRegistrationView(updated.result, { payment: true });
   }
 
   /**
@@ -1158,13 +1200,19 @@ export class TournamentsService {
       await this.assertClubStaff(tournament.clubId, userId);
     }
 
-    await this.prisma.$transaction(async (tx) => {
+    const reset = await this.prisma.$transaction(async (tx) => {
       await tx.registration.delete({ where: { id: registrationId } });
 
-      if (isOccupying(registration.status)) {
-        await promoteFromWaitlist(tx, id, tournament.maxParticipants);
-      }
+      if (!isOccupying(registration.status)) return false;
+
+      await promoteFromWaitlist(tx, id, tournament.maxParticipants);
+
+      // Удалённый из состава после жеребьёвки остался бы во встречах без
+      // записи на турнир (ТЗ 5.3: состав изменился — жеребьёвка заново).
+      return resetDraw(tx, id);
     });
+
+    if (reset) this.screen.changed(id);
   }
 
   /**
@@ -1184,6 +1232,7 @@ export class TournamentsService {
       throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Close the registration before the draw', {
         id,
         status: tournament.status,
+        reason: 'REGISTRATION_OPEN',
       });
     }
 
@@ -1353,8 +1402,11 @@ export class TournamentsService {
       // группы. Без них турниру нечего вести.
       throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Draw the tournament before starting', {
         id,
+        reason: 'NOT_DRAWN',
       });
     }
+
+    await this.assertDrawCurrent(id);
 
     const registrations = await this.prisma.registration.findMany({
       where: { tournamentId: id, status: { in: OCCUPYING_STATUSES } },
@@ -1386,6 +1438,42 @@ export class TournamentsService {
     this.screen.changed(id);
 
     return toTournamentView(updated);
+  }
+
+  /**
+   * Расстановка совпадает с составом — проверка перед стартом.
+   *
+   * Жеребьёвка сбрасывается при каждом изменении состава (ТЗ 5.3), но старт
+   * — последняя точка, где расхождение ещё ничего не стоит: участник вне
+   * расстановки после старта «играет» без единой встречи и остаётся без
+   * места, а снятый, но оставшийся во встречах, раздаёт технические победы.
+   */
+  private async assertDrawCurrent(id: string): Promise<void> {
+    const [first] = await this.loadStages(id);
+
+    if (first === undefined) return;
+
+    const drawn = new Set(
+      first.matches
+        .flatMap((match) => [match.playerAId, match.playerBId])
+        .filter((player): player is string => player !== null),
+    );
+    const registered = await this.prisma.registration.findMany({
+      where: { tournamentId: id, status: { in: OCCUPYING_STATUSES } },
+      select: { playerId: true },
+    });
+    const occupying = new Set(registered.map((registration) => registration.playerId));
+    const missing = [...occupying].filter((player) => !drawn.has(player));
+    const extra = [...drawn].filter((player) => !occupying.has(player));
+
+    if (missing.length > 0 || extra.length > 0) {
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'The draw does not match the roster', {
+        id,
+        reason: 'DRAW_STALE',
+        missing,
+        extra,
+      });
+    }
   }
 
   /**
@@ -1941,7 +2029,9 @@ export class TournamentsService {
 
       if (own === null) {
         // Профиль заполняется отдельным шагом — ТЗ 2.2, ADR-013.
-        throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Player profile is required to register');
+        throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Player profile is required to register', {
+          reason: 'PROFILE_REQUIRED',
+        });
       }
 
       return own.id;
@@ -2116,6 +2206,69 @@ async function promoteFromWaitlist(
   if (next === null) return;
 
   await tx.registration.update({ where: { id: next.id }, data: { status: 'CONFIRMED' } });
+}
+
+/**
+ * Поднять из листа ожидания всех, кому хватает места, — после подъёма или
+ * снятия лимита. Возвращает, скольких подняли.
+ */
+async function promoteAllFromWaitlist(
+  tx: Prisma.TransactionClient,
+  tournamentId: string,
+  maxParticipants: number | null,
+): Promise<number> {
+  const waiting = await tx.registration.findMany({
+    where: { tournamentId, status: 'WAITLIST' },
+    orderBy: { createdAt: 'asc' },
+    select: { id: true },
+  });
+
+  if (waiting.length === 0) return 0;
+
+  const taken = await tx.registration.count({
+    where: { tournamentId, status: { in: OCCUPYING_STATUSES } },
+  });
+  const room = maxParticipants === null ? waiting.length : Math.max(0, maxParticipants - taken);
+  const lifted = waiting.slice(0, room).map((registration) => registration.id);
+
+  if (lifted.length > 0) {
+    await tx.registration.updateMany({
+      where: { id: { in: lifted } },
+      data: { status: 'CONFIRMED' },
+    });
+  }
+
+  return lifted.length;
+}
+
+/**
+ * Сбросить жеребьёвку, если она была, — состав до старта изменился (ТЗ 5.3).
+ * Версия растёт: экран зала и консоль обязаны перестать показывать прежнюю.
+ */
+async function resetDraw(tx: Prisma.TransactionClient, tournamentId: string): Promise<boolean> {
+  const removed = await tx.stage.deleteMany({ where: { tournamentId } });
+
+  if (removed.count === 0) return false;
+
+  await bumpVersion(tx, tournamentId);
+
+  return true;
+}
+
+/** Записи одного турнира идут по одной — до конца транзакции. */
+async function lockRegistrations(tx: Prisma.TransactionClient, tournamentId: string): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'registrations:' + tournamentId}))`;
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
+}
+
+function alreadyRegistered(playerId: string): AppError {
+  return new AppError(ERROR_CODES.VALIDATION_FAILED, 'Player is already registered', {
+    playerId,
+    reason: 'ALREADY_REGISTERED',
+  });
 }
 
 /** Перемешивание для случайного посева. Криптостойкое — своего велосипеда не надо. */

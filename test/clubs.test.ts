@@ -140,6 +140,7 @@ function makePrisma() {
     product: { findMany: vi.fn().mockResolvedValue([{ id: TABLE_ID }]) },
     clubTable: { deleteMany: vi.fn(), createMany: vi.fn() },
     $transaction: vi.fn(),
+    $executeRaw: vi.fn().mockResolvedValue(0),
   };
 
   prisma.$transaction.mockImplementation((run: (tx: typeof prisma) => unknown) => run(prisma));

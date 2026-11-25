@@ -167,6 +167,7 @@ function makePrisma() {
       updateMany: vi.fn(),
     },
     $transaction: vi.fn(),
+    $executeRaw: vi.fn().mockResolvedValue(0),
   };
 
   prisma.$transaction.mockImplementation(async (work: (tx: typeof prisma) => Promise<unknown>) =>

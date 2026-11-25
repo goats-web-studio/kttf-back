@@ -129,6 +129,7 @@ export function planDraw(
   if (seeded.length < 2) {
     throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'At least two participants are required', {
       participants: seeded.length,
+      reason: 'TOO_FEW_PARTICIPANTS',
     });
   }
 
@@ -326,6 +327,7 @@ function planGroupStage(
       advancing,
       advancePerGroup: config.advancePerGroup,
       groups: groups.length,
+      reason: 'TOO_FEW_ADVANCE',
     });
   }
 

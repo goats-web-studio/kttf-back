@@ -60,6 +60,7 @@ function makePrisma() {
       deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
     },
     $transaction: vi.fn(),
+    $executeRaw: vi.fn().mockResolvedValue(0),
   };
 
   prisma.$transaction.mockImplementation((run: (tx: typeof prisma) => unknown) => run(prisma));

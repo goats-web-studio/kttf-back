@@ -283,6 +283,7 @@ function makePrisma(db: Db) {
       create: vi.fn((args: { data: Record<string, unknown> }) => Promise.resolve(args.data)),
     },
     $transaction: vi.fn(),
+    $executeRaw: vi.fn().mockResolvedValue(0),
   };
 
   prisma.$transaction.mockImplementation((run: (tx: typeof prisma) => unknown) => run(prisma));
