@@ -97,14 +97,18 @@ enum Locale {
 }
 
 model Session {
-  id           String   @id @default(uuid())
-  userId       String
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  refreshToken String   @unique
-  userAgent    String?
-  createdAt    DateTime @default(now())
+  id                   String    @id @default(uuid())
+  userId               String
+  user                 User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshToken         String    @unique
+  // Прежний токен и момент замены — ADR-109: ответ на обновление мог не
+  // дойти (перезагрузка вкладки), и прежний токен ещё минуту даёт тот же новый.
+  previousRefreshToken String?   @unique
+  rotatedAt            DateTime?
+  userAgent            String?
+  createdAt            DateTime  @default(now())
   // ТЗ 2.1: сессия живёт 90 дней и продлевается при активности
-  expiresAt    DateTime
+  expiresAt            DateTime
 
   @@index([userId])
   @@index([expiresAt])

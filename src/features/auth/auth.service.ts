@@ -13,7 +13,7 @@ import type {
 import { Injectable } from '@nestjs/common';
 
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
-import { SESSION_TTL_MS } from './auth.constants.js';
+import { REFRESH_REUSE_WINDOW_MS, SESSION_TTL_MS } from './auth.constants.js';
 import { DUMMY_HASH, hashPassword, verifyPassword } from './password.js';
 import { LoginThrottle } from './login-throttle.js';
 import { isDeletedPlayer } from '../players/deleted-player.js';
@@ -221,13 +221,27 @@ export class AuthService {
    * Refresh-токен заменяется на новый — ТЗ 2.1 требует продления при
    * активности, а заодно украденный токен перестаёт работать после первого же
    * обновления настоящим владельцем.
+   *
+   * Прежний токен ещё минуту даёт тот же новый (ADR-109): ответ на обновление
+   * теряется, когда вкладку перезагружают, пока он в пути, — и без этого
+   * человек оказывался не вошедшим после пары быстрых перезагрузок.
    */
   async refresh(refreshToken: string, userAgent?: string): Promise<TokenPair> {
-    const session = await this.prisma.session.findUnique({
-      where: { refreshToken: this.tokens.hashRefreshToken(refreshToken) },
+    const hash = this.tokens.hashRefreshToken(refreshToken);
+    const now = new Date();
+    const session = await this.prisma.session.findFirst({
+      where: {
+        OR: [
+          { refreshToken: hash },
+          {
+            previousRefreshToken: hash,
+            rotatedAt: { gt: new Date(now.getTime() - REFRESH_REUSE_WINDOW_MS) },
+          },
+        ],
+      },
     });
 
-    if (session === null || session.expiresAt <= new Date()) {
+    if (session === null || session.expiresAt <= now) {
       throw new AppError(ERROR_CODES.UNAUTHORIZED, 'Session not found or expired');
     }
 
@@ -240,16 +254,24 @@ export class AuthService {
       }),
     );
 
-    const next = this.tokens.generateRefreshToken();
+    const next = this.tokens.successorRefreshToken(refreshToken);
 
-    await this.prisma.session.update({
-      where: { id: session.id },
-      data: {
-        refreshToken: this.tokens.hashRefreshToken(next),
-        expiresAt: new Date(Date.now() + SESSION_TTL_MS),
-        ...(userAgent === undefined ? {} : { userAgent }),
-      },
-    });
+    // Пришёл прежний токен: его замена уже записана, и `next` — тот самый
+    // токен, что лежит в сессии. Запись не трогается — иначе прежний токен
+    // продлевал бы своё окно бесконечно.
+    if (session.refreshToken === hash) {
+      // Два одновременных обновления одним токеном пишут одно и то же.
+      await this.prisma.session.update({
+        where: { id: session.id },
+        data: {
+          refreshToken: this.tokens.hashRefreshToken(next),
+          previousRefreshToken: hash,
+          rotatedAt: now,
+          expiresAt: new Date(now.getTime() + SESSION_TTL_MS),
+          ...(userAgent === undefined ? {} : { userAgent }),
+        },
+      });
+    }
 
     return { accessToken: this.tokens.issueAccessToken(session.userId), refreshToken: next };
   }
@@ -258,10 +280,15 @@ export class AuthService {
    * Выход. Молчит, если сессии уже нет: повторный выход и выход по чужому
    * токену обязаны выглядеть одинаково, иначе эндпоинт сообщает, существует
    * ли сессия.
+   *
+   * Прежний токен тоже закрывает сессию: вкладка, не получившая новый, иначе
+   * не смогла бы выйти на сервере (ADR-109).
    */
   async logout(refreshToken: string): Promise<void> {
+    const hash = this.tokens.hashRefreshToken(refreshToken);
+
     await this.prisma.session.deleteMany({
-      where: { refreshToken: this.tokens.hashRefreshToken(refreshToken) },
+      where: { OR: [{ refreshToken: hash }, { previousRefreshToken: hash }] },
     });
   }
 

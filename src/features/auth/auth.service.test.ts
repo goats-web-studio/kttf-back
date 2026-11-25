@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Env } from '../../infra/config/env.js';
 import type { PrismaService } from '../../infra/prisma/prisma.service.js';
-import { SESSION_TTL_MS } from './auth.constants.js';
+import { REFRESH_REUSE_WINDOW_MS, SESSION_TTL_MS } from './auth.constants.js';
 import { AuthService } from './auth.service.js';
 import { LOGIN_FAILURES_PER_ACCOUNT, LoginThrottle } from './login-throttle.js';
 import { hashPassword } from './password.js';
@@ -55,7 +55,7 @@ function makePrisma() {
     },
     session: {
       create: vi.fn().mockResolvedValue({}),
-      findUnique: vi.fn().mockResolvedValue(null),
+      findFirst: vi.fn().mockResolvedValue(null),
       update: vi.fn().mockResolvedValue({}),
       deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
     },
@@ -323,14 +323,26 @@ describe('refresh', () => {
     prisma = makePrisma();
   });
 
+  /** Сессия, в которой текущий — `token`, а прежний — `previous`. */
+  function sessionWith(
+    tokens: TokenService,
+    token: string,
+    previous: { token: string; rotatedAt: Date } | null = null,
+  ) {
+    return {
+      id: 'session-1',
+      userId: 'user-1',
+      refreshToken: tokens.hashRefreshToken(token),
+      previousRefreshToken: previous === null ? null : tokens.hashRefreshToken(previous.token),
+      rotatedAt: previous?.rotatedAt ?? null,
+      expiresAt: new Date(Date.now() + 1000),
+    };
+  }
+
   it('выдаёт новую пару и продлевает сессию', async () => {
     const { service, tokens } = makeService(prisma);
     const token = tokens.generateRefreshToken();
-    prisma.session.findUnique.mockResolvedValue({
-      id: 'session-1',
-      userId: 'user-1',
-      expiresAt: new Date(Date.now() + 1000),
-    });
+    prisma.session.findFirst.mockResolvedValue(sessionWith(tokens, token));
 
     const result = await service.refresh(token, 'vitest');
 
@@ -342,29 +354,73 @@ describe('refresh', () => {
     // Ротация нужна не только ради продления: украденный токен умирает при
     // первом же обновлении настоящим владельцем.
     const { service, tokens } = makeService(prisma);
-    prisma.session.findUnique.mockResolvedValue({
-      id: 'session-1',
-      userId: 'user-1',
-      expiresAt: new Date(Date.now() + 1000),
-    });
+    const token = tokens.generateRefreshToken();
+    prisma.session.findFirst.mockResolvedValue(sessionWith(tokens, token));
 
-    const result = await service.refresh(tokens.generateRefreshToken());
+    const result = await service.refresh(token);
 
     const updated = prisma.session.update.mock.calls[0]?.[0] as {
-      data: { refreshToken: string };
+      data: { refreshToken: string; previousRefreshToken: string; rotatedAt: Date };
     };
     expect(updated.data.refreshToken).toBe(tokens.hashRefreshToken(result.refreshToken));
+    expect(updated.data.previousRefreshToken).toBe(tokens.hashRefreshToken(token));
+    expect(updated.data.rotatedAt).toBeInstanceOf(Date);
   });
 
-  it('сессию ищет по хешу, а не по самому токену', async () => {
+  it('сессию ищет по хешу, а не по самому токену; прежний — только в окне', async () => {
     const { service, tokens } = makeService(prisma);
     const token = tokens.generateRefreshToken();
+    const before = Date.now();
 
     await expect(service.refresh(token)).rejects.toThrow();
 
-    expect(prisma.session.findUnique).toHaveBeenCalledWith({
-      where: { refreshToken: tokens.hashRefreshToken(token) },
-    });
+    const query = prisma.session.findFirst.mock.calls[0]?.[0] as {
+      where: {
+        OR: [{ refreshToken: string }, { previousRefreshToken: string; rotatedAt: { gt: Date } }];
+      };
+    };
+    const hash = tokens.hashRefreshToken(token);
+    expect(query.where.OR[0]).toEqual({ refreshToken: hash });
+    expect(query.where.OR[1].previousRefreshToken).toBe(hash);
+    expect(query.where.OR[1].rotatedAt.gt.getTime()).toBeGreaterThanOrEqual(
+      before - REFRESH_REUSE_WINDOW_MS,
+    );
+    expect(query.where.OR[1].rotatedAt.gt.getTime()).toBeLessThanOrEqual(
+      Date.now() - REFRESH_REUSE_WINDOW_MS,
+    );
+  });
+
+  it('ответ потерялся при перезагрузке: прежний токен даёт тот же новый и ничего не пишет', async () => {
+    // ADR-109: сервер заменил токен, браузер ответа не получил и пришёл с
+    // прежним. Раньше это был отказ — и человек выходил из сессии.
+    const { service, tokens } = makeService(prisma);
+    const token = tokens.generateRefreshToken();
+    prisma.session.findFirst.mockResolvedValue(sessionWith(tokens, token));
+    const first = await service.refresh(token);
+
+    prisma.session.update.mockClear();
+    prisma.session.findFirst.mockResolvedValue(
+      sessionWith(tokens, first.refreshToken, { token, rotatedAt: new Date() }),
+    );
+    const again = await service.refresh(token);
+
+    expect(again.refreshToken).toBe(first.refreshToken);
+    expect(tokens.verifyAccessToken(again.accessToken)).toBe('user-1');
+    // Окно прежнего токена не продлевается его же повтором.
+    expect(prisma.session.update).not.toHaveBeenCalled();
+  });
+
+  it('новый токен выводится из прежнего с ключом сервера, а не угадывается', () => {
+    const { tokens } = makeService(prisma);
+    const token = tokens.generateRefreshToken();
+    const other = new TokenService(
+      { JWT_SECRET: 'another_secret_at_least_32_characters_long' } as Env,
+      new JwtService({ secret: SECRET }),
+    );
+
+    expect(tokens.successorRefreshToken(token)).toBe(tokens.successorRefreshToken(token));
+    expect(tokens.successorRefreshToken(token)).toMatch(/^[0-9a-f]{64}$/);
+    expect(other.successorRefreshToken(token)).not.toBe(tokens.successorRefreshToken(token));
   });
 
   it('неизвестный токен — отказ', async () => {
@@ -374,10 +430,9 @@ describe('refresh', () => {
   });
 
   it('истёкшая сессия — отказ', async () => {
-    const { service } = makeService(prisma);
-    prisma.session.findUnique.mockResolvedValue({
-      id: 'session-1',
-      userId: 'user-1',
+    const { service, tokens } = makeService(prisma);
+    prisma.session.findFirst.mockResolvedValue({
+      ...sessionWith(tokens, 'что-то'),
       expiresAt: new Date(Date.now() - 1000),
     });
 
@@ -399,8 +454,10 @@ describe('logout и me', () => {
 
     await expect(service.logout(token)).resolves.toBeUndefined();
 
+    const hash = tokens.hashRefreshToken(token);
+    // Прежний токен тоже закрывает сессию — ADR-109.
     expect(prisma.session.deleteMany).toHaveBeenCalledWith({
-      where: { refreshToken: tokens.hashRefreshToken(token) },
+      where: { OR: [{ refreshToken: hash }, { previousRefreshToken: hash }] },
     });
   });
 
@@ -622,13 +679,14 @@ describe('заблокированный аккаунт — ADR-103', () => {
   });
 
   it('refresh отказывает и сессию не продлевает', async () => {
-    prisma.session.findUnique.mockResolvedValue({
+    const { service, tokens } = makeService(prisma);
+    prisma.session.findFirst.mockResolvedValue({
       id: 'session-1',
       userId: 'user-1',
+      refreshToken: tokens.hashRefreshToken('что-то'),
       expiresAt: new Date(Date.now() + 1000),
     });
     prisma.user.findUnique.mockResolvedValue(blocked);
-    const { service } = makeService(prisma);
 
     await expect(service.refresh('что-то')).rejects.toMatchObject({ code: 'ACCOUNT_BLOCKED' });
     expect(prisma.session.update).not.toHaveBeenCalled();
