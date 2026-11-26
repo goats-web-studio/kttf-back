@@ -37,12 +37,11 @@ interface IncomingFile {
   readonly size: number;
 }
 
-/** Расширение по типу: имя файла от клиента в ключ не попадает — это путь. */
-const EXTENSIONS: Readonly<Record<string, string>> = {
-  'image/jpeg': 'jpg',
-  'image/png': 'png',
-  'image/webp': 'webp',
-};
+/**
+ * Фото игрока — один WebP не шире 1200: крупнее его нигде не показывают
+ * (ADR-129). Перекодирование заодно убирает метаданные снимка.
+ */
+const PLAYER_PHOTO_WIDTHS = [1200] as const;
 
 /**
  * Ключ файла: `<папка>/<uuid>.<расширение>`.
@@ -85,6 +84,12 @@ export class FilesController {
    * Правило приёма — общая функция `rejectPhoto`: форма отказывает ровно
    * тому файлу, которому откажет сервер (ADR-029). Здесь оно всё равно
    * проверяется: форма — это удобство, а не защита.
+   *
+   * Файл перекодируется, как остальные картинки, и не хранится как прислан
+   * (ADR-129): снимок с телефона несёт EXIF с координатами места съёмки, а
+   * фото игрока открыто всем. Тип из заголовка клиента тоже больше не
+   * решает, что лежит в хранилище: туда попадает только то, что sharp
+   * разобрал как картинку.
    */
   @Post('player-photo')
   @UseGuards(JwtAuthGuard)
@@ -109,10 +114,10 @@ export class FilesController {
       });
     }
 
-    const extension = EXTENSIONS[file.mimetype] ?? 'bin';
-    const key = await this.storage.put('players', file.buffer, file.mimetype, extension);
+    const image = await this.images.process(file.buffer, PLAYER_PHOTO_WIDTHS);
+    const { url } = await storeImage(this.storage, 'players', image);
 
-    return { url: `/api/v1/files/${key}` };
+    return { url };
   }
 
   /**

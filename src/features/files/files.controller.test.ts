@@ -1,4 +1,4 @@
-import { isAppError } from '@kttf/shared/errors';
+import { AppError, ERROR_CODES, isAppError } from '@kttf/shared/errors';
 import { PHOTO_MAX_BYTES } from '@kttf/shared/types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -46,19 +46,65 @@ beforeEach(() => {
 describe('загрузка фото', () => {
   const photo = { buffer: Buffer.from('x'), mimetype: 'image/jpeg', size: 100 };
 
+  /** Ответ sharp на фото игрока: одна ширина (ADR-129). */
+  const processed = () => {
+    images.process.mockResolvedValueOnce({
+      width: 1200,
+      height: 900,
+      variants: new Map([[1200, Buffer.from('webp')]]),
+    });
+  };
+
   it('отдаёт путь, а не абсолютную ссылку', async () => {
     // Зашитый в базу https://localhost/... пережил бы переезд на боевой
     // домен ровно до первого открытия профиля.
+    processed();
     const result = await controller.uploadPlayerPhoto(photo);
 
-    expect(result.url).toBe('/api/v1/files/players/11111111-1111-4111-8111-111111111111.jpg');
+    expect(result).toEqual({
+      url: expect.stringMatching(/^\/api\/v1\/files\/players\/[0-9a-f-]{36}\.webp$/) as string,
+    });
   });
 
   it('имя файла от клиента в ключ не попадает', async () => {
     // Чужое имя файла — это путь: «../../etc/passwd» тоже имя.
+    processed();
     await controller.uploadPlayerPhoto({ ...photo, originalname: '../../evil.jpg' } as never);
 
-    expect(storage.put).toHaveBeenCalledWith('players', photo.buffer, 'image/jpeg', 'jpg');
+    expect(storage.putAt.mock.calls[0]?.[0]).toMatch(/^players\/[0-9a-f-]{36}\.webp$/);
+  });
+
+  it('файл перекодируется одним WebP до 1200 и не хранится как прислан — ADR-129', async () => {
+    // В присланном снимке EXIF с координатами места съёмки, а фото игрока
+    // открыто всем: в хранилище попадает только перекодированное.
+    processed();
+    await controller.uploadPlayerPhoto(photo);
+
+    expect(images.process).toHaveBeenCalledWith(photo.buffer, [1200]);
+    expect(storage.putAt).toHaveBeenCalledOnce();
+    expect(storage.putAt).toHaveBeenCalledWith(
+      expect.stringMatching(/^players\//) as string,
+      Buffer.from('webp'),
+      'image/webp',
+    );
+    expect(storage.put).not.toHaveBeenCalled();
+  });
+
+  it('не картинка под видом JPEG — отказ, в хранилище ничего', async () => {
+    images.process.mockRejectedValueOnce(
+      new AppError(ERROR_CODES.VALIDATION_FAILED, 'Image cannot be processed', {
+        field: 'file',
+        reason: 'DECODE',
+      }),
+    );
+
+    await controller.uploadPlayerPhoto(photo).then(
+      () => expect.unreachable('ожидался отказ'),
+      (error: unknown) => {
+        expect(isAppError(error) && error.details).toMatchObject({ reason: 'DECODE' });
+      },
+    );
+    expect(storage.putAt).not.toHaveBeenCalled();
   });
 
   it('пустой запрос — отказ, а не падение', async () => {
@@ -85,7 +131,8 @@ describe('загрузка фото', () => {
       },
     );
 
-    expect(storage.put).not.toHaveBeenCalled();
+    expect(images.process).not.toHaveBeenCalled();
+    expect(storage.putAt).not.toHaveBeenCalled();
   });
 });
 

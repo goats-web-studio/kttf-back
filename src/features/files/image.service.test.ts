@@ -73,3 +73,31 @@ describe('картинка каталога', () => {
     expect(meta).toMatchObject({ format: 'webp', hasAlpha: true });
   });
 });
+
+describe('фото игрока — ADR-129', () => {
+  it('координаты места съёмки не переживают перекодирование, остаётся один WebP', async () => {
+    const shot = await sharp({
+      create: { width: 3000, height: 4000, channels: 3, background: '#3c3' },
+    })
+      .jpeg()
+      .withMetadata({
+        exif: {
+          IFD0: { Make: 'Телефон', Model: 'Камера' },
+          IFD3: { GPSLatitudeRef: 'N', GPSLatitude: '51/1 7/1 0/1' },
+        },
+      })
+      .toBuffer();
+    // Предусловие: в присланном снимке EXIF есть.
+    expect((await sharp(shot).metadata()).exif).toBeDefined();
+
+    const result = await service.process(shot, [1200]);
+
+    expect([...result.variants.keys()]).toEqual([1200]);
+    const stored = result.variants.get(1200);
+    expect(stored).toBeDefined();
+    const meta = await sharp(stored).metadata();
+    expect(meta.format).toBe('webp');
+    expect(meta.exif).toBeUndefined();
+    expect(Math.max(meta.width, meta.height)).toBe(1200);
+  });
+});
