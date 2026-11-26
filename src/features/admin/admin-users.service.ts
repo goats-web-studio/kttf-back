@@ -295,9 +295,11 @@ export class AdminUsersService {
     await this.assertUser(id);
 
     const password = input.password ?? generatePassword();
+    // Хеш до транзакции: держать её открытой, пока он считается, незачем.
+    const passwordHash = await hashPassword(password);
 
     await this.prisma.$transaction(async (tx) => {
-      await tx.user.update({ where: { id }, data: { passwordHash: hashPassword(password) } });
+      await tx.user.update({ where: { id }, data: { passwordHash } });
       await tx.session.deleteMany({ where: { userId: id } });
       // Ни пароля, ни хеша — только чей он: свой или придуманный сервером.
       await writeAudit(tx, {

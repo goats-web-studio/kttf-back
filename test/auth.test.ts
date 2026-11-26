@@ -33,7 +33,7 @@ const account = {
   id: 'user-1',
   phone: '+77015550101',
   login: 'aslan',
-  passwordHash: hashPassword(PASSWORD),
+  passwordHash: await hashPassword(PASSWORD),
   email: null,
   locale: 'RU',
   createdAt: new Date('2026-08-29T00:00:00.000Z'),

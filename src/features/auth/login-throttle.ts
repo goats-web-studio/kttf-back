@@ -21,6 +21,15 @@ export const LOGIN_FAILURES_PER_ACCOUNT = 10;
 export const LOGIN_FAILURES_PER_ADDRESS = 20;
 
 /**
+ * Регистраций с одного адреса за окно — ADR-128.
+ *
+ * Столько же, сколько неудач входа с адреса: весь зал турнира сидит за одним
+ * Wi-Fi (ADR-056), и игроки, заводящие аккаунты на месте, в предел не
+ * упираются. Серию регистраций скриптом с одного адреса он останавливает.
+ */
+export const SIGN_UPS_PER_ADDRESS = 20;
+
+/**
  * Защита входа от перебора — ТС 8.3, ADR-056.
  *
  * Считаются только неудачи: человек, который вошёл, предела не расходует.
@@ -34,8 +43,26 @@ export const LOGIN_FAILURES_PER_ADDRESS = 20;
 export class LoginThrottle {
   private readonly accounts = new WindowCounter(LOGIN_FAILURES_PER_ACCOUNT, WINDOW_MS);
   private readonly addresses = new WindowCounter(LOGIN_FAILURES_PER_ADDRESS, WINDOW_MS);
+  private readonly signUps = new WindowCounter(SIGN_UPS_PER_ADDRESS, WINDOW_MS);
 
   constructor(@Inject(ENV) private readonly env: Env) {}
+
+  /**
+   * Засчитывает регистрацию с адреса; сверх предела — отказ (ADR-128).
+   *
+   * Зовётся перед хешем пароля, когда проверки анкеты уже пройдены: опечатка
+   * в телефоне не расходует предел зала, а каждая дошедшая до хеша попытка —
+   * это новый аккаунт.
+   */
+  countSignUp(ip: string, now = Date.now()): void {
+    const verdict = this.signUps.hit(this.addressKey(ip), now);
+
+    if (!verdict.allowed) {
+      throw new AppError(ERROR_CODES.RATE_LIMITED, 'Too many sign-ups', {
+        retryAfterSeconds: Math.ceil(verdict.retryAfterMs / 1000),
+      });
+    }
+  }
 
   assertAllowed(identifier: string, ip: string, now = Date.now()): void {
     const account = this.accounts.check(accountKey(identifier), now);

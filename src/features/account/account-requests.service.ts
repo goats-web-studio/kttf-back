@@ -100,7 +100,7 @@ export class AccountRequestsService {
 
     // Без пароля аккаунтом не войти (ADR-034), и заявку так не подать:
     // сверка с подставным хешем всегда ложна, а время ответа то же.
-    if (!verifyPassword(input.password, account.passwordHash ?? DUMMY_HASH)) {
+    if (!(await verifyPassword(input.password, account.passwordHash ?? DUMMY_HASH))) {
       this.throttle.recordFailure(throttleKey, ip);
       throw new AppError(ERROR_CODES.WRONG_PASSWORD, 'Password is wrong');
     }

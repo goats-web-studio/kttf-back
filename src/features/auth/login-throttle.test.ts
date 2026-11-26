@@ -5,6 +5,7 @@ import {
   LOGIN_FAILURES_PER_ACCOUNT,
   LOGIN_FAILURES_PER_ADDRESS,
   LoginThrottle,
+  SIGN_UPS_PER_ADDRESS,
 } from './login-throttle.js';
 
 const make = (): LoginThrottle => new LoginThrottle({ JWT_SECRET: 'x'.repeat(32) } as Env);
@@ -62,6 +63,31 @@ describe('защита входа — ADR-056', () => {
     }).toThrow(expect.objectContaining({ code: 'RATE_LIMITED' }) as Error);
     expect(() => {
       throttle.assertAllowed('aslan', '2.2.2.2', NOW);
+    }).not.toThrow();
+  });
+});
+
+describe('предел регистраций с адреса — ADR-128', () => {
+  it('двадцать регистраций проходят, следующая — отказ до конца окна, другой адрес свободен', () => {
+    const throttle = make();
+
+    for (let n = 0; n < SIGN_UPS_PER_ADDRESS; n += 1) {
+      throttle.countSignUp('1.1.1.1', NOW);
+    }
+
+    expect(() => {
+      throttle.countSignUp('1.1.1.1', NOW + 1000);
+    }).toThrow(
+      expect.objectContaining({
+        code: 'RATE_LIMITED',
+        details: { retryAfterSeconds: 899 },
+      }) as Error,
+    );
+    expect(() => {
+      throttle.countSignUp('2.2.2.2', NOW + 1000);
+    }).not.toThrow();
+    expect(() => {
+      throttle.countSignUp('1.1.1.1', NOW + 15 * 60 * 1000);
     }).not.toThrow();
   });
 });

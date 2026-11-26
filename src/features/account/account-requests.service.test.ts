@@ -16,6 +16,7 @@ import { phoneHash } from './phone-hash.js';
 
 const SECRET = 'test_secret_at_least_32_characters_long';
 const PASSWORD = 'parol123';
+const PASSWORD_HASH = await hashPassword(PASSWORD);
 const USER = 'user-1';
 const PHONE = '+77010000001';
 const IP = '10.0.0.1';
@@ -50,7 +51,7 @@ function makePrisma() {
   prisma.user.findUnique.mockImplementation(({ select }: { select: Record<string, boolean> }) =>
     Promise.resolve(
       select.passwordHash === true
-        ? { passwordHash: hashPassword(PASSWORD) }
+        ? { passwordHash: PASSWORD_HASH }
         : select.phone === true
           ? { phone: PHONE }
           : { isAdmin: false },

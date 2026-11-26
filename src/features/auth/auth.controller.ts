@@ -54,9 +54,10 @@ export class AuthController {
   @HttpCode(HttpStatus.CREATED)
   async signUp(
     @Body(new ZodValidationPipe(signUpSchema)) body: SignUpInput,
+    @Req() request: Request,
     @Headers('user-agent') userAgent?: string,
   ): Promise<AuthSession> {
-    return this.auth.signUp(body, userAgent);
+    return this.auth.signUp(body, clientIp(request), userAgent);
   }
 
   @Post('refresh')
@@ -108,8 +109,9 @@ export class AuthController {
   async changePassword(
     @Body(new ZodValidationPipe(changePasswordSchema)) body: ChangePasswordInput,
     @CurrentUserId() userId: string,
+    @Req() request: Request,
     @Headers('user-agent') userAgent?: string,
   ): Promise<TokenPair> {
-    return this.auth.changePassword(userId, body, userAgent);
+    return this.auth.changePassword(userId, body, clientIp(request), userAgent);
   }
 }

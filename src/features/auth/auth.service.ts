@@ -66,7 +66,7 @@ export class AuthService {
     // приходит заметно быстрее для незнакомого логина, и перебор находит
     // существующие аккаунты по времени ответа.
     const stored = account?.passwordHash ?? DUMMY_HASH;
-    const matches = verifyPassword(input.password, stored);
+    const matches = await verifyPassword(input.password, stored);
 
     if (account?.passwordHash == null || !matches) {
       this.throttle.recordFailure(identifier, ip);
@@ -89,8 +89,11 @@ export class AuthService {
    * тех, у кого ещё нет кабинета, и привязывается к своей истории. Без
    * выбора аккаунт тоже заводится: у судьи и организатора профиля игрока
    * может не быть вовсе.
+   *
+   * Регистраций с одного адреса — не больше `SIGN_UPS_PER_ADDRESS` за окно
+   * (ADR-128): каждая — новый аккаунт и хеш пароля.
    */
-  async signUp(input: SignUpInput, userAgent?: string): Promise<AuthSession> {
+  async signUp(input: SignUpInput, ip: string, userAgent?: string): Promise<AuthSession> {
     const taken = await this.prisma.user.findFirst({
       where: { OR: [{ phone: input.phone }, { login: input.login }] },
       select: { phone: true, login: true },
@@ -154,8 +157,12 @@ export class AuthService {
       };
     }
 
+    // Анкета проверена — дальше новый аккаунт: здесь он и засчитывается
+    // адресу, до хеша пароля.
+    this.throttle.countSignUp(ip);
+
     const refreshToken = this.tokens.generateRefreshToken();
-    const passwordHash = hashPassword(input.password);
+    const passwordHash = await hashPassword(input.password);
 
     const account = await this.prisma.$transaction(async (tx) => {
       const created = await tx.user.create({
@@ -362,12 +369,20 @@ export class AuthService {
    * что старый узнали чужие, и оставить их сессии живыми значило бы не
    * сделать ничего. Взамен выдаётся новая пара токенов — вкладка, из которой
    * пароль сменили, остаётся рабочей, а не выбрасывает человека на вход.
+   *
+   * Текущий пароль перебирать нельзя, как и при входе (ADR-056, ADR-128):
+   * тот же предел неудач, что у заявки на удаление аккаунта.
    */
   async changePassword(
     userId: string,
     input: ChangePasswordInput,
+    ip: string,
     userAgent?: string,
   ): Promise<TokenPair> {
+    const throttleKey = `password:${userId}`;
+
+    this.throttle.assertAllowed(throttleKey, ip);
+
     const account = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { id: true, passwordHash: true },
@@ -375,17 +390,22 @@ export class AuthService {
 
     if (
       account?.passwordHash == null ||
-      !verifyPassword(input.currentPassword, account.passwordHash)
+      !(await verifyPassword(input.currentPassword, account.passwordHash))
     ) {
+      this.throttle.recordFailure(throttleKey, ip);
       throw new AppError(ERROR_CODES.UNAUTHORIZED, 'Current password is wrong');
     }
 
+    this.throttle.recordSuccess(throttleKey);
+
+    // Хеш до транзакции: держать её открытой, пока он считается, незачем.
+    const passwordHash = await hashPassword(input.newPassword);
     const refreshToken = this.tokens.generateRefreshToken();
 
     await this.prisma.$transaction(async (tx) => {
       await tx.user.update({
         where: { id: userId },
-        data: { passwordHash: hashPassword(input.newPassword) },
+        data: { passwordHash },
       });
 
       await tx.session.deleteMany({ where: { userId } });

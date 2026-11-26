@@ -7,7 +7,11 @@ import type { Env } from '../../infra/config/env.js';
 import type { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { SESSION_TTL_MS } from './auth.constants.js';
 import { AuthService } from './auth.service.js';
-import { LOGIN_FAILURES_PER_ACCOUNT, LoginThrottle } from './login-throttle.js';
+import {
+  LOGIN_FAILURES_PER_ACCOUNT,
+  LoginThrottle,
+  SIGN_UPS_PER_ADDRESS,
+} from './login-throttle.js';
 import { hashPassword } from './password.js';
 import { TokenService } from './token.service.js';
 
@@ -26,7 +30,7 @@ const account = {
   id: 'user-1',
   phone: '+70000000000',
   login: 'aslan',
-  passwordHash: hashPassword(PASSWORD),
+  passwordHash: await hashPassword(PASSWORD),
   email: null,
   locale: 'RU',
   telegramId: null,
@@ -184,7 +188,7 @@ describe('регистрация', () => {
   it('заводит аккаунт и сразу входит', async () => {
     const { service } = makeService(prisma);
 
-    const session = await service.signUp(input);
+    const session = await service.signUp(input, IP);
 
     expect(session.accessToken).not.toBe('');
     expect(prisma.session.create).toHaveBeenCalledOnce();
@@ -193,7 +197,7 @@ describe('регистрация', () => {
   it('согласие записывается с датой и редакцией политики — ADR-091', async () => {
     const { service } = makeService(prisma);
 
-    const session = await service.signUp(input);
+    const session = await service.signUp(input, IP);
 
     const created = prisma.user.create.mock.calls[0]?.[0] as {
       data: { privacyConsentAt?: unknown; privacyConsentVersion?: unknown };
@@ -212,7 +216,7 @@ describe('регистрация', () => {
     const { service } = makeService(prisma);
 
     await expect(
-      service.signUp({ ...input, playerId: '00000000-0000-4000-8000-000000000009' }),
+      service.signUp({ ...input, playerId: '00000000-0000-4000-8000-000000000009' }, IP),
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
     expect(prisma.user.create).not.toHaveBeenCalled();
   });
@@ -220,7 +224,7 @@ describe('регистрация', () => {
   it('пароль в базу открытым не попадает', async () => {
     const { service } = makeService(prisma);
 
-    await service.signUp(input);
+    await service.signUp(input, IP);
 
     const stored = JSON.stringify(prisma.user.create.mock.calls[0]?.[0]);
     expect(stored).not.toContain(PASSWORD);
@@ -230,7 +234,7 @@ describe('регистрация', () => {
     prisma.user.findFirst.mockResolvedValue({ phone: '+70000000000', login: 'drugoi' });
     const { service } = makeService(prisma);
 
-    await expect(service.signUp(input)).rejects.toMatchObject({
+    await expect(service.signUp(input, IP)).rejects.toMatchObject({
       code: 'VALIDATION_FAILED',
       details: { field: 'phone' },
     });
@@ -240,7 +244,7 @@ describe('регистрация', () => {
   it('привязывает к игроку, заведённому тренером', async () => {
     const { service } = makeService(prisma);
 
-    const session = await service.signUp({ ...input, playerId: 'player-1' });
+    const session = await service.signUp({ ...input, playerId: 'player-1' }, IP);
 
     expect(prisma.player.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -253,7 +257,7 @@ describe('регистрация', () => {
   it('город гостя переезжает в аккаунт — ADR-093', async () => {
     const { service } = makeService(prisma);
 
-    await service.signUp({ ...input, cityId: 'city-1' });
+    await service.signUp({ ...input, cityId: 'city-1' }, IP);
 
     const data = (prisma.user.create.mock.calls[0]?.[0] as { data: { cityId?: string } }).data;
     expect(data.cityId).toBe('city-1');
@@ -268,7 +272,7 @@ describe('регистрация', () => {
     });
     const { service } = makeService(prisma);
 
-    await service.signUp({ ...input, playerId: 'player-1' });
+    await service.signUp({ ...input, playerId: 'player-1' }, IP);
 
     const data = (prisma.user.create.mock.calls[0]?.[0] as { data: { cityId?: string } }).data;
     expect(data.cityId).toBe('city-2');
@@ -278,7 +282,7 @@ describe('регистрация', () => {
     prisma.city.findFirst.mockResolvedValue(null);
     const { service } = makeService(prisma);
 
-    await expect(service.signUp({ ...input, cityId: 'city-9' })).rejects.toMatchObject({
+    await expect(service.signUp({ ...input, cityId: 'city-9' }, IP)).rejects.toMatchObject({
       code: 'CITY_UNAVAILABLE',
     });
     expect(prisma.user.create).not.toHaveBeenCalled();
@@ -288,7 +292,7 @@ describe('регистрация', () => {
     prisma.player.findUnique.mockResolvedValue({ userId: null, confirmedAt: null });
     const { service } = makeService(prisma);
 
-    await expect(service.signUp({ ...input, playerId: 'player-1' })).rejects.toMatchObject({
+    await expect(service.signUp({ ...input, playerId: 'player-1' }, IP)).rejects.toMatchObject({
       code: 'PLAYER_CLAIM_INVALID',
       details: { reason: 'NOT_CONFIRMED' },
     });
@@ -299,7 +303,7 @@ describe('регистрация', () => {
     prisma.player.findUnique.mockResolvedValue({ userId: 'user-2' });
     const { service } = makeService(prisma);
 
-    await expect(service.signUp({ ...input, playerId: 'player-1' })).rejects.toMatchObject({
+    await expect(service.signUp({ ...input, playerId: 'player-1' }, IP)).rejects.toMatchObject({
       code: 'VALIDATION_FAILED',
       details: { field: 'playerId' },
     });
@@ -310,7 +314,7 @@ describe('регистрация', () => {
     prisma.player.updateMany.mockResolvedValue({ count: 0 });
     const { service } = makeService(prisma);
 
-    await expect(service.signUp({ ...input, playerId: 'player-1' })).rejects.toMatchObject({
+    await expect(service.signUp({ ...input, playerId: 'player-1' }, IP)).rejects.toMatchObject({
       code: 'VALIDATION_FAILED',
     });
   });
@@ -526,7 +530,7 @@ describe('смена пароля', () => {
     const { service } = makeService(prisma);
 
     await service
-      .changePassword('user-1', { currentPassword: 'ne-tot', newPassword: 'novyj-parol' })
+      .changePassword('user-1', { currentPassword: 'ne-tot', newPassword: 'novyj-parol' }, IP)
       .then(
         () => expect.unreachable('ожидался отказ'),
         (error: unknown) => {
@@ -540,10 +544,14 @@ describe('смена пароля', () => {
   it('верный пароль меняется, чужие сессии обрываются, своя выдаётся заново', async () => {
     const { service } = makeService(prisma);
 
-    const tokens = await service.changePassword('user-1', {
-      currentPassword: PASSWORD,
-      newPassword: 'novyj-parol',
-    });
+    const tokens = await service.changePassword(
+      'user-1',
+      {
+        currentPassword: PASSWORD,
+        newPassword: 'novyj-parol',
+      },
+      IP,
+    );
 
     // Смену пароля затевают в том числе потому, что старый узнали чужие:
     // оставить их сессии живыми значило бы не сделать ничего.
@@ -562,7 +570,7 @@ describe('смена пароля', () => {
     const { service } = makeService(prisma);
 
     await service
-      .changePassword('user-1', { currentPassword: 'x', newPassword: 'novyj-parol' })
+      .changePassword('user-1', { currentPassword: 'x', newPassword: 'novyj-parol' }, IP)
       .then(
         () => expect.unreachable('ожидался отказ'),
         (error: unknown) => {
@@ -587,6 +595,69 @@ describe('перебор пароля — ADR-056', () => {
     ).rejects.toMatchObject({ code: 'RATE_LIMITED' });
     // Пароль не сверялся и аккаунт не искался: отказ одинаков для любого пароля.
     expect(prisma.user.findUnique).not.toHaveBeenCalled();
+  }, 60_000);
+});
+
+describe('регистрация и смена пароля под пределом — ADR-128', () => {
+  const input = {
+    login: 'aslan',
+    password: PASSWORD,
+    phone: '+70000000000',
+    consent: true as const,
+  };
+
+  it('сверх предела адреса регистрация отвергается до хеша, с другого адреса проходит', async () => {
+    const prisma = makePrisma();
+    const { service } = makeService(prisma);
+
+    for (let n = 0; n < SIGN_UPS_PER_ADDRESS; n += 1) {
+      await service.signUp(input, IP);
+    }
+    prisma.user.create.mockClear();
+
+    await expect(service.signUp(input, IP)).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+    expect(prisma.user.create).not.toHaveBeenCalled();
+
+    await service.signUp(input, '10.0.0.2');
+    expect(prisma.user.create).toHaveBeenCalledOnce();
+  }, 60_000);
+
+  it('отказ по анкете предел адреса не расходует', async () => {
+    // Опечатка в телефоне — не новый аккаунт: залу турнира за одним Wi-Fi
+    // предел нужен на людей, а не на попытки.
+    const prisma = makePrisma();
+    prisma.user.findFirst.mockResolvedValue({ phone: '+70000000000', login: 'drugoj' });
+    const { service } = makeService(prisma);
+
+    for (let n = 0; n < SIGN_UPS_PER_ADDRESS + 5; n += 1) {
+      await service.signUp(input, IP).catch(() => null);
+    }
+    prisma.user.findFirst.mockResolvedValue(null);
+
+    const session = await service.signUp(input, IP);
+    expect(session.accessToken).not.toBe('');
+  });
+
+  it('смена пароля: сверх предела неудач отказ до поиска аккаунта и сверки', async () => {
+    const prisma = makePrisma();
+    const { service } = makeService(prisma);
+
+    for (let attempt = 0; attempt < LOGIN_FAILURES_PER_ACCOUNT; attempt += 1) {
+      await service
+        .changePassword('user-1', { currentPassword: 'ne-tot', newPassword: 'novyj-parol' }, IP)
+        .catch(() => null);
+    }
+    prisma.user.findUnique.mockClear();
+
+    await expect(
+      service.changePassword(
+        'user-1',
+        { currentPassword: PASSWORD, newPassword: 'novyj-parol' },
+        '10.0.0.2',
+      ),
+    ).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+    expect(prisma.user.findUnique).not.toHaveBeenCalled();
+    expect(prisma.user.update).not.toHaveBeenCalled();
   }, 60_000);
 });
 

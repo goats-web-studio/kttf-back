@@ -194,7 +194,7 @@ describe('сброс пароля', () => {
 
     expect(password).toMatch(/^[a-z2-9]{10}$/);
     const update = prisma.user.update.mock.calls[0]?.[0] as { data: { passwordHash: string } };
-    expect(verifyPassword(password, update.data.passwordHash)).toBe(true);
+    expect(await verifyPassword(password, update.data.passwordHash)).toBe(true);
     expect(prisma.session.deleteMany).toHaveBeenCalledWith({ where: { userId: USER } });
     const audit = auditCall(prisma);
     expect(audit.data).toMatchObject({ action: 'user.password.reset', entityId: USER });

@@ -1,4 +1,4 @@
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { randomBytes, scrypt, scryptSync, timingSafeEqual, type ScryptOptions } from 'node:crypto';
 
 /**
  * Хранение паролей — ADR-034.
@@ -10,6 +10,10 @@ import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
  * Соль своя на каждый пароль: с общей солью одна радужная таблица вскрывает
  * всю базу разом. Хеш и соль лежат в одной строке — отдельной колонки под
  * соль не нужно, а формат самодостаточен и переживёт смену параметров.
+ *
+ * Хеш считается в пуле потоков, а не в потоке запросов (ADR-128): синхронный
+ * `scryptSync` на ~100 мс останавливал весь API, и серия регистраций с одного
+ * адреса держала сайт занятым для всех.
  */
 
 /** Стоимость: 2^16 итераций. Около 100 мс на вход — дорого перебирать, терпимо ждать. */
@@ -32,10 +36,64 @@ const OPTIONS = {
 /** Формат строки в `User.passwordHash`: параметры, соль и ключ через `$`. */
 const PREFIX = 'scrypt';
 
-export function hashPassword(password: string): string {
-  const salt = randomBytes(SALT_BYTES);
-  const key = scryptSync(password.normalize('NFKC'), salt, KEY_LENGTH, OPTIONS);
+/**
+ * Сколько хешей считается одновременно.
+ *
+ * В пуле потоков libuv по умолчанию четыре потока, и там же работают sharp
+ * (картинки) и поиск адресов при новых подключениях к базе и хранилищу. Два
+ * потока под пароли оставляют место остальным, а память — 64 МБ на хеш —
+ * не растёт с числом запросов: лишние ждут в очереди.
+ */
+export const PASSWORD_HASHES_IN_PARALLEL = 2;
 
+let running = 0;
+const waiting: (() => void)[] = [];
+
+async function acquire(): Promise<void> {
+  if (running < PASSWORD_HASHES_IN_PARALLEL) {
+    running += 1;
+    return;
+  }
+
+  // Место передаётся из рук в руки в `release`: счётчик между ними не
+  // опускается, и новый запрос не проскочит мимо очереди.
+  await new Promise<void>((resolve) => waiting.push(resolve));
+}
+
+function release(): void {
+  const next = waiting.shift();
+
+  if (next === undefined) {
+    running -= 1;
+  } else {
+    next();
+  }
+}
+
+async function derive(
+  password: string,
+  salt: Buffer,
+  length: number,
+  options: ScryptOptions,
+): Promise<Buffer> {
+  await acquire();
+
+  try {
+    return await new Promise<Buffer>((resolve, reject) => {
+      scrypt(password.normalize('NFKC'), salt, length, options, (error, key) => {
+        if (error === null) {
+          resolve(key);
+        } else {
+          reject(error);
+        }
+      });
+    });
+  } finally {
+    release();
+  }
+}
+
+function format(salt: Buffer, key: Buffer): string {
   return [
     PREFIX,
     COST,
@@ -46,13 +104,19 @@ export function hashPassword(password: string): string {
   ].join('$');
 }
 
+export async function hashPassword(password: string): Promise<string> {
+  const salt = randomBytes(SALT_BYTES);
+
+  return format(salt, await derive(password, salt, KEY_LENGTH, OPTIONS));
+}
+
 /**
  * Сверка пароля с хранимым хешем.
  *
  * Ложь при любом непонятном формате: чужой или испорченный хеш — это отказ
  * во входе, а не исключение на весь запрос.
  */
-export function verifyPassword(password: string, stored: string): boolean {
+export async function verifyPassword(password: string, stored: string): Promise<boolean> {
   const parts = stored.split('$');
   const [prefix, cost, blockSize, parallelization, salt, key] = parts;
 
@@ -70,12 +134,19 @@ export function verifyPassword(password: string, stored: string): boolean {
   if (!Number.isInteger(parameters.N) || !Number.isInteger(parameters.r)) return false;
 
   const expected = Buffer.from(key, 'hex');
-  const actual = scryptSync(
-    password.normalize('NFKC'),
-    Buffer.from(salt, 'hex'),
-    expected.length,
-    parameters,
-  );
+
+  // Пустой ключ совпал бы с любым паролем: два пустых буфера равны.
+  if (expected.length === 0) return false;
+
+  let actual: Buffer;
+
+  try {
+    actual = await derive(password, Buffer.from(salt, 'hex'), expected.length, parameters);
+  } catch {
+    // Негодные параметры в строке (N не степень двойки, память сверх
+    // предела) — тот же отказ, что и неверный пароль.
+    return false;
+  }
 
   // Постоянное время: обычное `===` выдаёт длину совпадения.
   return expected.length === actual.length && timingSafeEqual(expected, actual);
@@ -86,6 +157,12 @@ export function verifyPassword(password: string, stored: string): boolean {
  *
  * Считается один раз при загрузке модуля: сверка обязана занимать одинаковое
  * время и для знакомого логина, и для незнакомого, иначе перебор находит
- * существующие аккаунты по времени ответа.
+ * существующие аккаунты по времени ответа. Синхронно можно: при загрузке
+ * модуля запросов ещё нет.
  */
-export const DUMMY_HASH = hashPassword(randomBytes(32).toString('hex'));
+export const DUMMY_HASH = ((): string => {
+  const salt = randomBytes(SALT_BYTES);
+  const secret = randomBytes(32).toString('hex');
+
+  return format(salt, scryptSync(secret.normalize('NFKC'), salt, KEY_LENGTH, OPTIONS));
+})();
