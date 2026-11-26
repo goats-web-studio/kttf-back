@@ -1399,6 +1399,9 @@ model Match {
 
   @@index([tournamentId, status])
   @@index([stageId, groupId])
+  // Встречи игрока: профиль, личные встречи, соперники в подсказках (DEV-127)
+  @@index([playerAId])
+  @@index([playerBId])
 }
 
 enum MatchStatus {
