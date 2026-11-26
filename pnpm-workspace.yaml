@@ -10,3 +10,10 @@ allowBuilds:
   # swc компилирует декораторы для Vitest: сам Vitest emitDecoratorMetadata
   # не умеет, а без метаданных внедрение зависимостей Nest не работает.
   "@swc/core": true
+
+overrides:
+  # NestJS 11 прибивает multer к 2.2.0, а в нём DoS по именам полей multipart
+  # (Dependabot, 27.11.2026). 2.4.0 — те же API и настройки, загрузку по HTTP
+  # стережёт test/files.test.ts. Убрать, когда @nestjs/platform-express сам
+  # потянет multer ≥ 2.4.0.
+  multer: 2.4.0
