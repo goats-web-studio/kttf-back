@@ -91,15 +91,36 @@ function placementInput(
   // Финальные группы — второй групповой этап: тот же тип, больший порядок.
   const final = ordered.find((stage) => stage.type === 'GROUPS' && stage !== first);
   const knockout = ordered.find((stage) => stage.type === 'KNOCKOUT');
-  // Сетка за места для не вышедших из групп — ADR-045.
-  const exit = ordered.find((stage) => stage.type === 'CONSOLATION');
+  // Следующие финалы (ADR-133) и сетка за места для не вышедших (ADR-045) —
+  // сетки ниже основной, по порядку этапов: места каждой идут за предыдущей.
+  const lower = ordered.filter((stage) => stage.type === 'CONSOLATION');
 
   return {
     groups: first === undefined ? [] : tablesOf(first, standings),
     finalGroups: final === undefined ? [] : tablesOf(final, standings),
     bracket: knockout === undefined ? [] : knockout.matches.map(toBracketResult),
-    ...(exit === undefined ? {} : { exitBracket: exit.matches.map(toBracketResult) }),
+    ...(knockout === undefined ? {} : { bracketSize: bracketParticipants(knockout) }),
+    finals: lower.map((stage) => ({
+      matches: stage.matches.map(toBracketResult),
+      size: bracketParticipants(stage),
+    })),
   };
+}
+
+/**
+ * Сколько человек в сетке — столько мест она занимает. Считается по тем, кто
+ * поставлен в сетку жеребьёвкой (у слота нет источника), а не по сыгранным
+ * встречам: места следующего финала известны, пока этот ещё идёт.
+ */
+function bracketParticipants(stage: StageRecord): number {
+  const seeded = new Set<string>();
+
+  for (const match of stage.matches) {
+    if (match.sourceA === null && match.playerAId !== null) seeded.add(match.playerAId);
+    if (match.sourceB === null && match.playerBId !== null) seeded.add(match.playerBId);
+  }
+
+  return seeded.size;
 }
 
 /** Таблицы одного этапа с порядком групп: он задаёт диапазоны мест. */

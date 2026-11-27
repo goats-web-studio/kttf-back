@@ -321,8 +321,39 @@ describe('достройка этапа по итогам групп', () => {
       ['a2', 'b2'],
     ],
     exits: ['a3', 'b3', 'a4', 'b4'],
+    finals: [],
     blocked: [],
   };
+
+  it('N финалов по месту в группе: «Финал 1», «Финал 2», затем сетка за места — ADR-133', () => {
+    const stages = planNextStage(
+      { ...GROUPS_KNOCKOUT, exitBracket: true, extraFinals: [3] },
+      {
+        ...SELECTION,
+        finals: [['a3', 'b3']],
+        exits: ['a4', 'b4'],
+      },
+      makeIdFactory(),
+    );
+
+    expect(stages.map((stage) => [stage.order, stage.type, stage.name])).toEqual([
+      [1, 'KNOCKOUT', 'Финал 1'],
+      [2, 'CONSOLATION', 'Финал 2'],
+      [3, 'CONSOLATION', 'Сетка за места'],
+    ]);
+    const second = stages[1]?.matches.flatMap((match) => [match.playerAId, match.playerBId]);
+    expect(second?.sort()).toEqual(['a3', 'b3']);
+  });
+
+  it('финал из одного человека не строится', () => {
+    const stages = planNextStage(
+      { ...GROUPS_KNOCKOUT, extraFinals: [3] },
+      { ...SELECTION, finals: [['a3']], exits: [] },
+      makeIdFactory(),
+    );
+
+    expect(stages.map((stage) => stage.name)).toEqual(['Финал 1']);
+  });
 
   it('плей-офф — это сетка вторым этапом', () => {
     const [stage] = planNextStage(GROUPS_KNOCKOUT, SELECTION, makeIdFactory());
@@ -498,6 +529,7 @@ describe('длины этапов совпадают с правкой по хо
       ['a2', 'b2'],
     ],
     exits: ['a3', 'b3', 'a4', 'b4'],
+    finals: [],
     blocked: [],
   };
 
@@ -560,6 +592,7 @@ describe('правило равенства уходит в этапы с таб
           ['a2', 'b2'],
         ],
         exits: [],
+        finals: [],
         blocked: [],
       },
       makeIdFactory(),

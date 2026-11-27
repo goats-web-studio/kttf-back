@@ -407,6 +407,11 @@ function mustGet(ids: Map<string, string>, key: string): string {
  * основной сетки, и финал за девятое место до четырёх побед никто не имел в
  * виду. Встреча за третье место в ней есть, если есть в основной.
  *
+ * Следующие финалы по месту в группе (ADR-133) строятся так же, как сетка за
+ * места, — каждый своей сеткой с теми же правилами, порядком сразу за
+ * предыдущим. Тогда основная сетка называется «Финал 1», следующие —
+ * «Финал 2», «Финал 3»: так их называет RTTF.
+ *
  * @returns Пусто, если схема турнира следующего этапа не предполагает.
  */
 export function planNextStage(
@@ -415,36 +420,61 @@ export function planNextStage(
   makeId: () => string,
 ): PlannedStage[] {
   if (config.type === 'GROUPS_KNOCKOUT') {
-    const playoff = planKnockoutStage(
-      selection.seeded,
-      { thirdPlace: config.thirdPlace, allPlaces: config.allPlaces === true },
-      {
-        order: 1,
-        name: 'Плей-офф',
-        setsToWin: config.koSetsToWin,
-        playoffSetsToWin: config.playoffSetsToWin,
-      },
-      makeId,
-    );
-
-    // Одному не вышедшему играть не с кем: сетка за места начинается с двух.
-    if (!config.exitBracket || selection.exits.length < 2) return [playoff];
-
-    return [
-      playoff,
+    const options = { thirdPlace: config.thirdPlace, allPlaces: config.allPlaces === true };
+    // Финал из одного человека не играется: ему не с кем. Такой финал
+    // пропускается, его участник делит место по месту в группе (ADR-125).
+    const finals = selection.finals.filter((final) => final.length >= 2);
+    const numbered = (config.extraFinals ?? []).length > 0;
+    const stages = [
       planKnockoutStage(
-        selection.exits,
-        { thirdPlace: config.thirdPlace, allPlaces: config.allPlaces === true },
+        selection.seeded,
+        options,
         {
-          order: 2,
-          name: 'Сетка за места',
-          type: 'CONSOLATION',
+          order: 1,
+          name: numbered ? 'Финал 1' : 'Плей-офф',
           setsToWin: config.koSetsToWin,
-          playoffSetsToWin: undefined,
+          playoffSetsToWin: config.playoffSetsToWin,
         },
         makeId,
       ),
     ];
+
+    finals.forEach((participants, index) => {
+      stages.push(
+        planKnockoutStage(
+          participants,
+          options,
+          {
+            order: stages.length + 1,
+            name: `Финал ${String(index + 2)}`,
+            type: 'CONSOLATION',
+            setsToWin: config.koSetsToWin,
+            playoffSetsToWin: undefined,
+          },
+          makeId,
+        ),
+      );
+    });
+
+    // Одному не вышедшему играть не с кем: сетка за места начинается с двух.
+    if (config.exitBracket && selection.exits.length >= 2) {
+      stages.push(
+        planKnockoutStage(
+          selection.exits,
+          options,
+          {
+            order: stages.length + 1,
+            name: 'Сетка за места',
+            type: 'CONSOLATION',
+            setsToWin: config.koSetsToWin,
+            playoffSetsToWin: undefined,
+          },
+          makeId,
+        ),
+      );
+    }
+
+    return stages;
   }
 
   if (config.type === 'GROUPS_FINAL_GROUPS') {

@@ -2411,6 +2411,7 @@ const NEXT_STAGE_FIELDS = new Set([
   'thirdPlace',
   'exitBracket',
   'allPlaces',
+  'extraFinals',
   'finalGroupCount',
 ]);
 

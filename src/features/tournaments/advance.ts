@@ -83,7 +83,11 @@ export async function advanceAfterGroups(
     unresolved: group.unresolved,
   }));
 
-  const selection = selectAdvancing(placements, config.advancePerGroup);
+  const selection = selectAdvancing(
+    placements,
+    config.advancePerGroup,
+    config.type === 'GROUPS_KNOCKOUT' ? (config.extraFinals ?? []) : [],
+  );
 
   if (selection.blocked.length > 0) return { stageId: null, blockedByTies: selection.blocked };
 
