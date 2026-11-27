@@ -825,7 +825,10 @@ export class TournamentsService {
       throw new AppError(ERROR_CODES.NOT_FOUND, 'Player not found', { playerId });
     }
 
-    assertConfirmed(player);
+    // Анкета без рейтинга записывается — ADR-140: уровень ей ставит
+    // организатор у стола, а жеребьёвка ждёт, пока рейтинг есть у всех.
+    // Планку рейтинга у неё проверять не по чему — проверяются возраст и пол.
+    const unrated = player.confirmedAt === null;
 
     const problems = checkEligibility(
       {
@@ -834,8 +837,8 @@ export class TournamentsService {
         gender: player.gender,
       },
       {
-        ratingCapMax: numberOrNull(tournament.ratingCapMax),
-        ratingCapMin: numberOrNull(tournament.ratingCapMin),
+        ratingCapMax: unrated ? null : numberOrNull(tournament.ratingCapMax),
+        ratingCapMin: unrated ? null : numberOrNull(tournament.ratingCapMin),
         birthYearFrom: tournament.birthYearFrom,
         birthYearTo: tournament.birthYearTo,
         genderLimit: tournament.genderLimit,
@@ -1330,9 +1333,35 @@ export class TournamentsService {
 
     const registrations = await this.prisma.registration.findMany({
       where: { tournamentId: id, status: { in: OCCUPYING_STATUSES } },
-      select: { seed: true, player: { select: { id: true, rating: true, clubId: true } } },
+      select: {
+        seed: true,
+        player: {
+          select: {
+            id: true,
+            rating: true,
+            clubId: true,
+            confirmedAt: true,
+            lastName: true,
+            firstName: true,
+          },
+        },
+      },
       orderBy: { createdAt: 'asc' },
     });
+
+    // Жеребьёвка — только когда рейтинг есть у всех (ADR-140): посев и
+    // группы по умолчанию 250 у новичка — не его уровень игры.
+    const unrated = registrations.filter((registration) => registration.player.confirmedAt === null);
+    if (unrated.length > 0) {
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Some players have no rating yet', {
+        id,
+        reason: 'UNCONFIRMED_PLAYERS',
+        players: unrated.map((registration) => ({
+          id: registration.player.id,
+          name: `${registration.player.lastName} ${registration.player.firstName}`,
+        })),
+      });
+    }
 
     const participants: DrawParticipant[] = registrations.map((registration) => ({
       playerId: registration.player.id,
