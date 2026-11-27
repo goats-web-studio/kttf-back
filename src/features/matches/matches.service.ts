@@ -14,6 +14,7 @@ import { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { ScreenEventsService } from '../screen/screen-events.service.js';
 import { advanceAfterGroups } from '../tournaments/advance.js';
+import { hasEarlySeeds } from '../tournaments/early-finals.js';
 import { settleWithdrawals } from '../tournaments/withdrawal.js';
 import { assertConsoleAccess } from '../tournaments/console-access.js';
 import { bumpVersion } from '../tournaments/tournament-state.js';
@@ -192,6 +193,9 @@ export class MatchesService {
       });
 
       const advanced = await applyAdvancement(tx, match.stage.id);
+      // Досрочный финал (ADR-143): группа снова не доиграна — её игроки
+      // уходят со своих позиций, пока там ничего не сыграно.
+      await advanceAfterGroups(tx, match.tournamentId, match.groupId);
       const settled = await settleWithdrawals(tx, match.tournamentId);
 
       await bumpVersion(tx, match.tournamentId);
@@ -294,7 +298,7 @@ export class MatchesService {
       }
 
       const advanced = await applyAdvancement(tx, match.stage.id);
-      const next = await advanceAfterGroups(tx, match.tournamentId);
+      const next = await advanceAfterGroups(tx, match.tournamentId, match.groupId);
       // Победитель мог доехать до снявшегося, а достроенный плей-офф —
       // посадить снявшегося напротив соперника (ADR-061).
       const settled = await settleWithdrawals(tx, match.tournamentId);
@@ -385,6 +389,11 @@ export class MatchesService {
     });
 
     if (later.length === 0) return;
+
+    // Финал начат досрочно (ADR-143): сетка держится не на всей таблице,
+    // а на местах своих групп. Сносить её нельзя — там играют другие
+    // группы; что сдвинет правка, решает `syncEarlySeeds` после записи.
+    if (await hasEarlySeeds(tx, later.map((stage) => stage.id))) return;
 
     const blocking = later.find((stage) => stage.matches.length > 0);
 

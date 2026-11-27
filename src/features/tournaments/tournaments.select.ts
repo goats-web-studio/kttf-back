@@ -136,6 +136,8 @@ export const matchFields = {
   winnerPlace: true,
   loserPlace: true,
   carriedFromId: true,
+  seedA: true,
+  seedB: true,
   startedAt: true,
   finishedAt: true,
 } as const;

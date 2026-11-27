@@ -1394,6 +1394,12 @@ model Match {
   // и статистику игрока не идёт — туда идёт исходная встреча.
   carriedFromId String?
 
+  // Финал начат досрочно (ADR-143): позиция заранее закреплена за местом
+  // в группе — { "groupId", "group", "place" }. Игрок ложится сюда, когда
+  // группа доиграна; до того встреча ждёт.
+  seedA Json?
+  seedB Json?
+
   startedAt  DateTime?
   finishedAt DateTime?
 

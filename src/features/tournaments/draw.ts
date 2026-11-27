@@ -18,6 +18,8 @@ import type {
   StageType,
 } from '@kttf/shared/types';
 
+import type { GroupSeedRecord } from './group-seed.js';
+
 /**
  * Жеребьёвка — ТЗ 5.3.
  *
@@ -58,6 +60,12 @@ export interface PlannedMatch {
    * сразу сыгранной, со счётом исходной встречи и ссылкой на неё.
    */
   readonly carried?: CarrySource;
+  /**
+   * Финал начат досрочно — ADR-143: позиция ждёт место в группе, которая
+   * ещё доигрывается. Игрок тогда `null`, его положит `syncEarlySeeds`.
+   */
+  readonly seedA?: GroupSeedRecord;
+  readonly seedB?: GroupSeedRecord;
 }
 
 /** Сыгранная встреча группы — источник переноса в финал «с зачётом» (ADR-134). */

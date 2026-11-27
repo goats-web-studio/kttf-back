@@ -1,7 +1,11 @@
 import { bracketSourceSchema } from '@kttf/shared/types';
 
 import { Prisma } from '../../generated/prisma/client.js';
+import { isEarlySeeded } from '../tournaments/early-finals.js';
+import { parseGroupSeed } from '../tournaments/group-seed.js';
 import { matchFields, type MatchRecord } from '../tournaments/tournaments.select.js';
+
+import { applyAdvancement } from './advancement.js';
 
 /**
  * Откат цепочкой — ADR-141.
@@ -28,6 +32,7 @@ export interface Dependents {
 interface MatchContext {
   readonly id: string;
   readonly tournamentId: string;
+  readonly groupId?: string | null;
   readonly stage: { readonly id: string; readonly order: number; readonly type: string };
 }
 
@@ -35,31 +40,44 @@ export async function dependentsOf(
   tx: Prisma.TransactionClient,
   match: MatchContext,
 ): Promise<Dependents> {
+  // Финал начат досрочно (ADR-143): правка группы задевает не этапы
+  // целиком, а позиции её мест — и то, что из них выросло.
+  if (match.stage.type === 'GROUPS' && match.groupId !== undefined && match.groupId !== null) {
+    const later = await tx.match.findMany({
+      where: { tournamentId: match.tournamentId, stage: { order: { gt: match.stage.order } } },
+      select: matchFields,
+    });
+
+    if (later.some(isEarlySeeded)) {
+      const groupId = match.groupId;
+      const roots = later.filter(
+        (candidate) =>
+          (candidate.setsA !== null || candidate.status === 'PLAYING') &&
+          [candidate.seedA, candidate.seedB].some(
+            (seed) => parseGroupSeed(seed)?.groupId === groupId,
+          ),
+      );
+      const depth = descendants(
+        later,
+        roots.map((root) => root.id),
+      );
+      for (const root of roots) if (!depth.has(root.id)) depth.set(root.id, 0);
+
+      return {
+        matches: later
+          .filter(
+            (candidate) =>
+              depth.has(candidate.id) &&
+              (candidate.setsA !== null || candidate.status === 'PLAYING'),
+          )
+          .sort((left, right) => (depth.get(right.id) ?? 0) - (depth.get(left.id) ?? 0)),
+        stages: [],
+      };
+    }
+  }
+
   const all = await tx.match.findMany({ where: { stageId: match.stage.id }, select: matchFields });
-
-  // Дети по источникам сетки: кто ждёт победителя или проигравшего.
-  const children = new Map<string, MatchRecord[]>();
-  for (const candidate of all) {
-    for (const source of [candidate.sourceA, candidate.sourceB]) {
-      const parsed = bracketSourceSchema.safeParse(source);
-      if (!parsed.success) continue;
-      children.set(parsed.data.matchId, [...(children.get(parsed.data.matchId) ?? []), candidate]);
-    }
-  }
-
-  // Обход в ширину: глубина — сколько кругов от исправляемой встречи.
-  const depth = new Map<string, number>();
-  const queue: { id: string; level: number }[] = [{ id: match.id, level: 0 }];
-  while (queue.length > 0) {
-    const current = queue.shift();
-    if (current === undefined) break;
-    for (const child of children.get(current.id) ?? []) {
-      const level = current.level + 1;
-      if ((depth.get(child.id) ?? 0) >= level) continue;
-      depth.set(child.id, level);
-      queue.push({ id: child.id, level });
-    }
-  }
+  const depth = descendants(all, [match.id]);
 
   const matches = all
     .filter((candidate) => depth.has(candidate.id) && candidate.setsA !== null)
@@ -90,6 +108,38 @@ export async function dependentsOf(
 }
 
 /**
+ * Встречи сетки, выросшие из данных, с глубиной — сколько кругов от
+ * ближайшей из них. Сами начальные встречи в ответ не входят.
+ */
+function descendants(all: readonly MatchRecord[], from: readonly string[]): Map<string, number> {
+  // Дети по источникам сетки: кто ждёт победителя или проигравшего.
+  const children = new Map<string, MatchRecord[]>();
+  for (const candidate of all) {
+    for (const source of [candidate.sourceA, candidate.sourceB]) {
+      const parsed = bracketSourceSchema.safeParse(source);
+      if (!parsed.success) continue;
+      children.set(parsed.data.matchId, [...(children.get(parsed.data.matchId) ?? []), candidate]);
+    }
+  }
+
+  // Обход в ширину: глубина — сколько кругов от исправляемой встречи.
+  const depth = new Map<string, number>();
+  const queue = from.map((id) => ({ id, level: 0 }));
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (current === undefined) break;
+    for (const child of children.get(current.id) ?? []) {
+      const level = current.level + 1;
+      if ((depth.get(child.id) ?? 0) >= level) continue;
+      depth.set(child.id, level);
+      queue.push({ id: child.id, level });
+    }
+  }
+
+  return depth;
+}
+
+/**
  * Откатить всё, что держится на встрече: сыгранные встречи сетки — от
  * дальней к ближней — возвращаются в ожидание; этапы после групп, где уже
  * играли, сносятся и строятся заново достройкой после правки.
@@ -116,6 +166,12 @@ export async function rollBack(
         finishedAt: null,
       },
     });
+  }
+
+  // Досрочный финал (ADR-143): откат прошёл по чужим этапам — их слоты
+  // пересчитываются здесь, свой этап пересчитает запись счёта.
+  for (const stageId of new Set(found.matches.map((dependent) => dependent.stageId))) {
+    if (stageId !== match.stage.id) await applyAdvancement(tx, stageId);
   }
 
   if (found.stages.length > 0) {

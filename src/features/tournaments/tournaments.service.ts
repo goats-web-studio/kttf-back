@@ -47,6 +47,7 @@ import { assertCoachExists } from '../players/coach-ref.js';
 import { ScreenEventsService } from '../screen/screen-events.service.js';
 
 import { advanceAfterGroups } from './advance.js';
+import { startFinalsEarly as buildEarlyFinals } from './early-finals.js';
 import { type DrawParticipant, planDraw } from './draw.js';
 import { planDrawSwap } from './draw-swap.js';
 import {
@@ -1803,6 +1804,39 @@ export class TournamentsService {
    * пересчёта пока нет, поэтому сервер отказывает и называет, что мешает.
    * Удалённый журнал сохраняется в аудите — видно, что было до правки.
    */
+  /**
+   * Досрочный старт финала — ADR-143.
+   *
+   * Сетка строится сейчас по шаблону «место в группе → позиция»: доигранные
+   * группы ложатся на свои позиции, и их встречи можно звать к столу,
+   * остальные ждут свои группы. Только организатор: судья турниром не
+   * управляет (ADR-014).
+   */
+  async startFinalsEarly(id: string, userId: string): Promise<{ stageIds: string[] }> {
+    const tournament = await this.load(id);
+
+    await this.assertClubStaff(tournament.clubId, userId);
+
+    if (tournament.status !== 'RUNNING') {
+      throw new AppError(ERROR_CODES.TOURNAMENT_NOT_RUNNING, 'Tournament is not running', {
+        id,
+        status: tournament.status,
+      });
+    }
+
+    const stageIds = await this.prisma.$transaction(async (tx) => {
+      const built = await buildEarlyFinals(tx, id);
+      // Доигранная группа могла посадить снявшегося напротив соперника.
+      await settleWithdrawals(tx, id);
+      await bumpVersion(tx, id);
+      return built;
+    });
+
+    this.screen.changed(id);
+
+    return { stageIds };
+  }
+
   async reopen(id: string, userId: string): Promise<TournamentView> {
     const tournament = await this.load(id);
 
@@ -2317,7 +2351,7 @@ export class TournamentsService {
         },
       });
 
-      const advanced = await advanceAfterGroups(tx, id);
+      const advanced = await advanceAfterGroups(tx, id, input.groupId);
       // Достроенная сетка могла посадить снявшегося напротив соперника (ADR-061).
       await settleWithdrawals(tx, id);
 

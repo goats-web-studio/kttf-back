@@ -6,6 +6,7 @@ import { formatConfigSchema, type FormatConfig } from '@kttf/shared/types';
 import type { Prisma } from '../../generated/prisma/client.js';
 
 import { planNextStage } from './draw.js';
+import { isEarlySeeded, syncEarlySeeds } from './early-finals.js';
 import { isStageComplete } from './stage-completion.js';
 import { buildStandings } from './standings.js';
 import { writeStage } from './stage-writer.js';
@@ -36,6 +37,11 @@ const NOTHING: AdvanceOutcome = { stageId: null, blockedByTies: [] };
 export async function advanceAfterGroups(
   tx: Prisma.TransactionClient,
   tournamentId: string,
+  /**
+   * Группа, где правили счёт или решали равенство. Нужна досрочному финалу
+   * (ADR-143): занятые позиции переезжают только при правке своей группы.
+   */
+  regroupId: string | null = null,
 ): Promise<AdvanceOutcome> {
   const tournament = await tx.tournament.findUnique({
     where: { id: tournamentId },
@@ -57,7 +63,14 @@ export async function advanceAfterGroups(
 
   // Этап уже достроен. Повторно не строим: результаты, которые в нём успели
   // появиться, снесло бы вместе со встречами.
-  if (stages.length > 1) return NOTHING;
+  if (stages.length > 1) {
+    // Финал начат досрочно (ADR-143): доигранные группы ложатся на свои
+    // позиции, а правка группы двигает её игроков.
+    if (stages.slice(1).some((stage) => stage.matches.some(isEarlySeeded))) {
+      await syncEarlySeeds(tx, tournamentId, regroupId);
+    }
+    return NOTHING;
+  }
 
   const groupStage = stages[0];
   if (groupStage === undefined) return NOTHING;

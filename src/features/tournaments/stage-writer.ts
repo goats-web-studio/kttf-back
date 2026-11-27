@@ -53,6 +53,9 @@ export async function writeStage(
       placeTo: match.placeTo ?? null,
       winnerPlace: match.winnerPlace ?? null,
       loserPlace: match.loserPlace ?? null,
+      // Досрочный финал — ADR-143: позиция ждёт место в группе.
+      seedA: match.seedA ?? Prisma.DbNull,
+      seedB: match.seedB ?? Prisma.DbNull,
       // Перенесённая встреча — сразу сыгранная, со счётом исходной (ADR-134).
       ...(match.carried === undefined
         ? {}

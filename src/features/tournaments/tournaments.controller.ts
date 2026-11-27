@@ -238,6 +238,19 @@ export class TournamentsController {
   }
 
   /**
+   * Досрочный старт финала — ADR-143: сетка строится, пока группы
+   * доигрываются; встречи доигранных групп идут сразу.
+   */
+  @Post(':id/early-finals')
+  @UseGuards(JwtAuthGuard)
+  async startFinalsEarly(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @CurrentUserId() userId: string,
+  ): Promise<{ stageIds: string[] }> {
+    return this.tournaments.startFinalsEarly(id, userId);
+  }
+
+  /**
    * Исправление результатов после завершения — ADR-135: турнир снова идёт,
    * начисленный рейтинг откатывается, после правки — «Завершить» ещё раз.
    */

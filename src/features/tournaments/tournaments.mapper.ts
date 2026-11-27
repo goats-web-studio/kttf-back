@@ -15,6 +15,8 @@ import type { Prisma } from '../../generated/prisma/client.js';
 import { publicCoachSlug } from '../players/coach-ref.js';
 import { isDeletedPlayer } from '../players/deleted-player.js';
 
+import { parseGroupSeed } from './group-seed.js';
+
 import type {
   MatchRecord,
   RegistrationRecord,
@@ -161,6 +163,18 @@ function toSource(value: unknown): BracketSourceView | null {
   return parsed.success ? parsed.data : null;
 }
 
+function seedView<K extends 'seedA' | 'seedB'>(
+  key: K,
+  value: unknown,
+): Partial<Record<K, { group: string; place: number }>> {
+  const seed = parseGroupSeed(value);
+  return seed === null
+    ? {}
+    : ({ [key]: { group: seed.group, place: seed.place } } as Partial<
+        Record<K, { group: string; place: number }>
+      >);
+}
+
 export function toMatchView(match: MatchRecord): MatchView {
   return {
     id: match.id,
@@ -181,6 +195,9 @@ export function toMatchView(match: MatchRecord): MatchView {
     ...(match.placeFrom === null ? {} : { placeFrom: match.placeFrom }),
     ...(match.carriedFromId === null ? {} : { carried: true }),
     ...(match.placeTo === null ? {} : { placeTo: match.placeTo }),
+    // Досрочный финал — ADR-143: откуда придёт игрок этой позиции.
+    ...seedView('seedA', match.seedA),
+    ...seedView('seedB', match.seedB),
     startedAt: match.startedAt?.toISOString() ?? null,
     finishedAt: match.finishedAt?.toISOString() ?? null,
   };
