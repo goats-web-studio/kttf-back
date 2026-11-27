@@ -36,6 +36,9 @@ import { buildSnapshot } from './snapshot.js';
  * операция ложится поверх ранней: отдельного разбора конфликтов нет, и это
  * решение, а не упущение (ADR-026).
  */
+/** Сколько операция без исхода считается применяемой прямо сейчас. */
+const IN_FLIGHT_MS = 30_000;
+
 @Injectable()
 export class SyncService {
   constructor(
@@ -109,29 +112,24 @@ export class SyncService {
       where: {
         tournamentId_clientOpId: { tournamentId, clientOpId: operation.clientOpId },
       },
-      select: { id: true, appliedAt: true, rejectedReason: true },
+      select: { id: true, appliedAt: true, rejectedReason: true, receivedAt: true },
     });
 
     if (known !== null && (known.appliedAt !== null || known.rejectedReason !== null)) {
       return known.rejectedReason === null ? null : asErrorCode(known.rejectedReason);
     }
 
-    const record =
-      known ??
-      (await this.prisma.syncOperation.create({
-        data: {
-          tournamentId,
-          clientOpId: operation.clientOpId,
-          seq: operation.seq,
-          type: operation.type,
-          // У отмены встречи тела нет: в колонке остаётся NULL, а не пустой
-          // объект, — иначе журнал врал бы, что тело было.
-          payload: 'payload' in operation ? operation.payload : Prisma.DbNull,
-          basedOnVersion,
-          actorId: userId,
-        },
-        select: { id: true, appliedAt: true, rejectedReason: true },
-      }));
+    // Свежая запись без исхода — операцию прямо сейчас применяет параллельный
+    // запрос: консоль отправила очередь дважды, по таймеру и по действию. Её
+    // исход — его. Давняя — применение оборвалось (сбой сервера), применить
+    // заново.
+    if (known !== null && Date.now() - known.receivedAt.getTime() < IN_FLIGHT_MS) {
+      return this.outcomeOf(tournamentId, operation.clientOpId);
+    }
+
+    const record = known ?? (await this.claim(tournamentId, operation, basedOnVersion, userId));
+
+    if (record === 'TAKEN') return this.outcomeOf(tournamentId, operation.clientOpId);
 
     try {
       await this.apply(tournamentId, operation, userId);
@@ -154,6 +152,61 @@ export class SyncService {
       where: { id: record.id },
       data: { appliedAt: new Date() },
     });
+
+    return null;
+  }
+
+  /**
+   * Записать операцию в журнал. Уникальность `(tournamentId, clientOpId)` —
+   * замок: если запись уже сделал параллельный запрос, применять второй раз
+   * нельзя — `TAKEN`.
+   */
+  private async claim(
+    tournamentId: string,
+    operation: SyncOperation,
+    basedOnVersion: number,
+    userId: string,
+  ): Promise<{ id: string } | 'TAKEN'> {
+    try {
+      return await this.prisma.syncOperation.create({
+        data: {
+          tournamentId,
+          clientOpId: operation.clientOpId,
+          seq: operation.seq,
+          type: operation.type,
+          // У отмены встречи тела нет: в колонке остаётся NULL, а не пустой
+          // объект, — иначе журнал врал бы, что тело было.
+          payload: 'payload' in operation ? operation.payload : Prisma.DbNull,
+          basedOnVersion,
+          actorId: userId,
+        },
+        select: { id: true },
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        return 'TAKEN';
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Исход операции, которую применяет параллельный запрос: подождать его
+   * недолго. Не дождались — считать принятой: применяет тот же сервер, а
+   * судья увидит итог в следующем снимке.
+   */
+  private async outcomeOf(tournamentId: string, clientOpId: string): Promise<ErrorCode | null> {
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const known = await this.prisma.syncOperation.findUnique({
+        where: { tournamentId_clientOpId: { tournamentId, clientOpId } },
+        select: { appliedAt: true, rejectedReason: true },
+      });
+
+      if (known?.rejectedReason != null) return asErrorCode(known.rejectedReason);
+      if (known?.appliedAt != null) return null;
+
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
 
     return null;
   }

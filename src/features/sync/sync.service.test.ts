@@ -270,11 +270,33 @@ describe('идемпотентность', () => {
       clientOpId: op(1).clientOpId,
       appliedAt: null,
       rejectedReason: null,
+      // Давняя: применение оборвалось, а не идёт прямо сейчас.
+      receivedAt: new Date(Date.now() - 60_000),
     });
 
     const result = await sync([op(1)]);
 
     expect(matches.result).toHaveBeenCalledTimes(1);
+    expect(result.applied).toHaveLength(1);
+  });
+
+  it('свежая запись без исхода — её применяет параллельный запрос, второй раз не применяется', async () => {
+    // Консоль отправила очередь дважды: по таймеру и по действию.
+    const row = {
+      id: 'row-0',
+      clientOpId: op(1).clientOpId,
+      appliedAt: null as Date | null,
+      rejectedReason: null,
+      receivedAt: new Date(),
+    };
+    journal.push(row);
+    setTimeout(() => {
+      row.appliedAt = new Date();
+    }, 150);
+
+    const result = await sync([op(1)]);
+
+    expect(matches.result).not.toHaveBeenCalled();
     expect(result.applied).toHaveLength(1);
   });
 });
