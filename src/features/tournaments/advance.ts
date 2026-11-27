@@ -88,8 +88,7 @@ export async function advanceAfterGroups(
     config.advancePerGroup,
     // Границы следующих финалов: финалы-сетки (ADR-133) и финальные группы
     // «местами» (ADR-134).
-    config.type === 'GROUPS_KNOCKOUT' ||
-      (config.type === 'GROUPS_FINAL_GROUPS' && config.composition === 'BANDS')
+    config.type === 'GROUPS_KNOCKOUT' || config.composition === 'BANDS'
       ? (config.extraFinals ?? [])
       : [],
   );

@@ -61,7 +61,7 @@ export async function writeStage(
             status: 'FINISHED' as const,
             setsA: match.carried.setsA,
             setsB: match.carried.setsB,
-            setScores: (match.carried.setScores ?? Prisma.DbNull) as Prisma.InputJsonValue,
+            setScores: (match.carried.setScores ?? Prisma.DbNull),
             resultType: match.carried.resultType,
             startedAt: match.carried.startedAt,
             finishedAt: match.carried.finishedAt,

@@ -820,6 +820,7 @@ describe('правка по ходу турнира — ADR-061', () => {
       resultType: null,
       bracketRound: round,
       bracketSlot: 0,
+      carriedFromId: null,
       startedAt: null,
       finishedAt: null,
     });
@@ -1079,6 +1080,7 @@ describe('поздняя запись и замена — ADR-062', () => {
       resultType: null,
       bracketRound: round,
       bracketSlot: null,
+      carriedFromId: null,
       startedAt: null,
       finishedAt: null,
     };
@@ -1412,6 +1414,7 @@ describe('завершение и рейтинг — ТЗ 4.1, ТЗ 7.3', () => 
             resultType: setsA === null ? null : 'NORMAL',
             bracketRound: 1,
             bracketSlot: null,
+            carriedFromId: null,
           },
         ],
       },
@@ -1628,6 +1631,7 @@ describe('решение судьи по равенству — ADR-008', () => 
       resultType: 'NORMAL',
       bracketRound: 1,
       bracketSlot: null,
+      carriedFromId: null,
     });
 
     return [

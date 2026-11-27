@@ -63,6 +63,7 @@ interface MatchRow {
   resultType: string | null;
   bracketRound: number | null;
   bracketSlot: number | null;
+  carriedFromId: string | null;
   startedAt: Date | null;
   finishedAt: Date | null;
 }
@@ -84,6 +85,7 @@ function makeMatch(over: Partial<MatchRow> & { id: string }): MatchRow {
     resultType: null,
     bracketRound: 1,
     bracketSlot: 0,
+    carriedFromId: null,
     startedAt: null,
     finishedAt: null,
     ...over,

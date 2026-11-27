@@ -1899,7 +1899,7 @@ export class TournamentsService {
               delta: event.delta.toString(),
               ratingAfter: event.ratingAfter.toString(),
             })),
-          } as Prisma.InputJsonValue,
+          },
           after: { status: 'RUNNING' },
         },
       });
