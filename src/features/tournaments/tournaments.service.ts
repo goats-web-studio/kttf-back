@@ -59,6 +59,7 @@ import {
 import {
   buildRatingRun,
   playersWithoutSnapshot,
+  projectedDeltas,
   unfinishedMatches,
   unresolvedTies,
   withdrawnPlayers,
@@ -2158,44 +2159,59 @@ export class TournamentsService {
     ]);
 
     const withdrawn = withdrawnPlayers(registrations);
+    const standings = buildStandings({
+      tournamentId: id,
+      stages,
+      withdrawn: [...withdrawn],
+      order: withdrawalOrder(
+        registrations.map((registration) => ({
+          playerId: registration.player.id,
+          withdrawnAt: registration.withdrawnAt,
+        })),
+      ),
+    });
 
     return buildResults({
       tournament,
       stages,
       registrations,
-      standings: buildStandings({
-        tournamentId: id,
-        stages,
-        withdrawn: [...withdrawn],
-        order: withdrawalOrder(
-          registrations.map((registration) => ({
-            playerId: registration.player.id,
-            withdrawnAt: registration.withdrawnAt,
-          })),
-        ),
-      }),
+      // Пока турнир идёт — прогноз рейтинга по сыгранному (ADR-137).
+      standings:
+        tournament.status === 'RUNNING'
+          ? { ...standings, deltas: projectedDeltas(registrations, stages) }
+          : standings,
       events,
     });
   }
 
   /** Групповые таблицы — ТЗ 6.6. Открыты всем, кому открыт сам турнир. */
   async standings(id: string, userId?: string): Promise<TournamentStandingsView> {
-    await this.findById(id, userId);
+    const tournament = await this.findById(id, userId);
+    const running = tournament.status === 'RUNNING';
 
-    const [stages, withdrawn] = await Promise.all([
+    const [stages, withdrawn, registrations] = await Promise.all([
       this.loadStages(id),
       this.prisma.registration.findMany({
         where: { tournamentId: id, status: { in: ['WITHDRAWN', 'NO_SHOW'] } },
         select: { playerId: true, withdrawnAt: true },
       }),
+      // Прогноз рейтинга нужен, только пока турнир идёт (ADR-137).
+      running
+        ? this.prisma.registration.findMany({
+            where: { tournamentId: id },
+            select: registrationFields,
+          })
+        : Promise.resolve([]),
     ]);
 
-    return buildStandings({
+    const standings = buildStandings({
       tournamentId: id,
       stages,
       withdrawn: withdrawn.map((registration) => registration.playerId),
       order: withdrawalOrder(withdrawn),
     });
+
+    return running ? { ...standings, deltas: projectedDeltas(registrations, stages) } : standings;
   }
 
   /**

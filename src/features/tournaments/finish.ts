@@ -1,4 +1,9 @@
-import type { RatedMatch, RatedPlacement, RatedPlayer } from '@kttf/shared/rating';
+import {
+  projectDeltas,
+  type RatedMatch,
+  type RatedPlacement,
+  type RatedPlayer,
+} from '@kttf/shared/rating';
 import type { TournamentStandingsView } from '@kttf/shared/types';
 
 import { unplayedMatches } from './stage-completion.js';
@@ -236,4 +241,39 @@ export function playersWithoutSnapshot(
   }
 
   return [...outsiders];
+}
+
+/**
+ * Прогноз изменения рейтинга по сыгранному — ADR-137, «дельта на мониторе»
+ * RTTF. Тот же общий движок, что у консоли (ADR-077): экран зала и страница
+ * турнира показывают те же числа, что судья. Копии финала «с зачётом»
+ * (ADR-134) не считаются — это та же встреча.
+ *
+ * @returns Игрок → сумма прогноза; без рейтинговых встреч — пусто.
+ */
+export function projectedDeltas(
+  registrations: readonly RegistrationRecord[],
+  stages: readonly StageRecord[],
+): Record<string, number> {
+  const participants = registrations.map((registration) => ({
+    playerId: registration.player.id,
+    isRated: registration.isRated,
+    ratingAtStart: registration.ratingAtStart === null ? null : Number(registration.ratingAtStart),
+    matchesAtStart: registration.matchesAtStart ?? registration.player.ratedMatches,
+    tournamentsAtStart: registration.tournamentsAtStart ?? 0,
+  }));
+  const matches = [...stages]
+    .sort((left, right) => left.order - right.order)
+    .flatMap((stage) => [...stage.matches].sort(byBracketPosition))
+    .filter((match) => match.status !== 'CANCELLED' && match.carriedFromId === null)
+    .map((match) => ({
+      id: match.id,
+      a: match.playerAId,
+      b: match.playerBId,
+      setsA: match.setsA,
+      setsB: match.setsB,
+      resultType: match.resultType ?? 'NORMAL',
+    }));
+
+  return Object.fromEntries(projectDeltas(participants, matches));
 }
