@@ -100,7 +100,9 @@ export async function advanceAfterGroups(
     advancePerGroup,
     // Границы следующих финалов: финалы-сетки (ADR-133) и финальные группы
     // «местами» (ADR-134).
-    config.type === 'GROUPS_KNOCKOUT' || config.composition === 'BANDS'
+    // При «выходят все» других финалов нет: все уже в первом (ADR-138).
+    config.advanceAll !== true &&
+      (config.type === 'GROUPS_KNOCKOUT' || config.composition === 'BANDS')
       ? (config.extraFinals ?? [])
       : [],
   );

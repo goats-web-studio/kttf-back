@@ -54,7 +54,16 @@ export interface ResultsInput {
 
 export function buildResults(input: ResultsInput): TournamentResultsView {
   const config = parseConfig(input.tournament.formatConfig);
-  const placement = calculatePlacement(config.type, placementInput(input.stages, input.standings));
+  // Снявшиеся среди не вышедших из групп — ниже играющих (ADR-138).
+  const withdrawn = input.registrations
+    .filter(
+      (registration) => registration.status === 'WITHDRAWN' || registration.status === 'NO_SHOW',
+    )
+    .map((registration) => registration.player.id);
+  const placement = calculatePlacement(config.type, {
+    ...placementInput(input.stages, input.standings),
+    withdrawn,
+  });
   const byPlayer = new Map(placement.rows.map((row) => [row.participant, row]));
 
   return {

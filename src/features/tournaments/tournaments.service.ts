@@ -148,7 +148,8 @@ export class TournamentsService {
           _count: {
             select: {
               ...tournamentFields._count.select,
-              matches: { where: { setsA: { not: null } } },
+              // Копии финала «с зачётом» (ADR-134) — не новые встречи.
+              matches: { where: { setsA: { not: null }, carriedFromId: null } },
             },
           },
         },
@@ -1786,65 +1787,10 @@ export class TournamentsService {
       });
     }
 
-    const events = await this.prisma.ratingEvent.findMany({
-      where: { tournamentId: id },
-      select: {
-        id: true,
-        playerId: true,
-        matchId: true,
-        type: true,
-        ratingBefore: true,
-        delta: true,
-        ratingAfter: true,
-        createdAt: true,
-      },
-    });
-    const players = [...new Set(events.map((event) => event.playerId))];
-    const ratedAt = events.reduce<Date | null>(
-      (min, event) => (min === null || event.createdAt < min ? event.createdAt : min),
-      null,
-    );
-
-    if (ratedAt !== null && players.length > 0) {
-      const later = await this.prisma.ratingEvent.findMany({
-        where: {
-          playerId: { in: players },
-          createdAt: { gt: ratedAt },
-          OR: [{ tournamentId: null }, { tournamentId: { not: id } }],
-        },
-        select: { tournamentId: true, tournament: { select: { name: true } } },
-        distinct: ['tournamentId'],
-        take: 10,
-      });
-
-      if (later.length > 0) {
-        throw new AppError(
-          ERROR_CODES.VALIDATION_FAILED,
-          'Players were rated after this tournament',
-          {
-            id,
-            reason: 'LATER_RATED',
-            tournaments: later.flatMap((event) =>
-              event.tournament === null ? [] : [event.tournament.name],
-            ),
-            duels: later.some((event) => event.tournamentId === null),
-          },
-        );
-      }
-    }
-
-    const registrations = await this.prisma.registration.findMany({
-      where: { tournamentId: id, playerId: { in: players } },
-      select: {
-        playerId: true,
-        ratingAtStart: true,
-        matchesAtStart: true,
-        tournamentsAtStart: true,
-      },
-    });
-
+    // Всё — в одной транзакции, переход первым: он же замок. Второй
+    // одновременный вызов не найдёт турнир в нужном статусе, а начисление,
+    // закоммиченное до нас, мы увидим и откатим целиком.
     const reopened = await this.prisma.$transaction(async (tx) => {
-      // Переход — и замок: два одновременных вызова не откатят дважды.
       const claimed = await tx.tournament.updateMany({
         where: { id, status: { in: ['FINISHED', 'RATED'] } },
         data: {
@@ -1863,17 +1809,77 @@ export class TournamentsService {
         });
       }
 
-      for (const registration of registrations) {
-        if (registration.ratingAtStart === null) continue;
-        const tournaments = registration.tournamentsAtStart ?? 0;
+      const events = await tx.ratingEvent.findMany({
+        where: { tournamentId: id },
+        select: {
+          playerId: true,
+          matchId: true,
+          type: true,
+          ratingBefore: true,
+          delta: true,
+          ratingAfter: true,
+          createdAt: true,
+        },
+      });
+      const players = [...new Set(events.map((event) => event.playerId))];
+      const ratedAt = events.reduce<Date | null>(
+        (min, event) => (min === null || event.createdAt < min ? event.createdAt : min),
+        null,
+      );
+
+      // После этого турнира у его игроков были другие начисления — их
+      // считали от рейтинга, который правка изменит. Без пересчёта цепочкой
+      // откатывать нельзя: отказ откатывает и переход.
+      if (ratedAt !== null && players.length > 0) {
+        const later = await tx.ratingEvent.findMany({
+          where: {
+            playerId: { in: players },
+            createdAt: { gt: ratedAt },
+            OR: [{ tournamentId: null }, { tournamentId: { not: id } }],
+          },
+          select: { tournamentId: true, tournament: { select: { name: true } } },
+          distinct: ['tournamentId'],
+          take: 10,
+        });
+
+        if (later.length > 0) {
+          throw new AppError(
+            ERROR_CODES.VALIDATION_FAILED,
+            'Players were rated after this tournament',
+            {
+              id,
+              reason: 'LATER_RATED',
+              tournaments: later.flatMap((event) =>
+                event.tournament === null ? [] : [event.tournament.name],
+              ),
+              duels: later.some((event) => event.tournamentId === null),
+            },
+          );
+        }
+      }
+
+      // Откат — ровно того, что начислил этот турнир: сумма применённых
+      // изменений, число его встреч и сам турнир. Не возврат к снимку на
+      // старте: дуэль или другой турнир, обсчитанные, пока этот шёл, иначе
+      // пропали бы из рейтинга, оставшись в журнале.
+      for (const playerId of players) {
+        const own = events.filter((event) => event.playerId === playerId);
+        const applied = own.reduce(
+          (sum, event) => sum.plus(event.ratingAfter.minus(event.ratingBefore)),
+          new Prisma.Decimal(0),
+        );
+        const matches = own.filter((event) => event.type === 'MATCH').length;
+        const player = await tx.player.findUniqueOrThrow({
+          where: { id: playerId },
+          select: { rating: true, ratedMatches: true, ratedTournaments: true },
+        });
+        const tournaments = Math.max(0, player.ratedTournaments - (matches > 0 ? 1 : 0));
 
         await tx.player.update({
-          where: { id: registration.playerId },
+          where: { id: playerId },
           data: {
-            rating: registration.ratingAtStart,
-            ...(registration.matchesAtStart === null
-              ? {}
-              : { ratedMatches: registration.matchesAtStart }),
+            rating: player.rating.minus(applied),
+            ratedMatches: Math.max(0, player.ratedMatches - matches),
             ratedTournaments: tournaments,
             isProvisional: tournaments < NOVICE_TOURNAMENTS,
           },
@@ -2735,8 +2741,12 @@ function assertDrawEditable(tournament: { readonly id: string; readonly status: 
 
 /** Этап начат: встреча вызвана к столу, сыграна или со счётом. */
 function stageStarted(stage: StageRecord): boolean {
+  // Перенесённая в финал «с зачётом» копия (ADR-134) сыграна в группе, а не
+  // в этом этапе: этап с одними копиями ещё не начат.
   return stage.matches.some(
-    (match) => match.status === 'PLAYING' || match.status === 'FINISHED' || match.setsA !== null,
+    (match) =>
+      match.carriedFromId === null &&
+      (match.status === 'PLAYING' || match.status === 'FINISHED' || match.setsA !== null),
   );
 }
 
@@ -2757,6 +2767,7 @@ async function assertStagesStillOpen(
   const started = await tx.match.findFirst({
     where: {
       stageId: { in: [...stageIds] },
+      carriedFromId: null,
       OR: [{ status: { in: ['PLAYING', 'FINISHED'] } }, { setsA: { not: null } }],
     },
     select: { stageId: true },
