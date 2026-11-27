@@ -22,6 +22,7 @@ import { toMatchView, toStageView } from '../tournaments/tournaments.mapper.js';
 import { matchFields, stageFields } from '../tournaments/tournaments.select.js';
 
 import { applyAdvancement } from './advancement.js';
+import { dependentsOf, rollBack } from './rollback.js';
 
 /**
  * Встречи — ТС 7.6.
@@ -132,8 +133,28 @@ export class MatchesService {
    * Правка фиксируется в журнале: ТЗ 6.3 требует этого прямо, а спор о том,
    * какой счёт был введён изначально, иначе не разобрать.
    */
-  async update(id: string, input: MatchResultInput, userId: string): Promise<MatchUpdateResult> {
-    return this.writeResult(await this.load(id), input, userId, 'update');
+  async update(
+    id: string,
+    input: MatchResultInput,
+    userId: string,
+    cascade = false,
+  ): Promise<MatchUpdateResult> {
+    return this.writeResult(await this.load(id), input, userId, 'update', cascade);
+  }
+
+  /**
+   * Что откатится вместе с правкой — ADR-141: сыгранные встречи сетки,
+   * выросшие из этой, и этапы после групп, где уже играли. Консоль
+   * показывает это до подтверждения.
+   */
+  async dependents(id: string, userId: string): Promise<DependentsView> {
+    const match = await this.load(id);
+
+    await this.assertConsole(match, userId);
+
+    const found = await dependentsOf(this.prisma, match);
+
+    return { matches: found.matches.map(toMatchView), stages: [...found.stages] };
   }
 
   /**
@@ -143,13 +164,16 @@ export class MatchesService {
    * `CANCELLED` здесь не выставляется: ТЗ 6.3 просит вернуть встречу в
    * очередь, а не вычеркнуть её из турнира.
    */
-  async cancel(id: string, userId: string): Promise<MatchUpdateResult> {
+  async cancel(id: string, userId: string, cascade = false): Promise<MatchUpdateResult> {
     const match = await this.load(id);
 
     await this.assertConsole(match, userId);
     assertRunning(match);
+    assertNotCarried(match);
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      // Откат цепочкой (ADR-141): сначала то, что выросло из встречи.
+      if (cascade) await rollBack(tx, match, userId);
       await this.assertDownstreamFree(tx, match);
 
       const written = await tx.match.update({
@@ -196,6 +220,7 @@ export class MatchesService {
     input: MatchResultInput,
     userId: string,
     mode: 'create' | 'update',
+    cascade = false,
   ): Promise<MatchUpdateResult> {
     await this.assertConsole(match, userId);
     assertRunning(match);
@@ -232,6 +257,8 @@ export class MatchesService {
     }
 
     const outcome = await this.prisma.$transaction(async (tx) => {
+      // Откат цепочкой (ADR-141): сначала то, что выросло из встречи.
+      if (cascade && mode === 'update') await rollBack(tx, match, userId);
       await this.assertDownstreamFree(tx, match);
 
       const written = await tx.match.update({
@@ -441,4 +468,14 @@ function assertNotCarried(match: {
       reason: 'CARRIED_MATCH',
     });
   }
+}
+
+/** Ответ «что откатится» — ADR-141. */
+export interface DependentsView {
+  readonly matches: readonly MatchView[];
+  readonly stages: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly played: number;
+  }[];
 }

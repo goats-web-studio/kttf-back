@@ -7,13 +7,13 @@ import {
   type MatchUpdateResult,
   type MatchView,
 } from '@kttf/shared/types';
-import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { z } from 'zod';
 
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { CurrentUserId, JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 
-import { MatchesService } from './matches.service.js';
+import { MatchesService, type DependentsView } from './matches.service.js';
 
 const uuidParam = z.uuid();
 
@@ -62,8 +62,19 @@ export class MatchesController {
   async cancel(
     @Param('id', new ZodValidationPipe(uuidParam)) id: string,
     @CurrentUserId() userId: string,
+    @Query('cascade') cascade?: string,
   ): Promise<MatchUpdateResult> {
-    return this.matches.cancel(id, userId);
+    return this.matches.cancel(id, userId, cascade === 'true');
+  }
+
+  /** Что откатится вместе с правкой или отменой — ADR-141. */
+  @Get(':id/dependents')
+  @UseGuards(JwtAuthGuard)
+  async dependents(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @CurrentUserId() userId: string,
+  ): Promise<DependentsView> {
+    return this.matches.dependents(id, userId);
   }
 
   /** Изменение уже введённого результата с фиксацией в журнале — ТЗ 6.3. */
@@ -73,7 +84,9 @@ export class MatchesController {
     @Param('id', new ZodValidationPipe(uuidParam)) id: string,
     @Body(new ZodValidationPipe(matchResultSchema)) body: MatchResultInput,
     @CurrentUserId() userId: string,
+    @Query('cascade') cascade?: string,
   ): Promise<MatchUpdateResult> {
-    return this.matches.update(id, body, userId);
+    // `?cascade=true` — откатить всё, что выросло из встречи (ADR-141).
+    return this.matches.update(id, body, userId, cascade === 'true');
   }
 }
