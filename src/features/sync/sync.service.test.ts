@@ -80,6 +80,7 @@ let journal: {
   clientOpId: string;
   appliedAt: Date | null;
   rejectedReason: string | null;
+  receivedAt?: Date;
 }[];
 
 function makePrisma() {
