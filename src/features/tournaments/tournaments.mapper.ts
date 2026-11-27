@@ -61,6 +61,8 @@ export function toTournamentView(tournament: TournamentRecord): TournamentView {
     ratingCapMax: decimalOrNull(tournament.ratingCapMax),
     ratingCapMin: decimalOrNull(tournament.ratingCapMin),
     reviewOutOfRating: tournament.reviewOutOfRating,
+    prizeBonus: tournament.prizeBonus,
+    noviceBoost: tournament.noviceBoost,
     birthYearFrom: tournament.birthYearFrom,
     birthYearTo: tournament.birthYearTo,
     genderLimit: tournament.genderLimit,

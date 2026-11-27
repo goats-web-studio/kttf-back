@@ -60,6 +60,7 @@ import {
   buildRatingRun,
   playersWithoutSnapshot,
   projectedDeltas,
+  ratingOptionsOf,
   unfinishedMatches,
   unresolvedTies,
   withdrawnPlayers,
@@ -710,6 +711,8 @@ export class TournamentsService {
         birthYearTo: source.birthYearTo,
         genderLimit: source.genderLimit,
         level: source.level,
+        prizeBonus: source.prizeBonus,
+        noviceBoost: source.noviceBoost,
         tableCount: source.tableCount,
         formatConfig: source.formatConfig ?? {},
         // Пустой посев и отсутствие посева — разные вещи для колонки Json:
@@ -2002,7 +2005,12 @@ export class TournamentsService {
     ]);
 
     const run = buildRatingRun(registrations, stages);
-    const result = calculateTournamentRating(run);
+    // Бонусы — по настройкам турнира (ADR-139).
+    const settings = await this.prisma.tournament.findUniqueOrThrow({
+      where: { id },
+      select: { prizeBonus: true, noviceBoost: true },
+    });
+    const result = calculateTournamentRating({ ...run, options: ratingOptionsOf(settings) });
 
     return this.prisma.$transaction(async (tx) => {
       const claimed = await tx.tournament.updateMany({
@@ -2178,7 +2186,10 @@ export class TournamentsService {
       // Пока турнир идёт — прогноз рейтинга по сыгранному (ADR-137).
       standings:
         tournament.status === 'RUNNING'
-          ? { ...standings, deltas: projectedDeltas(registrations, stages) }
+          ? {
+              ...standings,
+              deltas: projectedDeltas(registrations, stages, ratingOptionsOf(tournament)),
+            }
           : standings,
       events,
     });
@@ -2211,7 +2222,15 @@ export class TournamentsService {
       order: withdrawalOrder(withdrawn),
     });
 
-    return running ? { ...standings, deltas: projectedDeltas(registrations, stages) } : standings;
+    return running
+      ? {
+          ...standings,
+          deltas: projectedDeltas(registrations, stages, {
+            prizeBonus: tournament.prizeBonus === true,
+            noviceBoost: tournament.noviceBoost === true,
+          }),
+        }
+      : standings;
   }
 
   /**

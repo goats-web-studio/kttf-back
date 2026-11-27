@@ -7,7 +7,7 @@ import { withdrawnPlayers } from '../tournaments/finish.js';
 import { loadTournamentState } from '../tournaments/tournament-state.js';
 import { toPlayerView, toStageView, toTournamentView } from '../tournaments/tournaments.mapper.js';
 import { tournamentFields } from '../tournaments/tournaments.select.js';
-import { projectedDeltas } from '../tournaments/finish.js';
+import { projectedDeltas, ratingOptionsOf } from '../tournaments/finish.js';
 
 /**
  * Второй экран зала — ТЗ 6.5, маршрут ТС 7.7.
@@ -68,7 +68,9 @@ export class ScreenService {
       // Прогноз рейтинга по сыгранному, пока турнир идёт (ADR-137). После
       // начисления финал экрана показывает фактическое (ADR-082).
       ...(tournament.status === 'RUNNING'
-        ? { deltas: projectedDeltas(state.registrations, state.stages) }
+        ? {
+            deltas: projectedDeltas(state.registrations, state.stages, ratingOptionsOf(tournament)),
+          }
         : {}),
     };
   }

@@ -1161,6 +1161,11 @@ model Tournament {
   // Заявки вне рейтинговой планки — на рассмотрение организатора, а не
   // отказ (ADR-044). Возраст и пол остаются жёсткими условиями.
   reviewOutOfRating Boolean  @default(false)
+  // Бонусы рейтинга — ADR-139: призёрам 1–3 мест и ускорение новичков.
+  // По умолчанию выключены; обсчитанные раньше турниры — включены, как
+  // они и считались (миграция), чтобы исправление дало те же числа.
+  prizeBonus        Boolean  @default(false)
+  noviceBoost       Boolean  @default(false)
   birthYearFrom     Int?
   birthYearTo       Int?
   genderLimit       Gender?

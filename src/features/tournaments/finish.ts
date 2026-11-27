@@ -3,6 +3,7 @@ import {
   type RatedMatch,
   type RatedPlacement,
   type RatedPlayer,
+  type RatingOptions,
 } from '@kttf/shared/rating';
 import type { TournamentStandingsView } from '@kttf/shared/types';
 
@@ -254,6 +255,8 @@ export function playersWithoutSnapshot(
 export function projectedDeltas(
   registrations: readonly RegistrationRecord[],
   stages: readonly StageRecord[],
+  /** Бонусы турнира — ADR-139: прогноз считается так же, как начисление. */
+  options: RatingOptions,
 ): Record<string, number> {
   const participants = registrations.map((registration) => ({
     playerId: registration.player.id,
@@ -275,5 +278,13 @@ export function projectedDeltas(
       resultType: match.resultType ?? 'NORMAL',
     }));
 
-  return Object.fromEntries(projectDeltas(participants, matches));
+  return Object.fromEntries(projectDeltas(participants, matches, [], options));
+}
+
+/** Бонусы рейтинга турнира — ADR-139. */
+export function ratingOptionsOf(tournament: {
+  readonly prizeBonus: boolean;
+  readonly noviceBoost: boolean;
+}): RatingOptions {
+  return { prizeBonus: tournament.prizeBonus, noviceBoost: tournament.noviceBoost };
 }

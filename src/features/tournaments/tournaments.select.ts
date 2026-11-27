@@ -48,6 +48,8 @@ const tournamentScalars = {
   ratingCapMax: true,
   ratingCapMin: true,
   reviewOutOfRating: true,
+  prizeBonus: true,
+  noviceBoost: true,
   birthYearFrom: true,
   birthYearTo: true,
   genderLimit: true,
