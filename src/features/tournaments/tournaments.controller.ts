@@ -237,6 +237,19 @@ export class TournamentsController {
     return this.tournaments.finish(id, userId);
   }
 
+  /**
+   * Исправление результатов после завершения — ADR-135: турнир снова идёт,
+   * начисленный рейтинг откатывается, после правки — «Завершить» ещё раз.
+   */
+  @Post(':id/reopen')
+  @UseGuards(JwtAuthGuard)
+  async reopen(
+    @Param('id', new ZodValidationPipe(uuidParam)) id: string,
+    @CurrentUserId() userId: string,
+  ): Promise<TournamentView> {
+    return this.tournaments.reopen(id, userId);
+  }
+
   /** Публичные результаты — ТЗ 9.4. Открыты без токена, как и календарь. */
   @Get(':id/results')
   @UseGuards(OptionalJwtGuard)

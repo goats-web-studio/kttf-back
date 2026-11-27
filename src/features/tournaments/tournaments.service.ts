@@ -3,7 +3,11 @@ import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { checkEligibility } from '@kttf/shared/eligibility';
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import { findClubCollisions, scheduleRoundRobin } from '@kttf/shared/brackets';
-import { calculateTournamentRating, type RatingEventDraft } from '@kttf/shared/rating';
+import {
+  calculateTournamentRating,
+  NOVICE_TOURNAMENTS,
+  type RatingEventDraft,
+} from '@kttf/shared/rating';
 import {
   formatConfigSchema,
   seedingConfigSchema,
@@ -1748,6 +1752,163 @@ export class TournamentsService {
     this.screen.changed(id);
 
     return rated;
+  }
+
+  /**
+   * Исправление результатов после завершения — ADR-135, «Корректировка»
+   * турнир-менеджера RTTF.
+   *
+   * Турнир возвращается в «Идёт»: судья правит счёт в консоли и завершает
+   * заново, рейтинг считается ещё раз. Начисленное откатывается целиком —
+   * журнал турнира удаляется, игрокам возвращаются рейтинг, число встреч и
+   * турниров со старта турнира (снимок ТС 5.4, против него и считалось).
+   *
+   * Откат безопасен, только пока после этого турнира у его игроков не было
+   * других начислений: следующий турнир или дуэль считались от рейтинга,
+   * который сейчас изменится, и их пришлось бы пересчитать цепочкой. Такого
+   * пересчёта пока нет, поэтому сервер отказывает и называет, что мешает.
+   * Удалённый журнал сохраняется в аудите — видно, что было до правки.
+   */
+  async reopen(id: string, userId: string): Promise<TournamentView> {
+    const tournament = await this.load(id);
+
+    await this.assertClubStaff(tournament.clubId, userId);
+
+    if (nextStatus(tournament.status, 'reopen') === undefined) {
+      throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Transition is not allowed', {
+        id,
+        from: tournament.status,
+        action: 'reopen',
+      });
+    }
+
+    const events = await this.prisma.ratingEvent.findMany({
+      where: { tournamentId: id },
+      select: {
+        id: true,
+        playerId: true,
+        matchId: true,
+        type: true,
+        ratingBefore: true,
+        delta: true,
+        ratingAfter: true,
+        createdAt: true,
+      },
+    });
+    const players = [...new Set(events.map((event) => event.playerId))];
+    const ratedAt = events.reduce<Date | null>(
+      (min, event) => (min === null || event.createdAt < min ? event.createdAt : min),
+      null,
+    );
+
+    if (ratedAt !== null && players.length > 0) {
+      const later = await this.prisma.ratingEvent.findMany({
+        where: {
+          playerId: { in: players },
+          createdAt: { gt: ratedAt },
+          OR: [{ tournamentId: null }, { tournamentId: { not: id } }],
+        },
+        select: { tournamentId: true, tournament: { select: { name: true } } },
+        distinct: ['tournamentId'],
+        take: 10,
+      });
+
+      if (later.length > 0) {
+        throw new AppError(
+          ERROR_CODES.VALIDATION_FAILED,
+          'Players were rated after this tournament',
+          {
+            id,
+            reason: 'LATER_RATED',
+            tournaments: later.flatMap((event) =>
+              event.tournament === null ? [] : [event.tournament.name],
+            ),
+            duels: later.some((event) => event.tournamentId === null),
+          },
+        );
+      }
+    }
+
+    const registrations = await this.prisma.registration.findMany({
+      where: { tournamentId: id, playerId: { in: players } },
+      select: {
+        playerId: true,
+        ratingAtStart: true,
+        matchesAtStart: true,
+        tournamentsAtStart: true,
+      },
+    });
+
+    const reopened = await this.prisma.$transaction(async (tx) => {
+      // Переход — и замок: два одновременных вызова не откатят дважды.
+      const claimed = await tx.tournament.updateMany({
+        where: { id, status: { in: ['FINISHED', 'RATED'] } },
+        data: {
+          status: 'RUNNING',
+          finishedAt: null,
+          ratedAt: null,
+          placesAt: null,
+          version: { increment: 1 },
+        },
+      });
+
+      if (claimed.count === 0) {
+        throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Transition is not allowed', {
+          id,
+          action: 'reopen',
+        });
+      }
+
+      for (const registration of registrations) {
+        if (registration.ratingAtStart === null) continue;
+        const tournaments = registration.tournamentsAtStart ?? 0;
+
+        await tx.player.update({
+          where: { id: registration.playerId },
+          data: {
+            rating: registration.ratingAtStart,
+            ...(registration.matchesAtStart === null
+              ? {}
+              : { ratedMatches: registration.matchesAtStart }),
+            ratedTournaments: tournaments,
+            isProvisional: tournaments < NOVICE_TOURNAMENTS,
+          },
+        });
+      }
+
+      await tx.ratingEvent.deleteMany({ where: { tournamentId: id } });
+      await tx.registration.updateMany({
+        where: { tournamentId: id },
+        data: { place: null, placeTo: null },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          actorId: userId,
+          action: 'tournament.reopened',
+          entityType: 'Tournament',
+          entityId: id,
+          before: {
+            status: tournament.status,
+            events: events.map((event) => ({
+              playerId: event.playerId,
+              matchId: event.matchId,
+              type: event.type,
+              ratingBefore: event.ratingBefore.toString(),
+              delta: event.delta.toString(),
+              ratingAfter: event.ratingAfter.toString(),
+            })),
+          } as Prisma.InputJsonValue,
+          after: { status: 'RUNNING' },
+        },
+      });
+
+      return tx.tournament.findUniqueOrThrow({ where: { id }, select: tournamentFields });
+    });
+
+    this.screen.changed(id);
+
+    return toTournamentView(reopened);
   }
 
   /**

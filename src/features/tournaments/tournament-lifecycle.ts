@@ -16,6 +16,7 @@ export const TOURNAMENT_ACTIONS = [
   'start',
   'finish',
   'rate',
+  'reopen',
   'cancel',
 ] as const;
 
@@ -35,6 +36,10 @@ const TRANSITIONS: Readonly<Record<TournamentAction, Readonly<Record<string, Tou
     // второй транзакцией, и в «Завершён» турнир остаётся только если расчёт
     // не удался. Тогда повторный вызов доводит его до «Обсчитан».
     rate: { FINISHED: 'RATED' },
+    // Исправление после завершения — ADR-135: рейтинг откатывается, турнир
+    // снова идёт. Условие сверх таблицы — после него у игроков не было
+    // других начислений.
+    reopen: { FINISHED: 'RUNNING', RATED: 'RUNNING' },
     cancel: {
       DRAFT: 'CANCELLED',
       PUBLISHED: 'CANCELLED',

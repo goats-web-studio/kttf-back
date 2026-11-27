@@ -36,6 +36,8 @@ const ALLOWED: readonly [TournamentStatus, TournamentAction, TournamentStatus][]
   ['REG_CLOSED', 'start', 'RUNNING'],
   ['RUNNING', 'finish', 'FINISHED'],
   ['FINISHED', 'rate', 'RATED'],
+  ['FINISHED', 'reopen', 'RUNNING'],
+  ['RATED', 'reopen', 'RUNNING'],
   ['DRAFT', 'cancel', 'CANCELLED'],
   ['PUBLISHED', 'cancel', 'CANCELLED'],
   ['REG_OPEN', 'cancel', 'CANCELLED'],
