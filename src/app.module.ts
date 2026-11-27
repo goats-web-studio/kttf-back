@@ -19,6 +19,7 @@ import { ScreenModule } from './features/screen/screen.module.js';
 import { StatsModule } from './features/stats/stats.module.js';
 import { FeedModule } from './features/feed/feed.module.js';
 import { FollowsModule } from './features/follows/follows.module.js';
+import { GuidesModule } from './features/guides/guides.module.js';
 import { SyncModule } from './features/sync/sync.module.js';
 import { MatchesModule } from './features/matches/matches.module.js';
 import { TournamentsModule } from './features/tournaments/tournaments.module.js';
@@ -54,6 +55,7 @@ import { PrismaModule } from './infra/prisma/prisma.module.js';
     StatsModule,
     FeedModule,
     FollowsModule,
+    GuidesModule,
     FilesModule,
     PlacesModule,
     PlayersModule,
