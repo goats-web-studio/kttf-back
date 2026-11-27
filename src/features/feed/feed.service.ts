@@ -25,6 +25,7 @@ import {
 import { AppError, ERROR_CODES } from '@kttf/shared/errors';
 import { Injectable } from '@nestjs/common';
 
+import { TtlCache } from '../../common/ttl-cache.js';
 import type { Prisma } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../infra/prisma/prisma.service.js';
 import { FollowsService, type FollowedTargets } from '../follows/follows.service.js';
@@ -167,6 +168,9 @@ export function matchesFilter(item: FeedItem, filter: FeedFilter | undefined): b
   }
 }
 
+/** Срок общей сборки ленты для гостей — ADR-132. */
+export const FEED_GUEST_TTL_MS = 30_000;
+
 /**
  * Лента главной — ADR-073.
  *
@@ -176,6 +180,17 @@ export function matchesFilter(item: FeedItem, filter: FeedFilter | undefined): b
  */
 @Injectable()
 export class FeedService {
+  /**
+   * Кандидаты ленты для гостей — ADR-132.
+   *
+   * Только для гостей: вошедший может быть автором записи и обязан увидеть
+   * её сразу (ADR-130 — форма записи на главной), поэтому ему лента
+   * собирается заново. Гостям — общая сборка на полминуты: её не видно
+   * никому, кто только что что-то изменил. Закрепление и скрытие сбрасывают
+   * её сразу (`curate`).
+   */
+  private readonly guestCandidates = new TtlCache<Candidate[]>(FEED_GUEST_TTL_MS, 1);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly follows: FollowsService,
@@ -190,9 +205,11 @@ export class FeedService {
         : this.prisma.player.findUnique({ where: { userId }, select: { id: true, cityId: true } }),
     ]);
 
-    const candidates = (await this.candidates(now)).filter(
-      (c) => !c.item.hidden && matchesFilter(c.item, query.filter),
-    );
+    const all =
+      userId === undefined
+        ? await this.guestCandidates.get('all', () => this.candidates(now))
+        : await this.candidates(now);
+    const candidates = all.filter((c) => !c.item.hidden && matchesFilter(c.item, query.filter));
     const popular = popularPosts(
       candidates.filter((c) => c.item.type === 'PLAYER_POST').map((c) => c.item),
       now,
@@ -321,6 +338,9 @@ export class FeedService {
       create: { itemId: input.itemId, ...patch },
       update: patch,
     });
+
+    // Скрытое администратором гость не должен видеть ни полминуты.
+    this.guestCandidates.clear();
   }
 
   /**

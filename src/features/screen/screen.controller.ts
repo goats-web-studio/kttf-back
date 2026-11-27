@@ -1,6 +1,17 @@
 import { SCREEN_EVENTS, type ScreenView } from '@kttf/shared/types';
 import { Controller, Get, type MessageEvent, Param, Sse } from '@nestjs/common';
-import { concatMap, from, interval, map, merge, Observable, of, switchMap } from 'rxjs';
+import {
+  concatMap,
+  finalize,
+  from,
+  interval,
+  map,
+  merge,
+  Observable,
+  of,
+  shareReplay,
+  switchMap,
+} from 'rxjs';
 import { z } from 'zod';
 
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
@@ -32,6 +43,17 @@ const PING_INTERVAL_MS = 25_000;
 @SkipRateLimit()
 @Controller('public/screen')
 export class ScreenController {
+  /**
+   * Общий поток состояния на токен — ADR-132.
+   *
+   * Раньше каждый подключённый экран на каждое изменение турнира делал свою
+   * выборку: пятьдесят телефонов в зале — пятьдесят одинаковых запросов на
+   * каждый введённый счёт. Теперь состояние собирается один раз и уходит
+   * всем; новый зритель сразу получает последнее. Запись живёт, пока поток
+   * кто-то смотрит.
+   */
+  private readonly states = new Map<string, Observable<MessageEvent>>();
+
   constructor(
     private readonly screen: ScreenService,
     private readonly events: ScreenEventsService,
@@ -60,14 +82,6 @@ export class ScreenController {
   stream(
     @Param('publicToken', new ZodValidationPipe(tokenParam)) publicToken: string,
   ): Observable<MessageEvent> {
-    const state = from(this.screen.tournamentIdOf(publicToken)).pipe(
-      switchMap((tournamentId) => merge(of(undefined), this.events.of(tournamentId))),
-      // concatMap, а не mergeMap: два изменения подряд не должны обгонять
-      // друг друга и оставить на стене состояние, которое уже неверно.
-      concatMap(() => this.screen.byToken(publicToken)),
-      map((view): MessageEvent => ({ type: SCREEN_EVENTS.state, data: view })),
-    );
-
     const ping = interval(PING_INTERVAL_MS).pipe(
       map((): MessageEvent => ({
         type: SCREEN_EVENTS.ping,
@@ -75,6 +89,29 @@ export class ScreenController {
       })),
     );
 
-    return merge(state, ping);
+    return merge(this.stateOf(publicToken), ping);
+  }
+
+  private stateOf(publicToken: string): Observable<MessageEvent> {
+    const existing = this.states.get(publicToken);
+    if (existing !== undefined) return existing;
+
+    const state = from(this.screen.tournamentIdOf(publicToken)).pipe(
+      switchMap((tournamentId) => merge(of(undefined), this.events.of(tournamentId))),
+      // concatMap, а не mergeMap: два изменения подряд не должны обгонять
+      // друг друга и оставить на стене состояние, которое уже неверно.
+      concatMap(() => this.screen.byToken(publicToken)),
+      map((view): MessageEvent => ({ type: SCREEN_EVENTS.state, data: view })),
+      // Последний зритель ушёл или турнир пропал — запись убирается, и
+      // следующий экран начнёт поток заново.
+      finalize(() => {
+        if (this.states.get(publicToken) === state) this.states.delete(publicToken);
+      }),
+      shareReplay({ bufferSize: 1, refCount: true }),
+    );
+
+    this.states.set(publicToken, state);
+
+    return state;
   }
 }

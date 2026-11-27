@@ -136,7 +136,10 @@ function makeService(
 ): FeedService {
   const prisma = {
     player: { findUnique: vi.fn().mockResolvedValue(me) },
-    feedCuration: { findMany: vi.fn().mockResolvedValue(curations) },
+    feedCuration: {
+      findMany: vi.fn().mockResolvedValue(curations),
+      upsert: vi.fn().mockResolvedValue({}),
+    },
   } as unknown as PrismaService;
   const follows = { targetsOf: vi.fn().mockResolvedValue(followed) } as unknown as FollowsService;
   const service = new FeedService(prisma, follows, {} as TournamentsService);
@@ -942,5 +945,42 @@ describe('обсуждение глазами зрителя — liked и mine (
     const page = await feed.wall('player-2', { page: 1, limit: 10 }, 'user-1');
 
     expect(page.items[0]?.discussion).toMatchObject({ liked: true, mine: false });
+  });
+});
+
+describe('сборка ленты для гостей — ADR-132', () => {
+  const spyCandidates = (service: FeedService) =>
+    vi.spyOn(service as unknown as { candidates: (now: Date) => Promise<unknown[]> }, 'candidates');
+
+  it('гостю повторный запрос в пределах срока в базу не идёт', async () => {
+    const service = makeService([clubNews, otherCityNews]);
+    const candidates = spyCandidates(service);
+
+    await service.feed({ tab: 'ALL', page: 1, limit: 1 }, undefined, NOW);
+    const second = await service.feed({ tab: 'ALL', page: 2, limit: 1 }, undefined, NOW);
+
+    expect(candidates).toHaveBeenCalledOnce();
+    expect(second.items.map((item) => item.id)).toEqual(['club-post:1']);
+  });
+
+  it('вошедшему лента собирается заново: своя новая запись видна сразу', async () => {
+    const service = makeService([clubNews], NO_FOLLOWS, { id: 'player-1', cityId: CITY });
+    const candidates = spyCandidates(service);
+
+    await service.feed({ tab: 'ALL', page: 1, limit: 10 }, 'user-1', NOW);
+    await service.feed({ tab: 'ALL', page: 1, limit: 10 }, 'user-1', NOW);
+
+    expect(candidates).toHaveBeenCalledTimes(2);
+  });
+
+  it('закрепление или скрытие администратором сбрасывает сборку гостей сразу', async () => {
+    const service = makeService([clubNews]);
+    const candidates = spyCandidates(service);
+
+    await service.feed({ tab: 'ALL', page: 1, limit: 10 }, undefined, NOW);
+    await service.curate({ itemId: 'club-post:1', hidden: true }, 'admin-1', NOW);
+    await service.feed({ tab: 'ALL', page: 1, limit: 10 }, undefined, NOW);
+
+    expect(candidates).toHaveBeenCalledTimes(2);
   });
 });

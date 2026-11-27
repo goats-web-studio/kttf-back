@@ -109,3 +109,43 @@ describe('поток состояния', () => {
     expect(screen.byToken).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('общий поток на токен — ADR-132', () => {
+  it('два экрана одного турнира — одна выборка на изменение, состояние у обоих', async () => {
+    const first = listen();
+    await settle();
+    const second = listen();
+    await settle();
+
+    events.changed(TOURNAMENT_ID);
+    await settle();
+
+    // Первое состояние и одно изменение — две выборки на оба экрана, а не четыре.
+    expect(screen.byToken).toHaveBeenCalledTimes(2);
+    expect(first.received.map((event) => (event.data as ScreenView).updatedAt)).toEqual([
+      '2026-09-02T10:00:00.000Z',
+      '2026-09-02T10:20:00.000Z',
+    ]);
+    // Подключившийся позже сразу получил последнее состояние, затем изменение.
+    expect(second.received.map((event) => (event.data as ScreenView).updatedAt)).toEqual([
+      '2026-09-02T10:00:00.000Z',
+      '2026-09-02T10:20:00.000Z',
+    ]);
+
+    first.stop();
+    second.stop();
+  });
+
+  it('последний экран ушёл — следующий начинает поток заново', async () => {
+    const first = listen();
+    await settle();
+    first.stop();
+
+    const again = listen();
+    await settle();
+
+    expect(screen.tournamentIdOf).toHaveBeenCalledTimes(2);
+    expect(again.received).toHaveLength(1);
+    again.stop();
+  });
+});
