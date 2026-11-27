@@ -59,6 +59,7 @@ import { clientIp } from '../../common/client-ip.js';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { RequireAdmin } from '../auth/admin.guard.js';
 import { CurrentUserId } from '../auth/jwt-auth.guard.js';
+import { CountsAsUpload } from '../auth/rate-limit.interceptor.js';
 import { CatalogAdminService } from './catalog-admin.service.js';
 import { CatalogEquipmentService } from './catalog-equipment.service.js';
 import { CatalogImportService } from './catalog-import.service.js';
@@ -174,6 +175,7 @@ export class CatalogAdminController {
   }
 
   @Post('brands/:id/logo')
+  @CountsAsUpload()
   @UseInterceptors(imageUpload)
   async setBrandLogo(
     @Param('id', uuidParam) id: string,
@@ -222,6 +224,7 @@ export class CatalogAdminController {
   }
 
   @Post('products/:id/images')
+  @CountsAsUpload()
   @UseInterceptors(imageUpload)
   async addImage(
     @Param('id', uuidParam) id: string,

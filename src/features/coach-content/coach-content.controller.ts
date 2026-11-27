@@ -45,6 +45,7 @@ import { z } from 'zod';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { RequireAdmin } from '../auth/admin.guard.js';
 import { CurrentUserId } from '../auth/jwt-auth.guard.js';
+import { CountsAsUpload } from '../auth/rate-limit.interceptor.js';
 import { OptionalJwtGuard, OptionalUserId } from '../auth/optional-jwt.guard.js';
 import { RequireCoachOwner } from '../coaches/coach-owner.guard.js';
 import { CoachContentAdminService } from './coach-content-admin.service.js';
@@ -148,6 +149,7 @@ export class CoachContentController {
   }
 
   @Post('media/photos')
+  @CountsAsUpload()
   @RequireCoachOwner()
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: CLUB_IMAGE_MAX_BYTES } }))
   async addPhoto(
@@ -173,6 +175,7 @@ export class CoachContentController {
   }
 
   @Post('media/videos')
+  @CountsAsUpload()
   @RequireCoachOwner()
   async addVideo(
     @Param('id', uuidParam) id: string,

@@ -42,6 +42,34 @@ const SKIP = 'kttf:skip-rate-limit';
 export const SkipRateLimit = (): MethodDecorator & ClassDecorator => SetMetadata(SKIP, true);
 
 /**
+ * Загрузок картинок за час на пользователя — ADR-131.
+ *
+ * Каждая загрузка — разбор и пережатие sharp в общем пуле потоков (ADR-129),
+ * поэтому у них свой предел внутри общего. Сто в час — с запасом на
+ * владельца клуба, заполняющего галерею, и на запись с несколькими фото.
+ */
+export const UPLOADS_PER_USER = 100;
+
+/**
+ * Загрузок картинок за час с одного адреса — по всем аккаунтам сразу: иначе
+ * пачка свежих аккаунтов обходила бы предел пользователя. Втрое шире, чтобы
+ * несколько сотрудников клуба за одним Wi-Fi не мешали друг другу.
+ */
+export const UPLOADS_PER_ADDRESS = 300;
+
+const HOUR_MS = 60 * MINUTE_MS;
+
+const UPLOAD = 'kttf:upload';
+
+/**
+ * Маршрут, где сервер принимает или сам скачивает картинку и пережимает её:
+ * считается и в общем пределе, и в пределе загрузок (ADR-131). Перехватчик
+ * общий и стоит раньше `FileInterceptor`, поэтому отказ приходит до того,
+ * как multer прочитает файл.
+ */
+export const CountsAsUpload = (): MethodDecorator => SetMetadata(UPLOAD, true);
+
+/**
  * Общий предел запросов — ТС 8.3, ADR-056.
  *
  * Пользователь узнаётся по токену прямо здесь, а не по guard'у маршрута:
@@ -53,6 +81,8 @@ export const SkipRateLimit = (): MethodDecorator & ClassDecorator => SetMetadata
 export class RateLimitInterceptor implements NestInterceptor {
   private readonly users = new WindowCounter(REQUESTS_PER_USER, MINUTE_MS);
   private readonly addresses = new WindowCounter(REQUESTS_PER_ADDRESS, MINUTE_MS);
+  private readonly uploadsByUser = new WindowCounter(UPLOADS_PER_USER, HOUR_MS);
+  private readonly uploadsByAddress = new WindowCounter(UPLOADS_PER_ADDRESS, HOUR_MS);
 
   constructor(
     private readonly reflector: Reflector,
@@ -87,7 +117,29 @@ export class RateLimitInterceptor implements NestInterceptor {
       });
     }
 
+    const upload = this.reflector.getAllAndOverride<boolean | undefined>(UPLOAD, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+
+    if (upload === true) this.countUpload(userId, clientIp(request), now);
+
     return next.handle();
+  }
+
+  /** Загрузка засчитывается и пользователю, и адресу; отказ — по любому из пределов. */
+  private countUpload(userId: string | null, ip: string, now: number): void {
+    const byAddress = this.uploadsByAddress.hit(this.addressKey(ip), now);
+    // Без входа загрузку отвергнет guard маршрута ещё до перехватчика;
+    // здесь пользователь есть всегда, а проверка — на всякий случай.
+    const byUser =
+      userId === null ? { allowed: true, retryAfterMs: 0 } : this.uploadsByUser.hit(userId, now);
+
+    if (!byAddress.allowed || !byUser.allowed) {
+      throw new AppError(ERROR_CODES.RATE_LIMITED, 'Too many uploads', {
+        retryAfterSeconds: Math.ceil(Math.max(byAddress.retryAfterMs, byUser.retryAfterMs) / 1000),
+      });
+    }
   }
 
   private addressKey(ip: string): string {

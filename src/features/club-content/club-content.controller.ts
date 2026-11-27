@@ -44,6 +44,7 @@ import { z } from 'zod';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { RequireAdmin } from '../auth/admin.guard.js';
 import { CurrentUserId } from '../auth/jwt-auth.guard.js';
+import { CountsAsUpload } from '../auth/rate-limit.interceptor.js';
 import { RequireClubRole } from '../clubs/club-role.guard.js';
 import { ClubContentAdminService } from './club-content-admin.service.js';
 import { ClubMediaService } from './club-media.service.js';
@@ -141,6 +142,7 @@ export class ClubContentController {
   }
 
   @Post('media/photos')
+  @CountsAsUpload()
   @RequireClubRole('OWNER', 'ORGANIZER')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: CLUB_IMAGE_MAX_BYTES } }))
   async addPhoto(
@@ -166,6 +168,7 @@ export class ClubContentController {
   }
 
   @Post('media/videos')
+  @CountsAsUpload()
   @RequireClubRole('OWNER', 'ORGANIZER')
   async addVideo(
     @Param('id', uuidParam) id: string,

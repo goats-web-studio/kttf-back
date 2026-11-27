@@ -5,6 +5,7 @@ import sharp from 'sharp';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter.js';
+import { UPLOADS_PER_USER } from '../src/features/auth/rate-limit.interceptor.js';
 import { TokenService } from '../src/features/auth/token.service.js';
 import { FilesModule } from '../src/features/files/files.module.js';
 import { StorageService } from '../src/features/files/storage.service.js';
@@ -144,4 +145,22 @@ describe('POST /files/player-photo', () => {
     expect(result.status).toBe(401);
     expect(stored.size).toBe(0);
   });
+});
+
+describe('предел загрузок по HTTP — ADR-131', () => {
+  it('сверх ста загрузок в час — 429, файл не обрабатывается', async () => {
+    // Чужой тип отвергается сразу (400), но загрузкой всё равно считается:
+    // предел — на попытки, а не на удачные файлы.
+    const notAnImage = new Blob(['x'], { type: 'text/plain' });
+
+    for (let index = 0; index < UPLOADS_PER_USER; index += 1) {
+      expect((await upload(notAnImage)).status).toBe(400);
+    }
+
+    const over = await upload(await phoneShot());
+
+    expect(over.status).toBe(429);
+    expect(over.body).toMatchObject({ error: { code: 'RATE_LIMITED' } });
+    expect(stored.size).toBe(0);
+  }, 60_000);
 });

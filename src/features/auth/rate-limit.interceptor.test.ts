@@ -8,6 +8,8 @@ import {
   REQUESTS_PER_ADDRESS,
   REQUESTS_PER_USER,
   RateLimitInterceptor,
+  UPLOADS_PER_ADDRESS,
+  UPLOADS_PER_USER,
 } from './rate-limit.interceptor.js';
 import type { TokenService } from './token.service.js';
 
@@ -25,13 +27,20 @@ function contextOf(headers: Record<string, string>, ip = '1.2.3.4'): ExecutionCo
 }
 
 let skip: boolean | undefined;
+let upload: boolean | undefined;
 let interceptor: RateLimitInterceptor;
 
 beforeEach(() => {
   skip = undefined;
-  const reflector = { getAllAndOverride: vi.fn(() => skip) } as unknown as Reflector;
+  upload = undefined;
+  const reflector = {
+    getAllAndOverride: vi.fn((key: string) => (key === 'kttf:upload' ? upload : skip)),
+  } as unknown as Reflector;
   const tokens = {
-    verifyAccessToken: vi.fn((token: string) => (token === 'good' ? 'user-1' : null)),
+    // «good» — один и тот же человек; «user-N» — разные аккаунты.
+    verifyAccessToken: vi.fn((token: string) =>
+      token === 'good' ? 'user-1' : token.startsWith('user-') ? token : null,
+    ),
   } as unknown as TokenService;
   interceptor = new RateLimitInterceptor(reflector, tokens, { JWT_SECRET: 'x'.repeat(32) } as Env);
 });
@@ -78,5 +87,52 @@ describe('общий предел запросов — ТС 8.3', () => {
     const ws = { getType: () => 'ws' } as unknown as ExecutionContext;
     expect(() => interceptor.intercept(ws, next)).not.toThrow();
     expect(() => interceptor.intercept(contextOf({}), next)).not.toThrow();
+  });
+});
+
+describe('предел загрузок — ADR-131', () => {
+  it('сто загрузок в час на пользователя, сто первая — отказ, обычные запросы проходят', () => {
+    const context = contextOf({ authorization: 'Bearer good' });
+    upload = true;
+
+    for (let index = 0; index < UPLOADS_PER_USER; index += 1) {
+      interceptor.intercept(context, next);
+    }
+
+    expect(() => interceptor.intercept(context, next)).toThrow(
+      expect.objectContaining({ code: 'RATE_LIMITED', message: 'Too many uploads' }) as Error,
+    );
+
+    // Предел загрузок не трогает остальную работу того же человека.
+    upload = undefined;
+    expect(() => interceptor.intercept(context, next)).not.toThrow();
+  });
+
+  it('с одного адреса — триста загрузок в час по всем аккаунтам', () => {
+    upload = true;
+
+    for (let index = 0; index < UPLOADS_PER_ADDRESS; index += 1) {
+      interceptor.intercept(contextOf({ authorization: `Bearer user-${String(index)}` }), next);
+    }
+
+    // Свежий аккаунт с того же адреса упирается в предел адреса…
+    expect(() =>
+      interceptor.intercept(contextOf({ authorization: 'Bearer user-new' }), next),
+    ).toThrow(expect.objectContaining({ code: 'RATE_LIMITED' }) as Error);
+    // …а с другого адреса проходит.
+    expect(() =>
+      interceptor.intercept(contextOf({ authorization: 'Bearer user-new' }, '5.6.7.8'), next),
+    ).not.toThrow();
+  });
+
+  it('маршрут без отметки загрузкой не считается', () => {
+    const context = contextOf({ authorization: 'Bearer good' });
+
+    for (let index = 0; index < UPLOADS_PER_USER + 1; index += 1) {
+      interceptor.intercept(context, next);
+    }
+
+    upload = true;
+    expect(() => interceptor.intercept(context, next)).not.toThrow();
   });
 });

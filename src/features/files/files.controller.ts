@@ -23,7 +23,7 @@ import { z } from 'zod';
 
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
-import { SkipRateLimit } from '../auth/rate-limit.interceptor.js';
+import { CountsAsUpload, SkipRateLimit } from '../auth/rate-limit.interceptor.js';
 import { RequireClubRole } from '../clubs/club-role.guard.js';
 import { RequireCoachOwner } from '../coaches/coach-owner.guard.js';
 import { storeClubImage, storeImage } from './club-image.js';
@@ -92,6 +92,7 @@ export class FilesController {
    * разобрал как картинку.
    */
   @Post('player-photo')
+  @CountsAsUpload()
   @UseGuards(JwtAuthGuard)
   @UseInterceptors(
     FileInterceptor('file', {
@@ -130,6 +131,7 @@ export class FilesController {
    * картинка страницу не меняет.
    */
   @Post('clubs/:id')
+  @CountsAsUpload()
   @RequireClubRole('OWNER', 'ORGANIZER')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: CLUB_IMAGE_MAX_BYTES } }))
   async uploadClubImage(
@@ -147,6 +149,7 @@ export class FilesController {
    * сохранить путь на странице — отдельный `PATCH /coaches/:id`.
    */
   @Post('coaches/:id')
+  @CountsAsUpload()
   @RequireCoachOwner()
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: CLUB_IMAGE_MAX_BYTES } }))
   async uploadCoachImage(
@@ -164,6 +167,7 @@ export class FilesController {
    * записывается в документ через `PUT /coaches/:id/credentials`.
    */
   @Post('coach-docs/:id')
+  @CountsAsUpload()
   @RequireCoachOwner()
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: CLUB_IMAGE_MAX_BYTES } }))
   async uploadCoachDoc(
@@ -184,6 +188,7 @@ export class FilesController {
    * проверяет сам форум.
    */
   @Post('forum')
+  @CountsAsUpload()
   @UseGuards(JwtAuthGuard)
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: CLUB_IMAGE_MAX_BYTES } }))
   async uploadForumImage(@UploadedFileParam() file?: IncomingFile): Promise<UploadedImage> {
