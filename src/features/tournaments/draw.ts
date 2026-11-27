@@ -337,15 +337,20 @@ function planGroupStage(
   // меньше зоны выхода отдаёт всех, кто в ней есть. Проверка стоит на
   // жеребьёвке, а не на достройке, потому что достройка случается посреди
   // турнира при вводе счёта — отказывать судье там поздно и не за что.
+  // «Выходят все» (ADR-138) — по самой большой группе этой жеребьёвки.
+  const advancePerGroup =
+    config.advanceAll === true
+      ? Math.max(1, ...groups.map((group) => group.participants.length))
+      : config.advancePerGroup;
   const advancing = groups.reduce(
-    (total, group) => total + Math.min(group.participants.length, config.advancePerGroup),
+    (total, group) => total + Math.min(group.participants.length, advancePerGroup),
     0,
   );
 
   if (advancing < 2) {
     throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Too few participants advance from groups', {
       advancing,
-      advancePerGroup: config.advancePerGroup,
+      advancePerGroup,
       groups: groups.length,
       reason: 'TOO_FEW_ADVANCE',
     });
@@ -372,7 +377,7 @@ function planGroupStage(
         name: 'Групповой этап',
         config: {
           setsToWin,
-          advancePerGroup: config.advancePerGroup,
+          advancePerGroup,
           rounds: config.groupRounds,
           ...tieBreakOf(config),
         },

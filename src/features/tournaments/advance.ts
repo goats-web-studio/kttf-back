@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { selectAdvancing, type GroupPlacement } from '@kttf/shared/brackets';
+import { selectAdvancing, withoutWithdrawn, type GroupPlacement } from '@kttf/shared/brackets';
 import { formatConfigSchema, type FormatConfig } from '@kttf/shared/types';
 
 import type { Prisma } from '../../generated/prisma/client.js';
@@ -77,15 +77,27 @@ export async function advanceAfterGroups(
     order: withdrawalOrder(withdrawnRows),
   });
 
-  const placements: GroupPlacement[] = standings.groups.map((group) => ({
-    label: group.label,
-    rows: group.rows.map((row) => ({ participant: row.participant, place: row.place })),
-    unresolved: group.unresolved,
-  }));
+  // Снявшиеся дальше групп не идут (ADR-138): в сетке они только раздавали
+  // бы технические победы, а при «выходят все» занимали бы чужое место.
+  const placements: GroupPlacement[] = withoutWithdrawn(
+    standings.groups.map((group) => ({
+      label: group.label,
+      rows: group.rows.map((row) => ({ participant: row.participant, place: row.place })),
+      unresolved: group.unresolved,
+    })),
+    new Set(withdrawn),
+  );
+
+  // «Выходят все» — по фактическому составу групп, а не по числу на момент
+  // создания: опоздавшие могли дать группу на одного больше (ADR-138).
+  const advancePerGroup =
+    config.advanceAll === true
+      ? Math.max(1, ...placements.map((group) => group.rows.length))
+      : config.advancePerGroup;
 
   const selection = selectAdvancing(
     placements,
-    config.advancePerGroup,
+    advancePerGroup,
     // Границы следующих финалов: финалы-сетки (ADR-133) и финальные группы
     // «местами» (ADR-134).
     config.type === 'GROUPS_KNOCKOUT' || config.composition === 'BANDS'
