@@ -46,7 +46,11 @@ const BRACKETS = ['KNOCKOUT', 'CONSOLATION'] as const;
 
 /** Сыгранная встреча игрока — та же граница, что в истории встреч. */
 function playedBy(playerId: string) {
-  return { OR: [{ playerAId: playerId }, { playerBId: playerId }], setsA: { not: null } };
+  return {
+    OR: [{ playerAId: playerId }, { playerBId: playerId }],
+    setsA: { not: null },
+    carriedFromId: null,
+  };
 }
 
 /**

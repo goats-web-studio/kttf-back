@@ -323,10 +323,10 @@ export class FollowsService {
       SELECT side."opponentId" AS "id"
       FROM (
         SELECT m."playerBId" AS "opponentId", m."finishedAt" FROM "Match" m
-        WHERE m."playerAId" = ${playerId} AND m."setsA" IS NOT NULL
+        WHERE m."playerAId" = ${playerId} AND m."setsA" IS NOT NULL AND m."carriedFromId" IS NULL
         UNION ALL
         SELECT m."playerAId" AS "opponentId", m."finishedAt" FROM "Match" m
-        WHERE m."playerBId" = ${playerId} AND m."setsA" IS NOT NULL
+        WHERE m."playerBId" = ${playerId} AND m."setsA" IS NOT NULL AND m."carriedFromId" IS NULL
       ) side
       JOIN "Player" p ON p."id" = side."opponentId" AND p."confirmedAt" IS NOT NULL
       WHERE side."opponentId" IS NOT NULL

@@ -53,6 +53,19 @@ export async function writeStage(
       placeTo: match.placeTo ?? null,
       winnerPlace: match.winnerPlace ?? null,
       loserPlace: match.loserPlace ?? null,
+      // Перенесённая встреча — сразу сыгранная, со счётом исходной (ADR-134).
+      ...(match.carried === undefined
+        ? {}
+        : {
+            carriedFromId: match.carried.id,
+            status: 'FINISHED' as const,
+            setsA: match.carried.setsA,
+            setsB: match.carried.setsB,
+            setScores: (match.carried.setScores ?? Prisma.DbNull) as Prisma.InputJsonValue,
+            resultType: match.carried.resultType,
+            startedAt: match.carried.startedAt,
+            finishedAt: match.carried.finishedAt,
+          }),
     })),
   });
 

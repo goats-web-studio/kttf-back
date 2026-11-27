@@ -137,6 +137,7 @@ export class HomeStatsService {
           FROM "Match" m
           JOIN "Tournament" t ON t."id" = m."tournamentId"
           WHERE m."setsA" IS NOT NULL AND m."setsB" IS NOT NULL AND m."setsA" <> m."setsB"
+            AND m."carriedFromId" IS NULL
             AND (m."resultType" IS NULL OR m."resultType" <> 'WALKOVER')
             AND t."startsAt" >= ${since} AND t."startsAt" <= ${now}
         ) w

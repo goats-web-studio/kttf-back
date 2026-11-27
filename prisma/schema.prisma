@@ -1384,6 +1384,11 @@ model Match {
   winnerPlace Int?
   loserPlace  Int?
 
+  // Финал вкруг «с зачётом» (ADR-134): встреча, сыгранная в группе, копией
+  // переносится в финальную группу. Копия не играется и в рейтинг, историю
+  // и статистику игрока не идёт — туда идёт исходная встреча.
+  carriedFromId String?
+
   startedAt  DateTime?
   finishedAt DateTime?
 
@@ -1391,9 +1396,11 @@ model Match {
   clientId      String? @unique // UUID, сгенерированный клиентом
   clientVersion Int     @default(0)
 
-  tournament Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
-  stage      Stage      @relation(fields: [stageId], references: [id], onDelete: Cascade)
-  group      Group?     @relation(fields: [groupId], references: [id])
+  tournament  Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  stage       Stage      @relation(fields: [stageId], references: [id], onDelete: Cascade)
+  group       Group?     @relation(fields: [groupId], references: [id])
+  carriedFrom Match?     @relation("MatchCarry", fields: [carriedFromId], references: [id], onDelete: Cascade)
+  carriedTo   Match[]    @relation("MatchCarry")
 
   ratingEvents RatingEvent[]
 
@@ -1402,6 +1409,7 @@ model Match {
   // Встречи игрока: профиль, личные встречи, соперники в подсказках (DEV-127)
   @@index([playerAId])
   @@index([playerBId])
+  @@index([carriedFromId])
 }
 
 enum MatchStatus {

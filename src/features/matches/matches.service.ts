@@ -73,6 +73,7 @@ export class MatchesService {
 
     await this.assertConsole(match, userId);
     assertRunning(match);
+    assertNotCarried(match);
     assertReady(match);
 
     if (match.setsA !== null) {
@@ -199,6 +200,7 @@ export class MatchesService {
     await this.assertConsole(match, userId);
     assertRunning(match);
     assertReady(match);
+    assertNotCarried(match);
 
     if (mode === 'create' && match.setsA !== null) {
       throw new AppError(ERROR_CODES.MATCH_ALREADY_FINISHED, 'Match already has a result', {
@@ -349,7 +351,10 @@ export class MatchesService {
 
     const later = await tx.stage.findMany({
       where: { tournamentId: match.tournamentId, order: { gt: match.stage.order } },
-      select: { id: true, matches: { where: { NOT: { setsA: null } }, select: { id: true } } },
+      select: {
+        id: true,
+        matches: { where: { NOT: { setsA: null }, carriedFromId: null }, select: { id: true } },
+      },
     });
 
     if (later.length === 0) return;
@@ -416,6 +421,24 @@ function assertReady(match: MatchWithContext): void {
   if (match.playerAId === null || match.playerBId === null) {
     throw new AppError(ERROR_CODES.MATCH_NOT_READY, 'Match has no participants yet', {
       id: match.id,
+    });
+  }
+}
+
+/**
+ * Перенесённая встреча финала «с зачётом» не правится (ADR-134): она копия
+ * встречи группы. Счёт исправляют в группе — финальные группы тогда
+ * строятся заново, пока в них ничего не сыграно.
+ */
+function assertNotCarried(match: {
+  readonly id: string;
+  readonly carriedFromId: string | null;
+}): void {
+  if (match.carriedFromId !== null) {
+    throw new AppError(ERROR_CODES.VALIDATION_FAILED, 'Carried match is edited in its group', {
+      id: match.id,
+      carriedFromId: match.carriedFromId,
+      reason: 'CARRIED_MATCH',
     });
   }
 }

@@ -53,6 +53,24 @@ export interface PlannedMatch {
   readonly placeTo?: number;
   readonly winnerPlace?: number;
   readonly loserPlace?: number;
+  /**
+   * Перенесённая встреча финала вкруг «с зачётом» — ADR-134: записывается
+   * сразу сыгранной, со счётом исходной встречи и ссылкой на неё.
+   */
+  readonly carried?: CarrySource;
+}
+
+/** Сыгранная встреча группы — источник переноса в финал «с зачётом» (ADR-134). */
+export interface CarrySource {
+  readonly id: string;
+  readonly playerAId: string | null;
+  readonly playerBId: string | null;
+  readonly setsA: number | null;
+  readonly setsB: number | null;
+  readonly setScores: unknown;
+  readonly resultType: 'NORMAL' | 'WALKOVER' | 'RETIRED' | null;
+  readonly startedAt: Date | null;
+  readonly finishedAt: Date | null;
 }
 
 export interface PlannedGroup {
@@ -418,6 +436,8 @@ export function planNextStage(
   config: FormatConfig,
   selection: AdvancingSelection,
   makeId: () => string,
+  /** Встречи группового этапа — для финала вкруг «с зачётом» (ADR-134). */
+  groupMatches: readonly CarrySource[] = [],
 ): PlannedStage[] {
   if (config.type === 'GROUPS_KNOCKOUT') {
     const options = { thirdPlace: config.thirdPlace, allPlaces: config.allPlaces === true };
@@ -478,7 +498,7 @@ export function planNextStage(
   }
 
   if (config.type === 'GROUPS_FINAL_GROUPS') {
-    return [planFinalGroups(config, selection, makeId)];
+    return [planFinalGroups(config, selection, makeId, groupMatches)];
   }
 
   return [];
@@ -495,38 +515,94 @@ function planFinalGroups(
   config: Extract<FormatConfig, { type: 'GROUPS_FINAL_GROUPS' }>,
   selection: AdvancingSelection,
   makeId: () => string,
+  groupMatches: readonly CarrySource[],
 ): PlannedStage {
-  const groups = selection.byPlace.map((participants, index) => ({
+  // «По местам» — k-я группа из k-х мест; «местами», как у RTTF (ADR-134), —
+  // Финал 1 из зоны выхода, следующие — до своих границ. Финальная группа
+  // из одного человека «местами» не строится: ему не с кем играть, и место
+  // он делит по месту в группе, как в финалах-сетках (ADR-133).
+  const lists =
+    config.composition === 'BANDS'
+      ? [selection.seeded, ...selection.finals].filter((list) => list.length >= 2)
+      : selection.byPlace;
+  const groups = lists.map((participants, index) => ({
     key: `final-${String(index + 1)}`,
     label: `Финальная гр. ${String(index + 1)}`,
     order: index,
     participants,
   }));
 
+  // «С зачётом» (ADR-134): кто уже играл между собой в группе, в финале не
+  // переигрывает — встреча переносится со своим счётом.
+  const played = new Map<string, CarrySource[]>();
+  if (config.carryOver === true) {
+    for (const match of groupMatches) {
+      if (match.playerAId === null || match.playerBId === null) continue;
+      if (match.setsA === null || match.setsB === null) continue;
+      const key = pairKey(match.playerAId, match.playerBId);
+      played.set(key, [...(played.get(key) ?? []), match]);
+    }
+  }
+
   // Кругов столько же, сколько в группах: у этой схемы одно поле на оба
   // этапа, ровно как `setsToWin`. Отдельного параметра для финальных групп
   // ТЗ 5.2 не задаёт, и выдумывать его здесь не за что.
-  const matches = groups.flatMap((group) =>
-    scheduleRoundRobin(group.participants, config.groupRounds).map((match) => ({
-      id: makeId(),
-      groupKey: group.key,
-      playerAId: match.a,
-      playerBId: match.b,
-      sourceA: null,
-      sourceB: null,
-      bracketRound: match.round,
-      bracketSlot: null,
-    })),
-  );
+  const matches = groups.flatMap((group) => {
+    const members = new Set(group.participants);
+    const carried = [...played.values()]
+      .flat()
+      .filter(
+        (match) =>
+          match.playerAId !== null &&
+          match.playerBId !== null &&
+          members.has(match.playerAId) &&
+          members.has(match.playerBId),
+      )
+      .map((match): PlannedMatch => ({
+        id: makeId(),
+        groupKey: group.key,
+        playerAId: match.playerAId,
+        playerBId: match.playerBId,
+        sourceA: null,
+        sourceB: null,
+        bracketRound: null,
+        bracketSlot: null,
+        carried: match,
+      }));
+    const scheduled = scheduleRoundRobin(group.participants, config.groupRounds)
+      .filter((match) => !played.has(pairKey(match.a, match.b)))
+      .map((match): PlannedMatch => ({
+        id: makeId(),
+        groupKey: group.key,
+        playerAId: match.a,
+        playerBId: match.b,
+        sourceA: null,
+        sourceB: null,
+        bracketRound: match.round,
+        bracketSlot: null,
+      }));
+
+    return [...carried, ...scheduled];
+  });
 
   return {
     order: 1,
     type: 'GROUPS',
     name: 'Финальные группы',
-    config: { setsToWin: config.setsToWin, rounds: config.groupRounds, ...tieBreakOf(config) },
+    config: {
+      setsToWin: config.setsToWin,
+      rounds: config.groupRounds,
+      ...tieBreakOf(config),
+      ...(config.carryOver === true ? { carryOver: true } : {}),
+    },
     groups,
     matches,
   };
+}
+
+/** Пара без учёта порядка: «A—B» и «B—A» — одна встреча. */
+function pairKey(a: string, b: string): string {
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
 
 /**

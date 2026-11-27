@@ -138,6 +138,7 @@ export class ClubPageService {
       tournament: { clubId },
       status: 'FINISHED' as const,
       finishedAt: { gte: since },
+      carriedFromId: null,
     };
 
     const [sides, tournamentsHeld, finished] = await Promise.all([

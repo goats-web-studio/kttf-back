@@ -173,6 +173,8 @@ function playedBy(playerId: string) {
   return {
     OR: [{ playerAId: playerId }, { playerBId: playerId }],
     setsA: { not: null },
+    // Копия встречи в финале «с зачётом» (ADR-134) — не вторая встреча.
+    carriedFromId: null,
   };
 }
 
@@ -478,75 +480,77 @@ export class PlayersService {
     }
 
     // Тренер из анкеты открывает период истории — той же транзакцией (ADR-059).
-    const created = await this.prisma.$transaction(async (tx) => {
-      // Проверка тёзок и заведение — под одним замком на имя и год. Иначе
-      // двойное нажатие «Новый игрок» проходит проверку дважды, пока первый
-      // профиль ещё не записан: так на пилоте появились четыре одинаковых
-      // профиля (ADR-100).
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${namesakeKey(profile)}))`;
+    const created = await this.prisma
+      .$transaction(async (tx) => {
+        // Проверка тёзок и заведение — под одним замком на имя и год. Иначе
+        // двойное нажатие «Новый игрок» проходит проверку дважды, пока первый
+        // профиль ещё не записан: так на пилоте появились четыре одинаковых
+        // профиля (ADR-100).
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${namesakeKey(profile)}))`;
 
-      if (allowDuplicate !== true) {
-        await this.assertNoNamesake(
-          profile,
-          // Своя анкета, а организатор уже завёл такого человека на турнире
-          // (ADR-102): «Это вы?» — привязаться, а не заводить вторую анкету.
-          forSomeoneElse ? {} : { confirmedOnly: true, unclaimedOnly: true },
-          tx,
-        );
-      }
+        if (allowDuplicate !== true) {
+          await this.assertNoNamesake(
+            profile,
+            // Своя анкета, а организатор уже завёл такого человека на турнире
+            // (ADR-102): «Это вы?» — привязаться, а не заводить вторую анкету.
+            forSomeoneElse ? {} : { confirmedOnly: true, unclaimedOnly: true },
+            tx,
+          );
+        }
 
-      const player = await tx.player.create({
-        data: {
-          ...defined(profile),
-          ...toBirthDate(profile.birthDate),
-          ...(forSomeoneElse ? { confirmedAt: new Date() } : { userId: actorId }),
-          ...(startRating === undefined ? {} : { rating: startRating }),
-        },
-        select: { id: true, coachPlayerId: true },
-      });
-
-      // Рейтинг меняется только через журнал (запрет №3 брифа): стартовая
-      // оценка — событие INITIAL от общего старта, и пересчёт истории даёт то
-      // же значение, что лежит в проекции.
-      if (startRating !== undefined) {
-        await tx.ratingEvent.create({
+        const player = await tx.player.create({
           data: {
-            playerId: player.id,
-            type: 'INITIAL',
-            ratingBefore: START_RATING,
-            delta: startingDelta(startRating),
-            ratingAfter: startRating,
+            ...defined(profile),
+            ...toBirthDate(profile.birthDate),
+            ...(forSomeoneElse ? { confirmedAt: new Date() } : { userId: actorId }),
+            ...(startRating === undefined ? {} : { rating: startRating }),
           },
-        });
-      }
-
-      await switchCoach(tx, player.id, null, player.coachPlayerId);
-
-      // Своя анкета, а города у аккаунта нет — город анкеты становится
-      // городом аккаунта (ADR-093). Выбранный раньше не трогается.
-      if (!forSomeoneElse) {
-        await tx.user.updateMany({
-          where: { id: actorId, cityId: null },
-          data: { cityId: profile.cityId },
-        });
-      }
-
-      return tx.player.findUniqueOrThrow({ where: { id: player.id }, select: profileFields });
-    }).catch(async (error: unknown) => {
-      // Двойное нажатие «Сохранить» своей анкеты: первый запрос её завёл,
-      // второй упёрся в «один профиль на аккаунт». Повтор отдаёт ту же
-      // анкету, а не ошибку сервера.
-      if (!forSomeoneElse && isUniqueViolation(error)) {
-        const mine = await this.prisma.player.findUnique({
-          where: { userId: actorId },
-          select: profileFields,
+          select: { id: true, coachPlayerId: true },
         });
 
-        if (mine !== null) return mine;
-      }
+        // Рейтинг меняется только через журнал (запрет №3 брифа): стартовая
+        // оценка — событие INITIAL от общего старта, и пересчёт истории даёт то
+        // же значение, что лежит в проекции.
+        if (startRating !== undefined) {
+          await tx.ratingEvent.create({
+            data: {
+              playerId: player.id,
+              type: 'INITIAL',
+              ratingBefore: START_RATING,
+              delta: startingDelta(startRating),
+              ratingAfter: startRating,
+            },
+          });
+        }
 
-      throw error;
-    });
+        await switchCoach(tx, player.id, null, player.coachPlayerId);
+
+        // Своя анкета, а города у аккаунта нет — город анкеты становится
+        // городом аккаунта (ADR-093). Выбранный раньше не трогается.
+        if (!forSomeoneElse) {
+          await tx.user.updateMany({
+            where: { id: actorId, cityId: null },
+            data: { cityId: profile.cityId },
+          });
+        }
+
+        return tx.player.findUniqueOrThrow({ where: { id: player.id }, select: profileFields });
+      })
+      .catch(async (error: unknown) => {
+        // Двойное нажатие «Сохранить» своей анкеты: первый запрос её завёл,
+        // второй упёрся в «один профиль на аккаунт». Повтор отдаёт ту же
+        // анкету, а не ошибку сервера.
+        if (!forSomeoneElse && isUniqueViolation(error)) {
+          const mine = await this.prisma.player.findUnique({
+            where: { userId: actorId },
+            select: profileFields,
+          });
+
+          if (mine !== null) return mine;
+        }
+
+        throw error;
+      });
 
     return this.profileView(created);
   }

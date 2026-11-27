@@ -28,6 +28,7 @@ interface MatchSeed {
   readonly id?: string;
   readonly round?: number;
   readonly slot?: number;
+  readonly carriedFromId?: string;
   readonly sourceA?: unknown;
   readonly status?: string;
 }
@@ -60,6 +61,7 @@ function makeStage(
       resultType: match.setsA === undefined ? null : (match.resultType ?? 'NORMAL'),
       bracketRound: match.round ?? null,
       bracketSlot: match.slot ?? null,
+      carriedFromId: match.carriedFromId ?? null,
     })),
   } as unknown as StageRecord;
 }
@@ -247,6 +249,17 @@ describe('встречи в зачёт', () => {
         resultType: 'NORMAL',
       },
     ]);
+  });
+
+  it('перенесённая в финал «с зачётом» копия в рейтинг не идёт — ADR-134', () => {
+    const stages = [
+      makeStage('GROUPS', [
+        { a: 'a', b: 'b', setsA: 3, setsB: 1 },
+        { a: 'a', b: 'b', setsA: 3, setsB: 1, carriedFromId: 's0m0' },
+      ]),
+    ];
+
+    expect(ratedMatches(stages, players).map((match) => match.matchId)).toEqual(['s0m0']);
   });
 
   it('встреча с участником вне зачёта отсеивается целиком', () => {

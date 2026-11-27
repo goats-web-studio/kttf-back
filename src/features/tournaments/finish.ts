@@ -98,7 +98,13 @@ export function ratedMatches(
     .sort((left, right) => left.order - right.order)
     .flatMap((stage) => [...stage.matches].sort(byBracketPosition));
 
-  return ordered.filter(isPlayed).map(toRatedMatch).filter(bothRated(players));
+  // Копия встречи в финале «с зачётом» (ADR-134) — та же встреча: в рейтинг
+  // идёт только исходная.
+  return ordered
+    .filter((match) => match.carriedFromId === null)
+    .filter(isPlayed)
+    .map(toRatedMatch)
+    .filter(bothRated(players));
 }
 
 /** Все данные, которые нужны движку. */

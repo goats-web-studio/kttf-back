@@ -391,6 +391,81 @@ describe('достройка этапа по итогам групп', () => {
     expect(final?.playerAId).toBeNull();
   });
 
+  it('финалы вкруг «местами» с зачётом: встречи одногруппников переносятся — ADR-134', () => {
+    const played = (id: string, a: string, b: string, setsA: number, setsB: number) => ({
+      id,
+      playerAId: a,
+      playerBId: b,
+      setsA,
+      setsB,
+      setScores: null,
+      resultType: 'NORMAL' as const,
+      startedAt: null,
+      finishedAt: null,
+    });
+    const [stage] = planNextStage(
+      {
+        ...FINAL_GROUPS,
+        composition: 'BANDS',
+        extraFinals: [4],
+        finalGroupCount: 2,
+        carryOver: true,
+      },
+      { ...SELECTION, finals: [['a3', 'b3', 'a4', 'b4']], exits: [] },
+      makeIdFactory(),
+      [
+        played('g1', 'a1', 'a2', 3, 1),
+        played('g2', 'b2', 'b1', 3, 2),
+        played('g3', 'a3', 'a4', 0, 3),
+      ],
+    );
+
+    expect(stage?.groups.map((group) => [...group.participants].sort())).toEqual([
+      ['a1', 'a2', 'b1', 'b2'],
+      ['a3', 'a4', 'b3', 'b4'],
+    ]);
+    const first = stage?.matches.filter((match) => match.groupKey === 'final-1') ?? [];
+    // Шесть пар в группе из четырёх: две перенесены, четыре играются.
+    expect(first).toHaveLength(6);
+    expect(first.filter((match) => match.carried !== undefined).map((m) => m.carried?.id)).toEqual([
+      'g1',
+      'g2',
+    ]);
+    expect(
+      first.some(
+        (match) =>
+          match.carried === undefined &&
+          [match.playerAId, match.playerBId].sort().join() === 'a1,a2',
+      ),
+    ).toBe(false);
+    expect(stage?.config).toMatchObject({ carryOver: true });
+  });
+
+  it('без зачёта финальная группа играет все пары заново', () => {
+    const [stage] = planNextStage(
+      { ...FINAL_GROUPS, composition: 'BANDS', extraFinals: [], finalGroupCount: 1 },
+      { ...SELECTION, finals: [], exits: [] },
+      makeIdFactory(),
+      [
+        {
+          id: 'g1',
+          playerAId: 'a1',
+          playerBId: 'a2',
+          setsA: 3,
+          setsB: 1,
+          setScores: null,
+          resultType: 'NORMAL',
+          startedAt: null,
+          finishedAt: null,
+        },
+      ],
+    );
+
+    expect(stage?.groups).toHaveLength(1);
+    expect(stage?.matches).toHaveLength(6);
+    expect(stage?.matches.every((match) => match.carried === undefined)).toBe(true);
+  });
+
   it('финальные группы собираются по местам', () => {
     // ТЗ 5.1, «финалы по местам»: k-я группа — те, кто занял k-е место.
     const [stage] = planNextStage(FINAL_GROUPS, SELECTION, makeIdFactory());

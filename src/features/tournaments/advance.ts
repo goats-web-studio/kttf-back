@@ -86,12 +86,17 @@ export async function advanceAfterGroups(
   const selection = selectAdvancing(
     placements,
     config.advancePerGroup,
-    config.type === 'GROUPS_KNOCKOUT' ? (config.extraFinals ?? []) : [],
+    // Границы следующих финалов: финалы-сетки (ADR-133) и финальные группы
+    // «местами» (ADR-134).
+    config.type === 'GROUPS_KNOCKOUT' ||
+      (config.type === 'GROUPS_FINAL_GROUPS' && config.composition === 'BANDS')
+      ? (config.extraFinals ?? [])
+      : [],
   );
 
   if (selection.blocked.length > 0) return { stageId: null, blockedByTies: selection.blocked };
 
-  const planned = planNextStage(config, selection, () => randomUUID());
+  const planned = planNextStage(config, selection, () => randomUUID(), groupStage.matches);
   const ids: string[] = [];
 
   // Плей-офф и сетка за места пишутся вместе: по отдельности второй этап
