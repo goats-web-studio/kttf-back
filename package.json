@@ -9,7 +9,7 @@
   "packageManager": "pnpm@11.24.0",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1124.0",
-    "@kttf/shared": "github:goats-web-studio/kttf-shared#389c6f159875757afe888dc39c729b2f77b05733",
+    "@kttf/shared": "github:goats-web-studio/kttf-shared#54118efb357898ec96580e333bcdb6cef85b23c1",
     "@nestjs/common": "^11.2.3",
     "@nestjs/core": "^11.2.3",
     "@nestjs/jwt": "^11.0.2",

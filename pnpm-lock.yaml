@@ -15,8 +15,8 @@ importers:
         specifier: ^3.1124.0
         version: 3.1124.0
       '@kttf/shared':
-        specifier: github:goats-web-studio/kttf-shared#389c6f159875757afe888dc39c729b2f77b05733
-        version: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/389c6f159875757afe888dc39c729b2f77b05733(zod@4.6.7)
+        specifier: github:goats-web-studio/kttf-shared#54118efb357898ec96580e333bcdb6cef85b23c1
+        version: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/54118efb357898ec96580e333bcdb6cef85b23c1(zod@4.6.7)
       '@nestjs/common':
         specifier: ^11.2.3
         version: 11.2.3(reflect-metadata@0.2.2)(rxjs@7.8.2)
@@ -601,8 +601,8 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/389c6f159875757afe888dc39c729b2f77b05733':
-    resolution: {gitHosted: true, integrity: sha512-0V0c5sKNc7BI5zGUsxq6SGFPMqfpT2px97U1OdfzmZy1ErVVODZIjX9xowoBSlwvc1PGqlhFBuFfW/SYdb+c3Q==, tarball: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/389c6f159875757afe888dc39c729b2f77b05733}
+  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/54118efb357898ec96580e333bcdb6cef85b23c1':
+    resolution: {gitHosted: true, integrity: sha512-XHRKogmncy8mvzoxogFlOvw04lSaNFUpN+ni1R9h4bCLh/XN0l3W3mq3VfH746RLJ2z3X/QbNszOQqU8GlVwZQ==, tarball: https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/54118efb357898ec96580e333bcdb6cef85b23c1}
     version: 0.1.0
     engines: {node: '>=24'}
     peerDependencies:
@@ -3032,7 +3032,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.6.0
 
-  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/389c6f159875757afe888dc39c729b2f77b05733(zod@4.6.7)':
+  '@kttf/shared@https://codeload.github.com/goats-web-studio/kttf-shared/tar.gz/54118efb357898ec96580e333bcdb6cef85b23c1(zod@4.6.7)':
     dependencies:
       zod: 4.6.7
 
