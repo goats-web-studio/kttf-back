@@ -16,21 +16,30 @@ WORKDIR /app
 
 # ---- Зависимости ----
 #
-# Схема и prisma.config.ts копируются до установки: postinstall генерирует
-# клиент Prisma, и без них установка не пройдёт.
+# Сначала установка, потом схема (DEV-131). Слой node_modules зависит только
+# от package.json, lock-файла и pnpm-workspace.yaml. Раньше схема копировалась
+# до установки, и каждая новая миграция пересобирала весь слой зависимостей:
+# сервер заново качал образ миграций минутами, а сама миграция шла секунды.
+#
+# Собственный postinstall проекта — `prisma generate` — на время установки
+# снимается: ему нужна схема. Он запускается отдельным слоем ниже. Скрипты
+# зависимостей при этом отрабатывают: общий код собирает `dist` (ADR-010),
+# и с `--ignore-scripts` пакет приехал бы пустым.
 
 FROM base AS deps
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml prisma.config.ts ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN pnpm pkg delete scripts.postinstall \
+  && pnpm install --frozen-lockfile
 # tsconfig нужен именно здесь: генератор Prisma смотрит в него, выбирая
 # расширение в импортах клиента. Без него получается `./enums.ts`, и Node
 # такой импорт не разрешает.
-COPY tsconfig.json tsconfig.build.json ./
+COPY prisma.config.ts tsconfig.json tsconfig.build.json ./
 COPY prisma ./prisma
 # Заглушка строки подключения: `prisma generate` читает её из конфигурации,
 # хотя к базе не обращается. Именно ARG, а не ENV — в образе она не остаётся,
 # и настоящая строка приходит из окружения, а не из слоя.
 ARG DATABASE_URL=postgresql://build:build@127.0.0.1:5432/build
-RUN pnpm install --frozen-lockfile
+RUN pnpm exec prisma generate
 
 # ---- Сборка ----
 
