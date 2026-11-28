@@ -875,7 +875,16 @@ export class TournamentsService {
 
     if (existing !== null) throw alreadyRegistered(playerId);
 
-    if (late) return this.registerLate(tournament, playerId, player, input.groupId);
+    if (late) {
+      // После жеребьёвки опоздавший — только с рейтингом (ADR-140, п. 4):
+      // жеребьёвка его уже не проверит, и анкета вошла бы в таблицу и расчёт
+      // с умолчанием 250. До жеребьёвки рейтинг ждёт сама жеребьёвка.
+      const drawn = (await this.prisma.stage.count({ where: { tournamentId: id } })) > 0;
+
+      if (drawn) assertConfirmed({ id: playerId, confirmedAt: player.confirmedAt });
+
+      return this.registerLate(tournament, playerId, player, input.groupId);
+    }
 
     const { created, reset } = await this.prisma
       .$transaction(async (tx) => {
